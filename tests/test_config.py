@@ -19,6 +19,12 @@ def test_default_settings():
     assert settings.MAX_INTERNATIONAL_STORIES > 0
     assert settings.STORY_LOOKBACK_DAYS > 0
     assert settings.MIN_INDEPENDENT_SOURCES >= 1
+    assert settings.MAX_GEMINI_CLASSIFICATIONS == 15
+    assert settings.MAX_CORROBORATION_SEARCHES == 20
+    assert settings.MIN_VERIFIED_INDIA == 5
+    assert settings.MIN_VERIFIED_INTL == 5
+    assert settings.MAX_DISCOVERY_INDIA == 40
+    assert settings.MAX_DISCOVERY_INTL == 40
 
 
 def test_custom_settings(tmp_path: Path):

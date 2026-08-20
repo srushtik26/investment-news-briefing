@@ -212,3 +212,92 @@ class TestAIArticleClassifier:
         assert result.classification is not None
         assert result.classification.event_type == ArticleEventType.EARNINGS
         assert result.classification.is_hard_business_event is True
+
+    def test_gemini_429_rate_limit_fallback(self, sample_earnings_article: Article):
+        """Test that 429 rate limit triggers offline fallback after retry."""
+        def mock_429_responder(art: Article) -> str:
+            raise Exception("429 RESOURCE_EXHAUSTED: Rate limit exceeded")
+
+        classifier = AIArticleClassifier(mock_responder=mock_429_responder)
+        result = classifier.classify(sample_earnings_article)
+
+        assert result.success is True
+        assert result.attempts == 0  # 0 indicates offline fallback
+        assert result.classification is not None
+        assert result.classification.event_type == ArticleEventType.EARNINGS
+        assert classifier._force_offline_mode is True
+
+    def test_gemini_503_server_error_fallback(self, sample_earnings_article: Article):
+        """Test that 503 server error triggers offline fallback after retry."""
+        def mock_503_responder(art: Article) -> str:
+            raise Exception("503 Service Unavailable: The model is currently overloaded")
+
+        classifier = AIArticleClassifier(mock_responder=mock_503_responder)
+        result = classifier.classify(sample_earnings_article)
+
+        assert result.success is True
+        assert result.attempts == 0  # 0 indicates offline fallback
+        assert result.classification is not None
+        assert classifier._force_offline_mode is True
+
+    def test_remaining_candidates_classified_offline_after_rate_limit(
+        self, sample_earnings_article: Article, sample_ma_article: Article
+    ):
+        """Test that remaining candidates are classified offline once rate limit triggers offline mode."""
+        call_count = 0
+
+        def mock_rate_limit_then_pass(art: Article) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        classifier = AIArticleClassifier(mock_responder=mock_rate_limit_then_pass)
+
+        # Article 1 encounters 429 rate limit
+        res1 = classifier.classify(sample_earnings_article)
+        assert res1.success is True
+        assert res1.attempts == 0
+        assert classifier._force_offline_mode is True
+
+        # Article 2 automatically uses offline classification without calling Gemini
+        res2 = classifier.classify(sample_ma_article)
+        assert res2.success is True
+        assert res2.attempts == 0
+        assert res2.classification is not None
+        assert res2.classification.event_type == ArticleEventType.MA
+
+    def test_gemini_call_cap_not_exceeded(self, sample_earnings_article: Article):
+        """Test that Gemini max_articles call cap is strictly enforced."""
+        valid_json = json.dumps({
+            "event_type": "EARNINGS",
+            "company_names": ["HDFC Bank"],
+            "financial_numbers": ["₹16,175 crore"],
+            "percentages": ["18%"],
+            "deal_value": None,
+            "market_indices": [],
+            "commodity_prices": [],
+            "currency_values": [],
+            "key_outcome": "HDFC Bank net profit rose 18%.",
+            "is_hard_business_event": True,
+            "has_specific_quantified_impact": True,
+            "is_investment_relevant": True,
+        })
+
+        # Set max_articles = 2
+        classifier = AIArticleClassifier(max_articles=2, mock_responder=lambda art: valid_json)
+        # Simulate live client presence so max_articles check runs
+        classifier._client = object()
+
+        res1 = classifier.classify(sample_earnings_article)
+        res2 = classifier.classify(sample_earnings_article)
+        assert classifier._live_call_count == 2
+        assert res1.attempts == 1
+        assert res2.attempts == 1
+
+        # 3rd and 4th calls exceed max_articles cap, using offline fallback
+        res3 = classifier.classify(sample_earnings_article)
+        res4 = classifier.classify(sample_earnings_article)
+        assert classifier._live_call_count == 2  # Proves cap wasn't exceeded
+        assert res3.attempts == 0
+        assert res4.attempts == 0
+

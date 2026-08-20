@@ -106,21 +106,23 @@ class DeduplicationEngine:
             # CHECK 2: India Same-Company Restriction
             if category == "india":
                 norm_company = normalize_entity_name(company)
-                if norm_company in selected_india_companies:
-                    logger.info(
-                        "Rejected India story (duplicate company '%s'): '%s'",
-                        company,
-                        story.get("headline", "")[:45],
-                    )
-                    rejection = {
-                        **story,
-                        "rejection_reason": f"Same company ('{company}') already selected in today's India section",
-                        "rejection_rule": "INDIA_SAME_COMPANY",
-                    }
-                    rejected_stories.append(rejection)
-                    continue
+                is_unspecified_company = norm_company in ("unspecified_entity", "unspecified", "unknown", "n_a", "na", "n/a", "none", "")
+                if not is_unspecified_company:
+                    if norm_company in selected_india_companies:
+                        logger.info(
+                            "Rejected India story (duplicate company '%s'): '%s'",
+                            company,
+                            story.get("headline", "")[:45],
+                        )
+                        rejection = {
+                            **story,
+                            "rejection_reason": f"Same company ('{company}') already selected in today's India section",
+                            "rejection_rule": "INDIA_SAME_COMPANY",
+                        }
+                        rejected_stories.append(rejection)
+                        continue
 
-                selected_india_companies.add(norm_company)
+                    selected_india_companies.add(norm_company)
                 accepted_stories.append(story)
                 logger.debug("Accepted India story for company '%s'", company)
 

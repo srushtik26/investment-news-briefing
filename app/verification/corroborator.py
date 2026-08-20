@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse, quote_plus
 
+from config import get_settings
 from app.logging_config import get_logger
 from app.models.article import Article
 from app.models.event import Event
@@ -28,7 +29,7 @@ logger = get_logger("verification.corroborator")
 
 # Module-level run counter (reset between pipeline runs)
 _run_corroboration_count = 0
-MAX_CORROBORATION_SEARCHES_PER_RUN = 20
+MAX_CORROBORATION_SEARCHES_PER_RUN = get_settings().MAX_CORROBORATION_SEARCHES
 MAX_QUERIES_PER_EVENT = 2
 MAX_ARTICLES_PER_QUERY = 5
 
@@ -124,8 +125,8 @@ class ActiveCorroborator:
     INTL_CORROBORATION_DOMAINS = [
         "cnbc.com",
         "apnews.com",
-        "marketwatch.com",
         "bbc.com",
+        "marketwatch.com",
         "theguardian.com",
         "fortune.com",
         "reuters.com",

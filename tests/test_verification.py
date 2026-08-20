@@ -188,3 +188,11 @@ class TestTwoSourceVerifier:
         assert result.secondary_source is None
         assert result.is_independent is False
         assert "only 1 source" in (result.matching_details or "")
+
+
+def test_package_exports_and_instantiates_two_source_verifier():
+    """Test importing TwoSourceVerifier directly from app.verification package."""
+    from app.verification import TwoSourceVerifier as PackageVerifier
+    verifier = PackageVerifier()
+    assert isinstance(verifier, PackageVerifier)
+

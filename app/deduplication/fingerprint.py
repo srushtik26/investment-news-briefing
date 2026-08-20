@@ -19,6 +19,8 @@ def normalize_entity_name(name: Optional[str]) -> str:
     if not name:
         return "unspecified_entity"
     cleaned = name.lower().strip()
+    if cleaned in ("unspecified", "unknown", "n/a", "na", "none", "unspecified_entity", ""):
+        return "unspecified_entity"
     # Remove common corporate suffixes
     cleaned = re.sub(r"\b(ltd|limited|inc|corp|corporation|plc|nv|sa|llc|pvt|co)\b", "", cleaned)
     cleaned = re.sub(r"[^\w\s]", "", cleaned)

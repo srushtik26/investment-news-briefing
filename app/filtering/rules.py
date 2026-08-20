@@ -167,8 +167,16 @@ class SourceFilterRule(BaseFilterRule):
         "ndtv profit",
         "ndtvprofit",
         # International Sources
-        "reuters",
         "cnbc",
+        "ap news",
+        "associated press",
+        "bbc",
+        "bbc news",
+        "marketwatch",
+        "guardian",
+        "the guardian",
+        "fortune",
+        "reuters",
         "bloomberg",
         "financial times",
         "the financial times",
@@ -176,8 +184,6 @@ class SourceFilterRule(BaseFilterRule):
         "wall street journal",
         "the wall street journal",
         "wsj",
-        "ap news",
-        "associated press",
     }
 
     ALLOWED_DOMAINS: Set[str] = {
@@ -188,12 +194,16 @@ class SourceFilterRule(BaseFilterRule):
         "moneycontrol.com",
         "businesstoday.in",
         "ndtvprofit.com",
-        "reuters.com",
         "cnbc.com",
+        "apnews.com",
+        "bbc.com",
+        "marketwatch.com",
+        "theguardian.com",
+        "fortune.com",
+        "reuters.com",
         "bloomberg.com",
         "ft.com",
         "wsj.com",
-        "apnews.com",
     }
 
     @property

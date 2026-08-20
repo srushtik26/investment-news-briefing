@@ -28,9 +28,6 @@ from typing import List, Dict, Any, Tuple, Set, Optional
 # Ensure UTF-8 output on Windows consoles
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
 from config import get_settings
 from app.logging_config import setup_logging, get_logger
 from app.models import Article, Event, NewsCategory
@@ -41,11 +38,15 @@ from app.classification import AIArticleClassifier, GeminiRateLimitError
 from app.verification import (
     TwoSourceVerifier,
     ActiveCorroborator,
+    SerpAPICorroborator,
     reset_corroboration_counter,
+    reset_serpapi_counter,
     get_corroboration_count,
+    MAX_CORROBORATION_SEARCHES_PER_RUN,
 )
+
 from app.deduplication import DeduplicationEngine, HistoryStore
-from app.ranking import CandidatePoolRanker
+from app.ranking import CandidatePoolRanker, ArticlePreRanker
 from app.ranking.scorer import InvestmentRelevanceScorer
 from app.ai import GeminiEditorialEngine, BriefingEditorialPayload, GeminiUsageLogger, RATE_LIMITED_PREFIX, EditorialResult
 from app.validation import FinalValidationEngine, ValidationStatus
@@ -55,7 +56,7 @@ logger = get_logger("pipeline.runner")
 
 # --- Discovery expansion configuration ---
 DISCOVERY_STEPS = [20, 30, 40, 50]  # candidate budgets per section per expansion step
-MIN_VERIFIED_PER_SECTION = 5         # need at least this many verified events per section
+MIN_VERIFIED_PER_SECTION = get_settings().MIN_VERIFIED_INDIA
 
 # ---------------------------------------------------------------------------
 # Helper: discover & extract a batch
@@ -141,9 +142,13 @@ def _discover_and_extract(
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
+def run_pipeline(max_india: Optional[int] = None, max_international: Optional[int] = None) -> int:
     setup_logging()
     settings = get_settings()
+    if max_india is None:
+        max_india = settings.MAX_DISCOVERY_INDIA
+    if max_international is None:
+        max_international = settings.MAX_DISCOVERY_INTL
 
     data_dir = Path("./data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +168,7 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
 
     GeminiUsageLogger.reset()
     reset_corroboration_counter()
+    reset_serpapi_counter()
 
     history_store = HistoryStore(db_path=settings.DATABASE_URL)
     log_exec(f"Initializing History Store: {settings.DATABASE_URL}")
@@ -238,23 +244,26 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
         )
 
     # =========================================================================
-    # STAGE 4: Gemini AI Classification
+    # STAGE 4: Gemini AI Classification (Pre-ranked)
     # =========================================================================
     log_exec("=" * 60)
     log_exec("STAGE 4: Classification — Gemini AI article classifier")
     log_exec("=" * 60)
-    classifier = AIArticleClassifier(max_articles=15)
+    pre_ranker = ArticlePreRanker()
+    gemini_candidates = pre_ranker.select_top_balanced_candidates(
+        accepted_articles, max_total=settings.MAX_GEMINI_CLASSIFICATIONS
+    )
+    gemini_urls = {art.url for art in gemini_candidates}
+    remaining_accepted = [art for art in accepted_articles if art.url not in gemini_urls]
+    ordered_accepted_articles = gemini_candidates + remaining_accepted
+
+    classifier = AIArticleClassifier(max_articles=settings.MAX_GEMINI_CLASSIFICATIONS)
     classified_articles: List[Tuple[Article, Any]] = []
-    classification_halted = False
     live_class_count = offline_class_count = 0
 
-    for idx, art in enumerate(accepted_articles, 1):
-        if classification_halted:
-            log_exec(f"  [SKIPPED – quota exhausted]: {art.title[:50]}")
-            continue
-
-        log_exec(f"[{idx}/{len(accepted_articles)}] Classifying: {art.title[:50]}")
-        if idx > 1 and live_class_count < 15:
+    for idx, art in enumerate(ordered_accepted_articles, 1):
+        log_exec(f"[{idx}/{len(ordered_accepted_articles)}] Classifying: {art.title[:50]}")
+        if idx > 1 and live_class_count < settings.MAX_GEMINI_CLASSIFICATIONS and not getattr(classifier, "_force_offline_mode", False):
             time.sleep(4)
 
         try:
@@ -263,10 +272,6 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
                 live_class_count += 1
             else:
                 offline_class_count += 1
-        except GeminiRateLimitError as rle:
-            log_exec(f"  -> GEMINI RATE LIMIT: Halting classification. {rle}")
-            classification_halted = True
-            continue
         except Exception as e:
             log_exec(f"  -> ERROR during classification: {e}")
             continue
@@ -275,7 +280,8 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
             c = res.classification
             if c.is_hard_business_event and c.is_investment_relevant:
                 classified_articles.append((art, c))
-                log_exec(f"  -> ACCEPTED: {c.event_type.value} | Companies: {c.company_names}")
+                mode_str = "Live Gemini" if res.attempts > 0 else "Offline Heuristic"
+                log_exec(f"  -> ACCEPTED ({mode_str}): {c.event_type.value} | Companies: {c.company_names}")
             else:
                 log_exec(f"  -> REJECTED BY AI: Event={c.event_type.value}, HardEvent={c.is_hard_business_event}, InvRel={c.is_investment_relevant}")
         else:
@@ -323,6 +329,7 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
 
     verifier     = TwoSourceVerifier()
     corroborator = ActiveCorroborator(extractor=extractor)
+    serpapi_corroborator = SerpAPICorroborator(extractor=extractor)
 
     verified_events: List[Event] = []
     single_source_events: List[Event] = []
@@ -345,6 +352,15 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
                 log_exec(f"  -> SINGLE SOURCE — attempting corroboration for: {event.canonical_title[:50]}")
                 corr_result = corroborator.corroborate(event=event, primary_article=primary_art)
                 corroboration_searches += corr_result.queries_fired
+
+                # Optional SerpAPI fallback if normal Google News RSS corroboration missed
+                if not corr_result.success:
+                    if serpapi_corroborator.has_api_key:
+                        log_exec(f"  -> RSS missed — attempting SerpAPI fallback for: {event.canonical_title[:50]}")
+                        corr_result = serpapi_corroborator.corroborate(event=event, primary_article=primary_art)
+                        corroboration_searches += corr_result.queries_fired
+                    else:
+                        log_exec(f"  -> RSS missed — SerpAPI fallback skipped (no SERPAPI_API_KEY set)")
 
                 if corr_result.success and corr_result.corroborating_article:
                     second_sources_found += 1
@@ -413,7 +429,7 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
     for step_max in DISCOVERY_STEPS[1:]:  # 30, 40, 50
         if len(india_verified) >= MIN_VERIFIED_PER_SECTION and len(intl_verified) >= MIN_VERIFIED_PER_SECTION:
             break
-        if get_corroboration_count() >= 10:
+        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
             log_exec("Corroboration budget exhausted — skipping further discovery expansion.")
             break
 
@@ -443,7 +459,7 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
         # Classify new accepted articles
         for art in new_accepted:
             log_exec(f"  [Expansion] Classifying: {art.title[:50]}")
-            if live_class_count < 15:
+            if live_class_count < settings.MAX_GEMINI_CLASSIFICATIONS:
                 time.sleep(4)
             try:
                 res = classifier.classify(art)
@@ -491,6 +507,9 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
                                 prim = ev_arts[0] if ev_arts else art
                                 corr = corroborator.corroborate(event=event, primary_article=prim)
                                 corroboration_searches += corr.queries_fired
+                                if not corr.success and serpapi_corroborator.has_api_key:
+                                    corr = serpapi_corroborator.corroborate(event=event, primary_article=prim)
+                                    corroboration_searches += corr.queries_fired
                                 if corr.success and corr.corroborating_article:
                                     second_sources_found += 1
                                     ca = corr.corroborating_article
@@ -836,6 +855,7 @@ def run_pipeline(max_india: int = 20, max_international: int = 20) -> int:
 
 
 if __name__ == "__main__":
-    max_in  = int(sys.argv[1]) if len(sys.argv) > 1 else 20
-    max_int = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    st = get_settings()
+    max_in  = int(sys.argv[1]) if len(sys.argv) > 1 else st.MAX_DISCOVERY_INDIA
+    max_int = int(sys.argv[2]) if len(sys.argv) > 2 else st.MAX_DISCOVERY_INTL
     sys.exit(run_pipeline(max_india=max_in, max_international=max_int))

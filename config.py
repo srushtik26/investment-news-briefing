@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Gemini AI Configuration
     GEMINI_API_KEY: Optional[str] = Field(default=None, description="Google Gemini API Key")
-    GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Default Gemini model name")
+    GEMINI_MODEL: str = Field(default="gemini-3.6-flash", description="Default Gemini model name")
 
     # Database Configuration (SQLite default, PostgreSQL ready)
     DATABASE_URL: str = Field(
@@ -57,6 +57,32 @@ class Settings(BaseSettings):
     STORY_LOOKBACK_DAYS: int = Field(default=3, ge=1, le=30, description="Days to look back to prevent repeat stories")
     MIN_INDEPENDENT_SOURCES: int = Field(
         default=2, ge=1, le=10, description="Minimum independent sources required for major event verification"
+    )
+
+    # Pipeline Execution & Resource Limits
+    MAX_GEMINI_CLASSIFICATIONS: int = Field(
+        default=15, ge=1, le=100, description="Max live Gemini classification calls per run"
+    )
+    MAX_CORROBORATION_SEARCHES: int = Field(
+        default=20, ge=1, le=100, description="Max corroboration RSS searches per run"
+    )
+    MIN_VERIFIED_INDIA: int = Field(
+        default=5, ge=1, le=20, description="Minimum verified India events required for sufficiency gate"
+    )
+    MIN_VERIFIED_INTL: int = Field(
+        default=5, ge=1, le=20, description="Minimum verified International events required for sufficiency gate"
+    )
+    MAX_DISCOVERY_INDIA: int = Field(
+        default=40, ge=5, le=200, description="Target discovery count for India articles"
+    )
+    MAX_DISCOVERY_INTL: int = Field(
+        default=40, ge=5, le=200, description="Target discovery count for International articles"
+    )
+
+    # SerpAPI Configuration (Optional Corroboration Fallback)
+    SERPAPI_API_KEY: Optional[str] = Field(default=None, description="Optional SerpAPI Key for secondary corroboration fallback")
+    MAX_SERPAPI_SEARCHES_PER_RUN: int = Field(
+        default=8, ge=0, le=50, description="Max SerpAPI searches per pipeline run"
     )
 
     # Extraction & Networking

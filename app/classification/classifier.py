@@ -66,7 +66,7 @@ class AIArticleClassifier:
         api_key=_NOT_SET,
         model_name: Optional[str] = None,
         mock_responder: Optional[Callable[[Article], str]] = None,
-        max_articles: int = 15,
+        max_articles: Optional[int] = None,
     ) -> None:
         settings = get_settings()
         # If caller explicitly passed a value (including ""), use it.
@@ -77,10 +77,11 @@ class AIArticleClassifier:
             self.api_key = api_key
         self.model_name = model_name or settings.GEMINI_MODEL
         self.mock_responder = mock_responder
-        self.max_articles = max_articles
+        self.max_articles = max_articles if max_articles is not None else settings.MAX_GEMINI_CLASSIFICATIONS
 
         # Track how many live Gemini calls have been made this run
         self._live_call_count: int = 0
+        self._force_offline_mode: bool = False
 
         self._client = None
         if self.api_key and not self.mock_responder:
@@ -95,46 +96,50 @@ class AIArticleClassifier:
     # Public classify API                                                      #
     # ---------------------------------------------------------------------- #
 
+    def _run_offline_fallback(self, article: Article) -> ClassificationResult:
+        """Run deterministic heuristic classifier and return ClassificationResult with attempts=0."""
+        raw_text = self._generate_offline_fallback(article)
+        try:
+            parsed_json = self._extract_json_from_response(raw_text)
+            classification = AIArticleClassification.model_validate(parsed_json)
+            return ClassificationResult(
+                success=True,
+                classification=classification,
+                attempts=0,  # 0 = offline, no API call
+                raw_response=raw_text,
+            )
+        except Exception as exc:
+            return ClassificationResult(
+                success=False,
+                error_message=f"Offline fallback parse error: {exc}",
+                attempts=0,
+            )
+
     def classify(self, article: Article) -> ClassificationResult:
         """
-        Classify an article into structured format with one retry on malformed JSON.
+        Classify an article into structured format with one retry on recoverable API errors
+        (429, 500, 502, 503) or malformed JSON.
 
-        If the per-run cap has been reached, falls back to the deterministic
-        heuristic classifier without calling Gemini.
-
-        Raises:
-            GeminiRateLimitError: If two consecutive 429s are received.
+        If Gemini is disabled, max_articles cap is reached, or an unrecoverable API error
+        / rate limit occurs, falls back to the deterministic offline classifier for the
+        current article and all remaining candidates.
         """
         logger.info("Classifying article '%s' via Gemini AI...", article.title[:50])
 
-        # Enforce per-run cap — fall back to offline heuristic
-        if self._client and not self.mock_responder and self._live_call_count >= self.max_articles:
+        # Enforce per-run cap or forced offline mode — fall back to offline heuristic
+        if (
+            self._force_offline_mode
+            or self._live_call_count >= self.max_articles
+        ):
             logger.info(
-                "Gemini cap reached (%d articles). Using offline fallback for: %s",
-                self.max_articles, article.title[:50],
+                "Using offline classification fallback for: %s", article.title[:50],
             )
-            raw_text = self._generate_offline_fallback(article)
-            try:
-                parsed_json = self._extract_json_from_response(raw_text)
-                classification = AIArticleClassification.model_validate(parsed_json)
-                return ClassificationResult(
-                    success=True,
-                    classification=classification,
-                    attempts=0,  # 0 = offline, no API call
-                    raw_response=raw_text,
-                )
-            except Exception as exc:
-                return ClassificationResult(
-                    success=False,
-                    error_message=f"Offline fallback parse error: {exc}",
-                    attempts=0,
-                )
+            return self._run_offline_fallback(article)
 
-        # Live Gemini path — up to 2 attempts (1 initial + 1 retry on bad JSON)
+        # Live Gemini path — up to 2 attempts (1 initial + 1 retry on bad JSON/recoverable error)
         max_attempts = 2
         last_error: Optional[str] = None
         raw_text: Optional[str] = None
-        consecutive_429s: int = 0
 
         for attempt in range(1, max_attempts + 1):
             logger.debug(
@@ -162,7 +167,6 @@ class AIArticleClassifier:
                     classification.is_hard_business_event,
                     classification.is_investment_relevant,
                 )
-                consecutive_429s = 0
                 return ClassificationResult(
                     success=True,
                     classification=classification,
@@ -186,46 +190,49 @@ class AIArticleClassifier:
 
             except Exception as exc:
                 exc_str = str(exc)
-                is_rate_limit = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
 
-                if is_rate_limit:
-                    consecutive_429s += 1
-                    GeminiUsageLogger.record(
-                        stage="classification",
-                        model=self.model_name,
-                        success=False,
-                        http_status=429,
-                        retry_number=attempt - 1,
-                        error_summary="RESOURCE_EXHAUSTED",
-                    )
-                    if consecutive_429s >= 2:
-                        # Second consecutive 429 → stop immediately
-                        logger.error(
-                            "Two consecutive 429s for classification. Stopping Gemini calls."
-                        )
-                        raise GeminiRateLimitError(
-                            "Classification halted: two consecutive 429 RESOURCE_EXHAUSTED responses."
-                        )
-                    # First 429 → wait then retry
+                is_400_range = any(code in exc_str for code in ("400", "401", "403", "404"))
+                is_429 = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
+                is_5xx = any(code in exc_str for code in ("500", "502", "503", "UNAVAILABLE", "INTERNAL"))
+
+                http_code = 429 if is_429 else (503 if is_5xx else (403 if is_400_range else None))
+
+                GeminiUsageLogger.record(
+                    stage="classification",
+                    model=self.model_name,
+                    success=False,
+                    http_status=http_code,
+                    retry_number=attempt - 1,
+                    error_summary=exc_str[:120],
+                )
+
+                if is_400_range:
                     logger.warning(
-                        "Rate limit 429 on attempt %d for '%s'. Backing off %ds...",
-                        attempt, article.title[:40], self.RATE_LIMIT_BACKOFF_SECONDS,
+                        "Client/Auth error on attempt %d for '%s'. Switching to offline fallback: %s",
+                        attempt, article.title[:40], exc,
                     )
-                    time.sleep(self.RATE_LIMIT_BACKOFF_SECONDS)
-                    last_error = f"Rate limit (429) on attempt {attempt}"
+                    self._force_offline_mode = True
+                    return self._run_offline_fallback(article)
+
+                if attempt == 1 and (is_429 or is_5xx):
+                    backoff = self.RATE_LIMIT_BACKOFF_SECONDS if (is_429 and not self.mock_responder) else (2 if (is_5xx and not self.mock_responder) else 0)
+                    logger.warning(
+                        "API error (%s) on attempt 1 for '%s'. Backing off %ds before retry...",
+                        "429 Rate Limit" if is_429 else "5xx Server Error",
+                        article.title[:40],
+                        backoff,
+                    )
+                    if backoff > 0:
+                        time.sleep(backoff)
+                    last_error = f"API error on attempt 1: {exc}"
+                    continue
                 else:
-                    last_error = f"API error on attempt {attempt}: {exc}"
-                    GeminiUsageLogger.record(
-                        stage="classification",
-                        model=self.model_name,
-                        success=False,
-                        retry_number=attempt - 1,
-                        error_summary=exc_str[:120],
+                    logger.warning(
+                        "API error on attempt %d for '%s'. Switching to offline classifier for remaining candidates: %s",
+                        attempt, article.title[:40], exc,
                     )
-                    logger.error(
-                        "Unexpected classification exception (attempt %d): %s",
-                        attempt, exc, exc_info=True,
-                    )
+                    self._force_offline_mode = True
+                    return self._run_offline_fallback(article)
 
         logger.error(
             "Classification permanently rejected for '%s' after %d attempts: %s",
@@ -244,6 +251,7 @@ class AIArticleClassifier:
 
     def _call_model(self, article: Article, attempt: int = 1) -> str:
         """Execute model generation request or mock responder."""
+        self._live_call_count += 1
         # 1. Check for custom mock responder (used in tests/offline mode)
         if self.mock_responder:
             return self.mock_responder(article)

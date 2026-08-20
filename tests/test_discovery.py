@@ -114,6 +114,23 @@ class TestSearchQueryBuilder:
         assert "ft.com" in intl_domains
         assert "wsj.com" in intl_domains
 
+    def test_international_sources_order(self):
+        """Verify international sources order matches preferred extractable publishers order."""
+        intl_domains = [s.domain for s in INTERNATIONAL_SOURCES]
+        expected_order = [
+            "cnbc.com",
+            "apnews.com",
+            "bbc.com",
+            "marketwatch.com",
+            "theguardian.com",
+            "fortune.com",
+            "reuters.com",
+            "bloomberg.com",
+            "ft.com",
+            "wsj.com",
+        ]
+        assert intl_domains == expected_order
+
     def test_query_generation_with_site_filters(self):
         """Test generated queries include site filters."""
         queries = SearchQueryBuilder.build_query_strings("India", category="mergers")
