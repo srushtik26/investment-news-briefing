@@ -105,16 +105,16 @@ class ActiveCorroborator:
 
     # Corroboration-eligible sources for International
     INTL_CORROBORATION_DOMAINS = [
+        "cnbc.com",
+        "apnews.com",
+        "marketwatch.com",
+        "bbc.com",
+        "theguardian.com",
+        "fortune.com",
         "reuters.com",
         "bloomberg.com",
-        "cnbc.com",
         "ft.com",
         "wsj.com",
-        "apnews.com",
-        "theguardian.com",
-        "bbc.com",
-        "marketwatch.com",
-        "fortune.com",
     ]
 
     def __init__(self, extractor=None) -> None:

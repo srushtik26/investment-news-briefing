@@ -140,7 +140,7 @@ class ClassificationResult(BaseModel):
     )
     attempts: int = Field(
         default=1,
-        ge=1,
+        ge=0,
         description="Number of API attempts executed before concluding result",
     )
     raw_response: Optional[str] = Field(

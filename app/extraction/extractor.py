@@ -117,6 +117,7 @@ class ArticleExtractor:
             source_name=source_name,
             candidate_title=candidate_title,
             candidate_category=candidate_category,
+            candidate_pub_date=candidate_pub_date,
             status_code=status_code or 200,
         )
 

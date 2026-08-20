@@ -29,12 +29,15 @@ INDIA_SOURCES: List[TargetSource] = [
 ]
 
 INTERNATIONAL_SOURCES: List[TargetSource] = [
+    TargetSource(name="CNBC", domain="cnbc.com", country="International"),
+    TargetSource(name="AP News", domain="apnews.com", country="International"),
+    TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
+    TargetSource(name="BBC News", domain="bbc.com", country="International"),
+    TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Reuters", domain="reuters.com", country="International"),
     TargetSource(name="Bloomberg", domain="bloomberg.com", country="International"),
-    TargetSource(name="CNBC", domain="cnbc.com", country="International"),
     TargetSource(name="Financial Times", domain="ft.com", country="International"),
     TargetSource(name="Wall Street Journal", domain="wsj.com", country="International"),
-    TargetSource(name="AP News", domain="apnews.com", country="International"),
 ]
 
 
