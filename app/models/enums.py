@@ -29,3 +29,12 @@ class RelevanceGrade(str, Enum):
     MEDIUM = "medium"
     LOW = "low"
     IRRELEVANT = "irrelevant"
+
+
+class VerificationTier(str, Enum):
+    """Verification tier for news events."""
+
+    TWO_SOURCE_VERIFIED = "TWO_SOURCE_VERIFIED"
+    HIGH_CONFIDENCE_SINGLE_SOURCE = "HIGH_CONFIDENCE_SINGLE_SOURCE"
+    UNVERIFIED = "UNVERIFIED"
+

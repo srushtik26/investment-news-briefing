@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # Briefing Business Rules
     MAX_INDIA_STORIES: int = Field(default=5, ge=1, le=20, description="Max stories in India section")
     MAX_INTERNATIONAL_STORIES: int = Field(default=5, ge=1, le=20, description="Max stories in International section")
+    STORY_FRESHNESS_HOURS: float = Field(
+        default=24.0, ge=1.0, le=168.0, description="Max story age in hours for eligibility in final briefing (strictly 24h)"
+    )
+    DEDUP_LOOKBACK_DAYS: int = Field(
+        default=3, ge=1, le=30, description="Days to look back in history to prevent repeat stories (strictly 3 days)"
+    )
     STORY_LOOKBACK_DAYS: int = Field(default=3, ge=1, le=30, description="Days to look back to prevent repeat stories")
     MIN_INDEPENDENT_SOURCES: int = Field(
         default=2, ge=1, le=10, description="Minimum independent sources required for major event verification"

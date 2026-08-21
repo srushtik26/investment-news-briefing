@@ -212,16 +212,23 @@ class FinalValidationEngine:
                 ))
 
             # -------------------------------------------------------------
-            # CHECK 8: At least two independent sources exist
+            # CHECK 8: Two-source verified or high-confidence single-source
             # -------------------------------------------------------------
-            if event and len(event.article_ids) < 2:
-                check_results.append(ValidationCheckResult(
-                    check_id=8,
-                    check_name="At least two independent sources exist",
-                    passed=False,
-                    failure_reason=f"Event '{event.canonical_title}' has only {len(event.article_ids)} source(s); minimum 2 required",
-                    failed_story_id=story.event_id,
-                ))
+            if event:
+                from app.models.enums import VerificationTier
+                from app.verification.single_source import SingleSourceEvaluator
+                is_two_source = (event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED)
+                if not is_two_source:
+                    evaluator = SingleSourceEvaluator()
+                    is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art) if primary_art else (False, 0.0, "Missing primary article")
+                    if not is_eligible or event.verification_tier != VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
+                        check_results.append(ValidationCheckResult(
+                            check_id=8,
+                            check_name="At least two independent sources or high-confidence single source",
+                            passed=False,
+                            failure_reason=f"Event '{event.canonical_title}' lacks TWO_SOURCE_VERIFIED tier and fails high-confidence single criteria: {reason}",
+                            failed_story_id=story.event_id,
+                        ))
 
             # -------------------------------------------------------------
             # CHECK 9: No event appeared in previous 3 days
@@ -326,10 +333,12 @@ class FinalValidationEngine:
         # -------------------------------------------------------------
         # CHECK 10: No India company appears twice
         # -------------------------------------------------------------
+        from app.models.entity_sanitizer import sanitize_company_entities
         seen_india_comps: Set[str] = set()
         for story in payload.india_stories:
             event = events_lookup.get(story.event_id)
-            companies = event.companies_involved if event and event.companies_involved else [story.source]
+            raw_comps = event.companies_involved if event and event.companies_involved else []
+            companies = sanitize_company_entities(raw_comps, publisher=story.source)
             for comp in companies:
                 norm = normalize_entity_name(comp)
                 if norm in seen_india_comps and norm != "unspecified_entity":
@@ -341,6 +350,36 @@ class FinalValidationEngine:
                         failed_story_id=story.event_id,
                     ))
                 seen_india_comps.add(norm)
+
+        # -------------------------------------------------------------
+        # CHECK 8 (Section Ratio): MIN 3 two-source, MAX 2 single-source
+        # -------------------------------------------------------------
+        from app.models.enums import VerificationTier
+        for section_name, section_stories in [("India", payload.india_stories), ("International", payload.international_stories)]:
+            two_src_cnt = 0
+            single_src_cnt = 0
+            for s in section_stories:
+                ev = events_lookup.get(s.event_id)
+                if ev:
+                    if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED:
+                        two_src_cnt += 1
+                    elif ev.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
+                        single_src_cnt += 1
+            if strict_5_per_section and len(section_stories) == 5:
+                if two_src_cnt < 3:
+                    check_results.append(ValidationCheckResult(
+                        check_id=8,
+                        check_name=f"{section_name} section minimum 3 two-source verified stories",
+                        passed=False,
+                        failure_reason=f"{section_name} section has only {two_src_cnt} two-source verified stories (minimum 3 required, found {single_src_cnt} single-source)",
+                    ))
+                if single_src_cnt > 2:
+                    check_results.append(ValidationCheckResult(
+                        check_id=8,
+                        check_name=f"{section_name} section maximum 2 single-source stories",
+                        passed=False,
+                        failure_reason=f"{section_name} section has {single_src_cnt} single-source stories (maximum 2 permitted)",
+                    ))
 
         # -------------------------------------------------------------
         # CHECK 20: Final format is exactly correct

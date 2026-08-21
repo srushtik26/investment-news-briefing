@@ -434,6 +434,18 @@ class HTMLArticleParser:
 
             cleaned_paragraphs.append(text)
 
+        if not cleaned_paragraphs:
+            # Fallback for publishers that format articles with <div> and <br> instead of <p> tags (e.g. Economic Times)
+            raw_text = container.get_text(separator="\n", strip=True)
+            lines = [line.strip() for line in raw_text.split("\n") if len(line.strip()) >= 20]
+            cleaned_paragraphs = [
+                l for l in lines
+                if not any(l.lower().startswith(prefix) for prefix in (
+                    "click here to subscribe", "also read:", "follow us on", "read more:",
+                    "subscribe to our newsletter", "sign up for", "advertisement", "disclaimer:"
+                ))
+            ]
+
         return "\n\n".join(cleaned_paragraphs)
 
     def _infer_source_from_url(self, url: str) -> Optional[str]:

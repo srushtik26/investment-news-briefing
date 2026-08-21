@@ -75,6 +75,14 @@ class HardFilterEngine:
             article_title=article.title,
         )
 
+    def evaluate(
+        self,
+        article: Article,
+        now_utc: Optional[datetime] = None,
+    ) -> FilterResult:
+        """Alias for filter_article to ensure consistent API contract."""
+        return self.filter_article(article, now_utc=now_utc)
+
     def filter_candidates(
         self,
         articles: List[Article],

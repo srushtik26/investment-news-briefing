@@ -28,16 +28,21 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "ani", "pti", "the economic times", "business standard", "livemint", "financial express",
     "moneycontrol", "ndtv", "the hindu", "indian express", "fortune", "guardian",
     "financial times", "wall street journal", "wsj", "ft",
+    "controlling stake", "majority stake", "minority stake", "stake", "block deal",
+    "stake sale", "acquisition", "transaction", "bulk deal", "promoter stake sale",
+    "institutional stake sale", "equity", "completes acquisition", "completes",
 }
 
 # Prefix tokens to strip from proper noun matches (e.g. 'Wall Street Walmart' -> 'Walmart')
 PREFIXES_TO_STRIP: List[str] = [
     "wall street ", "stock market ", "market ", "shares of ", "shares in ",
     "reports of ", "exclusive: ", "view: ", "update: ", "breaking: ",
+    "completes acquisition of ", "acquires ", "buys ", "sale of ", "controlling stake in ",
 ]
 
 EVENT_ACTION_PATTERNS = [
     (r"\b(to buy|buys|acquires?|acquisition|takeover|merger|merges|buyout|stake purchase)\b", "acquisition"),
+    (r"\b(block deal|stake sale|equity changes hands|promoter stake sale|institutional stake sale|bulk deal)\b", "block deal"),
     (r"\b(net profit|profit rises|profit falls|revenue rises|revenue falls|earnings beat|earnings miss|q[1-4] results|quarterly profit)\b", "results"),
     (r"\b(raises funding|funding round|qip|rights issue|capital raise|funds raised)\b", "fundraise"),
     (r"(?:ipo|drhp|listing)", "ipo"),
@@ -63,10 +68,6 @@ class EventQueryBuilder:
         if not tok or len(tok) < 2:
             return None
 
-        # Check blacklist
-        if tok.lower() in GENERIC_ENTITY_BLACKLIST:
-            return None
-
         # Strip generic prefixes
         tok_low = tok.lower()
         for prefix in PREFIXES_TO_STRIP:
@@ -74,12 +75,25 @@ class EventQueryBuilder:
                 tok = tok[len(prefix):].strip()
                 tok_low = tok.lower()
 
+        # Strip reporting quarters/years from end of entity (e.g. 'Company X Q1' -> 'Company X')
+        for period in (" q1", " q2", " q3", " q4", " fy24", " fy25", " fy26", " fy27"):
+            if tok_low.endswith(period):
+                tok = tok[:-len(period)].strip()
+                tok_low = tok.lower()
+
+        # Strip legal company suffixes to extract clean corporate roots
+        for suffix in (" private limited", " pvt ltd", " limited", " ltd", " private", " pvt", " inc", " corp", " corporation"):
+            if tok_low.endswith(suffix):
+                tok = tok[:-len(suffix)].strip()
+                tok_low = tok.lower()
+
+        # Check blacklist
         if not tok or len(tok) < 2 or tok_low in GENERIC_ENTITY_BLACKLIST:
             return None
 
         # Discard multi-word phrases that are all lowercase or purely common dictionary words
         words = tok.split()
-        if len(words) > 3:
+        if len(words) > 4:
             return None
 
         return tok
@@ -100,20 +114,25 @@ class EventQueryBuilder:
                     clean_entities.append(c)
                     seen.add(c.lower())
 
-        # 2. Extract multi-word and single capitalized proper nouns from title
+        # 2. Extract multi-word proper nouns and alphanumeric corporate names from title
         title = article.title or ""
-        # Multi-word proper nouns (e.g., "Goldman Sachs", "LCN Capital", "Larsen & Toubro", "Rio Tinto")
-        multi = re.findall(r"\b[A-Z][a-zA-Z0-9&]+(?:\s+[A-Z][a-zA-Z0-9&]+)+\b", title)
-        for m in multi:
-            c = cls.clean_entity(m)
-            if c and c.lower() not in seen:
-                clean_entities.append(c)
-                seen.add(c.lower())
 
-        # Single uppercase capitalized words (e.g., "Walmart", "Target", "Lowe's")
-        singles = re.findall(r"\b[A-Z][a-zA-Z0-9']{2,}\b", title)
-        for s in singles:
-            c = cls.clean_entity(s)
+        # Pre-split title by major transaction verbs and prepositions to isolate corporate entity phrases
+        split_pattern = r"(?:\s+(?:completes acquisition of|acquisition of|deal to buy|agrees to buy|to acquire|to buy|acquires|buys|sells|offloads|invests in|in|of|for|from|via|with|and|by)\s+)"
+        segments = re.split(split_pattern, title, flags=re.IGNORECASE)
+
+        for seg in segments:
+            seg_clean = seg.strip(" :,;()-")
+            # Look for 1-4 capitalized or alphanumeric (e.g. 20Cube, 3M, 7-Eleven) word sequences in segment
+            for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)){0,3}\b", seg_clean):
+                c = cls.clean_entity(matched_str)
+                if c and c.lower() not in seen:
+                    clean_entities.append(c)
+                    seen.add(c.lower())
+
+        # Fallback multi-word regex across full title
+        for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)){1,3}\b", title):
+            c = cls.clean_entity(matched_str)
             if c and c.lower() not in seen:
                 clean_entities.append(c)
                 seen.add(c.lower())
@@ -151,9 +170,10 @@ class EventQueryBuilder:
         Construct a concise, high-precision anchor query.
         Used by both SerpAPICorroborator and ActiveCorroborator.
         """
+        title = article.title or ""
         entities = cls.extract_entities(article, event=event)
-        action = cls.detect_event_action(article.title)
-        numbers = cls.extract_numbers(article.title)
+        action = cls.detect_event_action(title)
+        numbers = cls.extract_numbers(title)
 
         primary_entity = entities[0] if entities else None
         second_entity = entities[1] if len(entities) >= 2 else None
@@ -164,20 +184,31 @@ class EventQueryBuilder:
         if second_entity and second_entity != primary_entity:
             query_parts.append(f'"{second_entity}"' if " " in second_entity else second_entity)
 
-        if action:
+        # Check for specific quarter in title (e.g. "Q1", "Q2", "Q3", "Q4")
+        quarter_match = re.search(r"\b(Q[1-4])\b", title, re.IGNORECASE)
+        if quarter_match:
+            query_parts.append(f'"{quarter_match.group(1).upper()}"')
+
+        # Check for specific earnings phrase in title (e.g. "adjusted profit", "net profit", "quarterly profit")
+        earnings_match = re.search(r"\b(adjusted profit|net profit|operating profit|quarterly profit|revenue rises|profit jumps|profit rises)\b", title, re.IGNORECASE)
+        if earnings_match:
+            query_parts.append(f'"{earnings_match.group(1).lower()}"')
+        elif action:
             query_parts.append(action)
 
-        # Distinctive financial facts
+        # Distinctive financial facts / percentages
         if numbers:
-            query_parts.append(numbers[0])
+            for num in numbers[:2]:
+                if num not in query_parts:
+                    query_parts.append(num)
 
-        if not query_parts and article.title:
+        if not query_parts and title:
             # Fallback: take clean headline words
             stopwords = {"the", "a", "an", "and", "for", "with", "its", "in", "on", "at", "to", "of", "is", "by", "from", "as", "after", "says"}
             tokens = [
-                w for w in re.findall(r"\b[a-zA-Z0-9']+\b", article.title)
+                w for w in re.findall(r"\b[a-zA-Z0-9']+\b", title)
                 if w.lower() not in stopwords and w.lower() not in GENERIC_ENTITY_BLACKLIST and len(w) > 2
             ]
-            query_parts = tokens[:5]
+            query_parts = tokens[:4]
 
         return " ".join(query_parts)

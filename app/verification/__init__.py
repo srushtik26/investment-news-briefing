@@ -11,6 +11,7 @@ from app.verification.corroborator import (
     CorroborationResult,
     reset_corroboration_counter,
     get_corroboration_count,
+    increment_corroboration_count,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
 )
 from app.verification.serpapi_corroborator import (
@@ -30,6 +31,7 @@ __all__ = [
     "CorroborationResult",
     "reset_corroboration_counter",
     "get_corroboration_count",
+    "increment_corroboration_count",
     "MAX_CORROBORATION_SEARCHES_PER_RUN",
     "SerpAPICorroborator",
     "reset_serpapi_counter",

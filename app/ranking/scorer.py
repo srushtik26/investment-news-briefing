@@ -46,7 +46,7 @@ class InvestmentRelevanceScorer:
             event: Verified Event model instance.
             source_count: Total independent sources confirming the event.
             is_multi_source_verified: Verification flag.
-            freshness_score: Article freshness score (1.0=0-24h, 0.8=24-48h, 0.5=48-72h).
+            freshness_score: Article freshness score (1.0=0-6h, 0.9=6-12h, 0.8=12-24h).
 
         Returns:
             ScoredEvent containing score breakdown and composite score.
@@ -67,16 +67,15 @@ class InvestmentRelevanceScorer:
             + (self.W_CORPORATE_SIGNIFICANCE * corp_score)
             + (self.W_SOURCE_QUALITY * source_score)
         )
-        # Freshness adjustment: fresh_0_24h=1.0, fresh_24_48h=0.8, stale_48_72h=0.5
-        # Penalises older stories without completely zeroing them out
-        freshness_multiplier = 0.7 + (0.3 * freshness_score)  # range: [0.85, 1.0]
+        # Freshness adjustment: fresh_0_6h=1.0, fresh_6_12h=0.9, fresh_12_24h=0.8
+        freshness_multiplier = 0.7 + (0.3 * freshness_score)
         total_score = round(raw_score * freshness_multiplier, 2)
         total_score = max(0.0, min(100.0, total_score))
 
         freshness_label = (
-            "fresh_0_24h" if freshness_score >= 1.0
-            else "fresh_24_48h" if freshness_score >= 0.8
-            else "stale_48_72h"
+            "fresh_0_6h" if freshness_score >= 1.0
+            else "fresh_6_12h" if freshness_score >= 0.9
+            else "fresh_12_24h"
         )
         rationale = (
             f"Mag: {mag_score:.0f} (30%), Mkt: {market_score:.0f} (25%), "
@@ -266,6 +265,8 @@ def calculate_corroboration_priority(event: Event, primary_article: Optional[Art
     # 2. Check for Hard Event Types (60 - 100)
     if re.search(r"\b(to buy|buys|acquires?|acquisition|merger|merges|takeover|buyout|stake purchase|all-cash deal|demerger|spin-off)\b", text):
         base = 90.0
+    elif re.search(r"\b(block deal|stake sale|equity changes hands|promoter stake sale|institutional stake sale|bulk deal)\b", text):
+        base = 80.0
     elif re.search(r"\b(rbi|sebi|cci|sec|antitrust|doj|penalty|fine|ban|order|charges|probe|inquiry)\b", text):
         base = 85.0
     elif re.search(r"\b(raises funding|funding round|qip|rights issue|capital raise|funds raised|files for ipo|files drhp|ipo allotment|shares list at|ipo listing)\b", text):

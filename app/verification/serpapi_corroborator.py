@@ -16,7 +16,8 @@ Design & Cost Control Principles:
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import requests
 
@@ -165,6 +166,28 @@ class SerpAPICorroborator:
             _serpapi_query_cache[full_query] = []
             return []
 
+    def discover(self, query: str) -> List[Any]:
+        """
+        Execute Google News search via SerpAPI for discovery, returning DiscoveredArticle objects.
+        Consumes from the same global MAX_SERPAPI_SEARCHES_PER_RUN budget.
+        """
+        from app.discovery.models import DiscoveredArticle
+        raw_items = self._search_serpapi(query)
+        discovered = []
+        for item in raw_items:
+            try:
+                da = DiscoveredArticle(
+                    title=item["title"],
+                    url=item["url"],
+                    source=item.get("source") or "SerpAPI Discovery",
+                    search_query=query,
+                    country="India",
+                )
+                discovered.append(da)
+            except Exception as e:
+                logger.debug("Failed to create DiscoveredArticle from SerpAPI item: %s", e)
+        return discovered
+
     def _record_rejection(self, reason: str) -> None:
         """Record canonical SerpAPI candidate rejection reason."""
         global _serpapi_rejection_counts
@@ -219,6 +242,47 @@ class SerpAPICorroborator:
             if not is_valid_u:
                 self._record_rejection("NON_ARTICLE_URL")
                 continue
+
+            # 3. Check for entity mismatch / obviously irrelevant result before downloading/extracting
+            cand_title_low = (cand.get("title") or "").lower()
+            cand_url_low = cand_url.lower()
+
+            # 2b. Pre-Extraction Entity Overlap Check
+            target_entities = set()
+            if event and event.companies_involved:
+                for comp in event.companies_involved:
+                    comp_clean = comp.strip().lower()
+                    if len(comp_clean) >= 3 and comp_clean not in ("unspecified", "india", "company", "bank", "holdings", "group", "ltd", "limited"):
+                        target_entities.add(comp_clean)
+                        first_word = comp_clean.split()[0]
+                        if len(first_word) >= 3 and first_word not in ("the", "and", "new", "for"):
+                            target_entities.add(first_word)
+
+            from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
+            for ent in EventQueryBuilder.extract_entities(primary_article):
+                ent_clean = ent.strip().lower()
+                if len(ent_clean) >= 3 and ent_clean not in GENERIC_ENTITY_BLACKLIST:
+                    target_entities.add(ent_clean)
+                    first_word = ent_clean.split()[0]
+                    if len(first_word) >= 3 and first_word not in ("the", "and", "new", "for"):
+                        target_entities.add(first_word)
+
+            # Instant reject for commodity price tracker / generic noise URLs
+            if re.search(r"(fuel-price|diesel-price|petrol-price|gold-rate|silver-rate|weather|horoscope|live-cricket)", cand_url_low) or \
+               re.search(r"\b(fuel price|diesel price|petrol price|gold rate|silver rate|weather today|horoscope)\b", cand_title_low):
+                logger.info("  -> ENTITY_MISMATCH_PRE_EXTRACTION: Commodity/utility page rejected: '%s'", cand.get("title", "")[:45])
+                self._record_rejection("ENTITY_MISMATCH_PRE_EXTRACTION")
+                continue
+
+            if target_entities:
+                has_entity_match = any(
+                    ent in cand_title_low or ent in cand_url_low
+                    for ent in target_entities
+                )
+                if not has_entity_match:
+                    logger.info("  -> ENTITY_MISMATCH_PRE_EXTRACTION: '%s' lacks target entities %s", cand.get("title", "")[:45], target_entities)
+                    self._record_rejection("ENTITY_MISMATCH_PRE_EXTRACTION")
+                    continue
 
             try:
                 res = extractor.extract(

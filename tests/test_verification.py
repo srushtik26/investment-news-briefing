@@ -31,11 +31,12 @@ def sample_event() -> Event:
 @pytest.fixture
 def hdfc_bs_article() -> Article:
     """Fixture for Business Standard article on HDFC Bank."""
+    from datetime import timedelta
     return Article(
         title="HDFC Bank Q1 Net Profit Surges 18% YoY to ₹16,175 Crore on Strong NII",
         url="https://www.business-standard.com/companies/results/hdfc-bank-q1-results-12345.html",
         source_name="Business Standard",
-        published_at=datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc),
+        published_at=datetime.now(timezone.utc) - timedelta(hours=2),
         content_text=(
             "HDFC Bank on Tuesday reported an 18 per cent year-on-year growth in standalone net profit "
             "at ₹16,175 crore for the first quarter. Net interest income grew 26 per cent to ₹29,837 crore."
@@ -50,11 +51,12 @@ def hdfc_bs_article() -> Article:
 @pytest.fixture
 def hdfc_et_article() -> Article:
     """Fixture for Economic Times article on HDFC Bank."""
+    from datetime import timedelta
     return Article(
         title="HDFC Bank Q1 Results: Net Profit Rises 18% to ₹16,175 Crore; GNPA Stable at 1.33%",
         url="https://economictimes.indiatimes.com/industry/banking/hdfc-bank-q1-profit-12345.cms",
         source_name="The Economic Times",
-        published_at=datetime(2026, 8, 18, 9, 15, tzinfo=timezone.utc),
+        published_at=datetime.now(timezone.utc) - timedelta(hours=2),
         content_text=(
             "Private lender HDFC Bank on Tuesday announced an 18% rise in its net profit to ₹16,175 crore. "
             "Asset quality remained stable with gross NPAs coming in at 1.33%."

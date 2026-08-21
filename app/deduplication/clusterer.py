@@ -63,18 +63,24 @@ class EventClusterer:
 
             # Synthesize canonical title and description with deterministic region classification
             from app.classification.region_classifier import EventRegionClassifier
+            from app.verification.query_builder import EventQueryBuilder
+            from app.models.entity_sanitizer import sanitize_company_entities
+
+            extracted_entities = EventQueryBuilder.extract_entities(primary_art)
+            clean_comps = sanitize_company_entities(extracted_entities, publisher=primary_art.source_name)
+
             region_classifier = EventRegionClassifier()
             event_cat = region_classifier.classify(
                 title=primary_art.title,
                 content=primary_art.content_text,
                 financial_figures=sorted(list(all_facts))[:5],
-                companies=[primary_art.source_name] if not primary_art.author else [],
+                companies=clean_comps,
             )
 
             event = Event(
                 canonical_title=primary_art.title,
                 description=primary_art.content_text[:300] if primary_art.content_text else primary_art.title,
-                companies_involved=[primary_art.source_name] if not primary_art.author else [],
+                companies_involved=clean_comps,
                 financial_figures=sorted(list(all_facts))[:5],
                 event_category=event_cat,
                 article_ids=article_ids,

@@ -46,29 +46,17 @@ class TestDateFilterRule:
         result = rule.evaluate(base_article, now_utc=eval_time)
         assert result.is_accepted is True
 
-    def test_stale_article_rejected_midweek(self, base_article: Article):
-        """Test article older than 72h is rejected on midweek days."""
-        # Evaluation on Wednesday (weekday=2)
+    def test_stale_article_rejected(self, base_article: Article):
+        """Test article older than 24h is rejected."""
         eval_time = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
-        # Article published 80 hours prior — exceeds the 72h window
-        base_article.published_at = eval_time - timedelta(hours=80)
+        # Article published 25 hours prior — exceeds the 24h window
+        base_article.published_at = eval_time - timedelta(hours=25)
 
         rule = DateFilterRule()
         result = rule.evaluate(base_article, now_utc=eval_time)
         assert result.is_accepted is False
         assert result.rule_failed == "DATE"
-        assert "exceeds allowable 72h freshness window" in result.rejection_reason
-
-    def test_monday_weekend_lookback_accepted(self, base_article: Article):
-        """Test Friday story (65h old) is accepted on Monday morning evaluation."""
-        # Evaluation on Monday at 08:00 UTC (weekday=0)
-        monday_eval_time = datetime(2026, 8, 17, 8, 0, tzinfo=timezone.utc)
-        # Published on Friday 15:00 UTC (65 hours prior)
-        base_article.published_at = monday_eval_time - timedelta(hours=65)
-
-        rule = DateFilterRule()
-        result = rule.evaluate(base_article, now_utc=monday_eval_time)
-        assert result.is_accepted is True
+        assert "exceeds allowable 24h freshness window" in result.rejection_reason
 
     def test_missing_or_unverified_date_rejected(self, base_article: Article):
         """Test unverified or missing publication date is rejected."""
@@ -289,6 +277,7 @@ class TestHardFilterEngine:
         """Test batch processing separating valid articles from rejected articles."""
         # 1. Valid article
         valid_art = base_article.model_copy(deep=True)
+        valid_art.published_at = datetime.now(timezone.utc) - timedelta(hours=2)
 
         # 2. Stale article (>72h)
         stale_art = base_article.model_copy(deep=True)
@@ -296,10 +285,12 @@ class TestHardFilterEngine:
 
         # 3. Analyst upgrade noise article
         noise_art = base_article.model_copy(deep=True)
+        noise_art.published_at = datetime.now(timezone.utc) - timedelta(hours=2)
         noise_art.title = "Jefferies Upgrades HDFC Bank to Buy with Target of Rs 2000"
 
         # 4. Non-article topic URL
         topic_art = base_article.model_copy(deep=True)
+        topic_art.published_at = datetime.now(timezone.utc) - timedelta(hours=2)
         topic_art.url = "https://economictimes.indiatimes.com/topic/banking"
 
         engine = HardFilterEngine()

@@ -52,11 +52,12 @@ class TestEventFingerprintAndSimilarity:
         Business Standard: 'Company X Q1 profit jumps 15%'
         Must evaluate as the same underlying event.
         """
+        from datetime import timedelta
         art_reuters = Article(
             title="Company X profit rises 15%",
             url="https://www.reuters.com/company-x-results",
             source_name="Reuters",
-            published_at=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+            published_at=datetime.now(timezone.utc) - timedelta(hours=2),
             content_text="Company X reported a 15% rise in quarterly net profit.",
             category=NewsCategory.INTERNATIONAL,
             is_verified_url=True,
@@ -68,7 +69,7 @@ class TestEventFingerprintAndSimilarity:
             title="Company X Q1 profit jumps 15%",
             url="https://www.business-standard.com/company-x-q1",
             source_name="Business Standard",
-            published_at=datetime(2026, 8, 18, 8, 15, tzinfo=timezone.utc),
+            published_at=datetime.now(timezone.utc) - timedelta(hours=2),
             content_text="Company X announced its Q1 net profit jumped 15% YoY.",
             category=NewsCategory.INDIA,
             is_verified_url=True,

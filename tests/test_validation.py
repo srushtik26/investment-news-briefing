@@ -7,7 +7,7 @@ import pytest
 
 from app.ai.models import BriefingEditorialPayload, EditorialStorySelection
 from app.models.article import Article
-from app.models.enums import NewsCategory
+from app.models.enums import NewsCategory, VerificationTier
 from app.models.event import Event
 from app.deduplication.fingerprint import generate_event_fingerprint
 from app.deduplication.history import HistoryStore
@@ -73,6 +73,7 @@ def valid_briefing_fixtures():
             financial_figures=[f"₹{i * 1000} crore", f"{10 + i}%"],
             event_category=NewsCategory.INDIA,
             article_ids=[art_id1, art_id2],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
         )
         events_lookup[evt_id] = event
 
@@ -132,6 +133,7 @@ def valid_briefing_fixtures():
             financial_figures=[f"${i}.5 billion"],
             event_category=NewsCategory.INTERNATIONAL,
             article_ids=[art_id1, art_id2],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
         )
         events_lookup[evt_id] = event
 
@@ -266,9 +268,10 @@ class TestFinalValidationEngine:
         assert report.failed_check_id == 7
 
     def test_check_8_fails_on_single_source_event(self, valid_briefing_fixtures):
-        """Test check 8 fails if an event has only 1 source."""
+        """Test check 8 fails if an event has only 1 source and lacks verified tier."""
         payload, events_map, articles_map, cand_urls = valid_briefing_fixtures
         events_map["evt-in-1"].article_ids = ["art-in-a-1"]  # Only 1 source
+        events_map["evt-in-1"].verification_tier = VerificationTier.UNVERIFIED
 
         engine = FinalValidationEngine()
         report = engine.validate_briefing(
@@ -280,7 +283,7 @@ class TestFinalValidationEngine:
 
         assert report.status == ValidationStatus.FAILED
         assert report.failed_check_id == 8
-        assert "minimum 2 required" in (report.failure_reason or "")
+        assert "lacks TWO_SOURCE_VERIFIED tier" in (report.failure_reason or "") or "minimum 3 required" in (report.failure_reason or "")
 
     def test_check_9_fails_on_3_day_history_repeat(self, valid_briefing_fixtures):
         """Test check 9 fails when story already appeared in previous 3 days."""

@@ -25,7 +25,17 @@ def normalize_entity_name(name: Optional[str]) -> str:
     cleaned = re.sub(r"\b(ltd|limited|inc|corp|corporation|plc|nv|sa|llc|pvt|co)\b", "", cleaned)
     cleaned = re.sub(r"[^\w\s]", "", cleaned)
     cleaned = "_".join(cleaned.split())
-    return cleaned or "unspecified_entity"
+    if not cleaned:
+        return "unspecified_entity"
+
+    KNOWN_ENTITY_ALIASES = {
+        "larsen_toubro": "lt",
+        "larsen_and_toubro": "lt",
+        "state_bank_of_india": "sbi",
+        "one97_communications": "paytm",
+        "tata_consultancy_services": "tcs",
+    }
+    return KNOWN_ENTITY_ALIASES.get(cleaned, cleaned)
 
 
 def normalize_metric_facts(text: str) -> List[str]:

@@ -42,14 +42,18 @@ class DateFilterRule(BaseFilterRule):
     accommodate Friday/weekend market developments. Never guesses dates.
     """
 
-    DEFAULT_LOOKBACK_HOURS = 72
-    MONDAY_LOOKBACK_HOURS = 96
+    DEFAULT_LOOKBACK_HOURS = 24.0
+
+    @property
+    def max_age_hours(self) -> float:
+        from config import get_settings
+        return float(getattr(get_settings(), "STORY_FRESHNESS_HOURS", self.DEFAULT_LOOKBACK_HOURS))
 
     # Freshness score thresholds (used downstream in Stage 7 ranking)
     FRESHNESS_BUCKETS = [
-        (24,  1.0, "fresh_0_24h"),
-        (48,  0.8, "fresh_24_48h"),
-        (72,  0.5, "stale_48_72h"),
+        (6,   1.0, "fresh_0_6h"),
+        (12,  0.9, "fresh_6_12h"),
+        (24,  0.8, "fresh_12_24h"),
     ]
 
     @property
@@ -61,7 +65,7 @@ class DateFilterRule(BaseFilterRule):
         for max_hours, score, label in self.FRESHNESS_BUCKETS:
             if age_hours <= max_hours:
                 return score, label
-        return 0.0, "stale_72h_plus"
+        return 0.0, "stale_24h_plus"
 
     def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
         current_time = now_utc or datetime.now(timezone.utc)
@@ -96,9 +100,8 @@ class DateFilterRule(BaseFilterRule):
                 rejection_reason=f"Publication timestamp is in the future ({pub_time.isoformat()} > {current_time.isoformat()})",
             )
 
-        # 3. Determine allowable lookback window (Extended for Monday morning briefing)
-        is_monday = current_time.weekday() == 0
-        allowed_hours = self.MONDAY_LOOKBACK_HOURS if is_monday else self.DEFAULT_LOOKBACK_HOURS
+        # 3. Determine allowable lookback window (Strictly 24 hours)
+        allowed_hours = self.max_age_hours
 
         age_seconds = (current_time - pub_time).total_seconds()
         age_hours = max(0.0, age_seconds / 3600.0)
@@ -106,7 +109,7 @@ class DateFilterRule(BaseFilterRule):
 
         if age_hours > allowed_hours:
             logger.debug(
-                "DATE REJECT | TITLE: '%s' | PUBLISHER: %s | AGE: %.1fh | RULE: DATE | REASON: Exceeds %dh window",
+                "DATE REJECT | TITLE: '%s' | PUBLISHER: %s | AGE: %.1fh | RULE: DATE | REASON: Exceeds %.0fh window",
                 article.title[:60], article.source_name, age_hours, allowed_hours,
             )
             return FilterResult(
@@ -114,10 +117,7 @@ class DateFilterRule(BaseFilterRule):
                 article_url=article.url,
                 article_title=article.title,
                 rule_failed=self.rule_name,
-                rejection_reason=(
-                    f"Article published {age_hours:.1f}h ago exceeds allowable {allowed_hours}h freshness window"
-                    f"{' (Monday weekend lookback applied)' if is_monday else ''}"
-                ),
+                rejection_reason=f"Article published {age_hours:.1f}h ago exceeds allowable {allowed_hours:.0f}h freshness window",
             )
 
         # Store freshness metadata on the article for downstream ranking
@@ -255,6 +255,9 @@ class URLFilterRule(BaseFilterRule):
         r"/(newsletters?|bulletins?|daily-brief|unsubscribe|opt-out|email-preferences?)/", # Newsletter / opt-out
         r"/(live-blog|liveblog|live-updates|live-coverage)/",                 # Live commentary feeds
         r"/(search|find|query)/",                                             # Search result directories
+        r"/(investing/stock/|stockpricequote/|share-price/|quotes?/|ticker/|company-profile/)", # Stock quotes and market data
+        r"/stocks/[^/]+/(infocompanyhistory|companyid|financials|overview|price|quote)", # Exchange company overview pages
+        r"/stocks-[^/]+-share-price",                                         # Livemint share price pages
         r"\.(pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp4|mp3|avi|mov|exe)$",         # Non-HTML document/media files
     ]
 
@@ -366,7 +369,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "stake_and_investment",
-            r"\b(buys stake|stake purchase|stake sale|block deal|bulk deal|promoter increases stake|invests in|investment in|invests\b|investment\b|plant investment|capacity expansion|strategic investment)\b",
+            r"\b(buys stake|stake purchase|stake sale|block deal|bulk deal|equity changes hands|promoter stake sale|institutional stake sale|promoter increases stake|invests in|investment in|invests\b|investment\b|plant investment|capacity expansion|strategic investment|divestment|asset sale)\b",
         ),
         (
             "fundraises_qips",

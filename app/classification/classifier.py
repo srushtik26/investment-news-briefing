@@ -156,17 +156,17 @@ class AIArticleClassifier:
         is_hard_event = False
         is_inv_rel = False
 
-        # Clear Earnings
-        if re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings beat|earnings miss)\b", combined_lower):
-            if nums or pcts:
-                event_type = ArticleEventType.EARNINGS
+        # Clear M&A / Takeovers / Asset Sales / Stake Transactions (Check first to avoid misclassifying sales as earnings)
+        if re.search(r"\b(to buy|buys|bought|sold|sale|sells|acquires?|acquisition|merger|takeover|buyout|demerger|spin-off|all-cash deal|stake sale|stake purchase|block deal)\b", combined_lower):
+            if len(identified_companies) >= 1 or nums:
+                event_type = ArticleEventType.MA
                 is_hard_event = True
                 is_inv_rel = True
 
-        # Clear M&A / Takeovers
-        elif re.search(r"\b(to buy|buys|acquires?|acquisition|merger|takeover|buyout|demerger|spin-off|all-cash deal)\b", combined_lower):
-            if len(identified_companies) >= 1 or nums:
-                event_type = ArticleEventType.MA
+        # Clear Earnings (Requires concrete earnings terminology)
+        elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings beat|earnings miss|quarterly results|annual results|financial results)\b", combined_lower):
+            if nums or pcts:
+                event_type = ArticleEventType.EARNINGS
                 is_hard_event = True
                 is_inv_rel = True
 
@@ -333,6 +333,10 @@ class AIArticleClassifier:
                 is_400_range = any(code in exc_str for code in ("400", "401", "403", "404"))
                 is_429 = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
                 is_5xx = any(code in exc_str for code in ("500", "502", "503", "UNAVAILABLE", "INTERNAL"))
+                is_daily_quota = is_429 and any(
+                    marker.lower() in exc_str.lower()
+                    for marker in ("generaterequestsperday", "quotaid", "daily quota", "per day", "freetier")
+                )
 
                 http_code = 429 if is_429 else (503 if is_5xx else (403 if is_400_range else None))
 
@@ -345,11 +349,17 @@ class AIArticleClassifier:
                     error_summary=exc_str[:120],
                 )
 
-                if is_400_range:
-                    logger.warning(
-                        "Client/Auth error on attempt %d for '%s'. Switching to offline fallback: %s",
-                        attempt, article.title[:40], exc,
-                    )
+                if is_400_range or is_daily_quota:
+                    if is_daily_quota:
+                        logger.warning(
+                            "GEMINI_DAILY_QUOTA_EXHAUSTED on attempt %d for '%s'. Switching immediately to offline fallback without retries.",
+                            attempt, article.title[:40],
+                        )
+                    else:
+                        logger.warning(
+                            "Client/Auth error on attempt %d for '%s'. Switching to offline fallback: %s",
+                            attempt, article.title[:40], exc,
+                        )
                     self._force_offline_mode = True
                     return self._run_offline_fallback(article)
 
@@ -448,50 +458,63 @@ class AIArticleClassifier:
 
     def _generate_offline_fallback(self, article: Article) -> str:
         """Deterministic heuristic fallback when no API key is present."""
+        from app.verification.query_builder import EventQueryBuilder
+
         title_lower = article.title.lower()
         content_lower = (article.content_text or "").lower()
         combined = f"{title_lower} {content_lower}"
 
-        event_type = "OTHER"
-        if "profit" in combined or "revenue" in combined or "results" in combined:
-            event_type = "EARNINGS"
-        elif "demerger" in combined or "merger" in combined or "acquire" in combined or "acquisition" in combined:
-            event_type = "M&A"
-        elif "qip" in combined or "raise" in combined or "funding" in combined:
-            event_type = "FUNDRAISING"
-        elif "rbi" in combined or "sebi" in combined or "penalty" in combined:
-            event_type = "REGULATORY"
-        elif "inflation" in combined or "gdp" in combined or "cpi" in combined:
-            event_type = "MACRO"
-        elif "appoint" in combined or "cfo" in combined or "ceo" in combined:
-            event_type = "LEADERSHIP"
-
         # Extract simple numbers and percentages
         pcts = re.findall(r"\b\d+(?:\.\d+)?%", combined)[:3]
         nums = re.findall(
-            r"(?:₹|\$|rs\.?\s*)\s*[\d,]+(?:\.\d+)?\s*(?:crore|cr|billion|million|b|m)?",
+            r"(?:₹|\$|€|£|rs\.?\s*)\s*[\d,]+(?:\.\d+)?\s*(?:crore|cr|billion|million|b|m)?",
             combined,
             re.IGNORECASE,
         )[:3]
 
-        companies = []
-        if article.source_name:
-            for candidate in ("Tata Motors", "HDFC Bank", "Reliance", "L&T", "Nvidia", "Rio Tinto", "Infosys"):
-                if candidate.lower() in combined:
-                    companies.append(candidate)
+        # Dynamic entity extraction using shared EventQueryBuilder
+        companies = EventQueryBuilder.extract_entities(article)
+
+        is_stake_trans = bool(re.search(
+            r"\b(block deal|stake sale|equity changes hands|promoter stake sale|institutional stake sale|stake purchase|bulk deal|sells .*stake|buys .*stake)\b",
+            combined,
+        ))
+        is_ma_trans = bool(re.search(
+            r"\b(sold|sale|sells|demerger|merger|acquire|acquisition|to buy|buys|bought|takeover|buyout|spin-off)\b",
+            combined,
+        ))
+
+        event_type = "OTHER"
+        if is_stake_trans or is_ma_trans:
+            event_type = "M&A"
+        elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings|quarterly results|annual results)\b", combined):
+            event_type = "EARNINGS"
+        elif "qip" in combined or "raise" in combined or "funding" in combined or "rights issue" in combined:
+            event_type = "FUNDRAISING"
+        elif "rbi" in combined or "sebi" in combined or "penalty" in combined or "cci" in combined or "order" in combined:
+            event_type = "REGULATORY"
+        elif "inflation" in combined or "gdp" in combined or "cpi" in combined:
+            event_type = "MACRO"
+        elif "appoint" in combined or "cfo" in combined or "ceo" in combined or "resigns" in combined:
+            event_type = "LEADERSHIP"
+        elif "plant" in combined or "capex" in combined or "expansion" in combined:
+            event_type = "M&A"
+
+        is_hard = event_type not in ("OPINION", "MARKET", "ANALYST", "OTHER") or (is_stake_trans and bool(nums or pcts or companies))
+        is_invest_rel = event_type in ("EARNINGS", "M&A", "FUNDRAISING", "REGULATORY", "MACRO", "LEADERSHIP") or is_stake_trans
 
         payload = {
             "event_type": event_type,
             "company_names": companies,
             "financial_numbers": nums,
             "percentages": pcts,
-            "deal_value": nums[0] if nums and event_type in ("M&A", "FUNDRAISING") else None,
+            "deal_value": nums[0] if nums and (event_type in ("M&A", "FUNDRAISING") or is_stake_trans) else None,
             "market_indices": ["Nifty 50"] if "nifty" in combined else [],
             "commodity_prices": ["Brent Crude"] if "crude" in combined or "oil" in combined else [],
             "currency_values": [],
             "key_outcome": f"{article.title}.",
-            "is_hard_business_event": event_type not in ("OPINION", "MARKET", "ANALYST", "OTHER"),
+            "is_hard_business_event": is_hard,
             "has_specific_quantified_impact": bool(nums or pcts),
-            "is_investment_relevant": event_type in ("EARNINGS", "M&A", "FUNDRAISING", "REGULATORY", "MACRO"),
+            "is_investment_relevant": is_invest_rel,
         }
         return json.dumps(payload)

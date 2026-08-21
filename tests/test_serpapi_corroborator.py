@@ -2,7 +2,7 @@
 Unit tests for SerpAPI Secondary Corroboration Fallback using Mocks.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -41,7 +41,7 @@ def primary_article() -> Article:
         title="Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium",
         url="https://www.reuters.com/rio-tinto-arcadium",
         source_name="Reuters",
-        published_at=datetime(2026, 8, 18, 7, 0, tzinfo=timezone.utc),
+        published_at=datetime.now(timezone.utc) - timedelta(hours=2),
         content_text="Rio Tinto has reached a definitive agreement to acquire Arcadium Lithium for $6.7 billion.",
         category=NewsCategory.INTERNATIONAL,
     )
@@ -72,7 +72,7 @@ def test_serpapi_success_with_mocked_response(
                 "title": "Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium in Cash Deal",
                 "link": "https://www.cnbc.com/rio-tinto-arcadium-deal",
                 "source": {"name": "CNBC"},
-                "date": "2026-08-18T08:00:00Z",
+                "date": "2 hours ago",
             }
         ]
     }
@@ -86,7 +86,7 @@ def test_serpapi_success_with_mocked_response(
         title="Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium in Cash Deal",
         url="https://www.cnbc.com/rio-tinto-arcadium-deal",
         source_name="CNBC",
-        published_at=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        published_at=datetime.now(timezone.utc) - timedelta(hours=2),
         content_text="Mining giant Rio Tinto announced it will purchase US-based lithium producer Arcadium Lithium in a deal valued at 6.7 billion dollars. The all-cash offer represents a 90% premium to Arcadium's closing price, expanding Rio's portfolio in energy transition metals.",
         category=NewsCategory.INTERNATIONAL,
     )
@@ -170,7 +170,7 @@ def test_serpapi_observability_counters(mock_get, sample_event: Event, primary_a
         title="Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium in Cash Deal",
         url="https://www.cnbc.com/rio-tinto-arcadium-deal",
         source_name="CNBC",
-        published_at=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        published_at=datetime.now(timezone.utc) - timedelta(hours=2),
         content_text="Mining giant Rio Tinto announced it will purchase US-based lithium producer Arcadium Lithium in a deal valued at 6.7 billion dollars.",
         category=NewsCategory.INTERNATIONAL,
     )

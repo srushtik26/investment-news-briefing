@@ -199,6 +199,31 @@ class TwoSourceVerifier:
         t1 = art1.title.lower()
         t2 = art2.title.lower()
 
+        # Step 0: Non-article candidate / stock quote URL validation
+        from app.filtering.rules import URLFilterRule
+        for art, label in ((art1, "Primary"), (art2, "Secondary")):
+            valid_url, url_reason = URLFilterRule.is_valid_url(art.url)
+            if not valid_url:
+                return False, 0.0, f"NON_ARTICLE_URL: {label} article URL is invalid ({url_reason})"
+            t_low = art.title.lower()
+            if re.search(r"\b(stock price|stock quote|share price today|market data|company profile|ticker quote)\b", t_low) and not any(action in t_low for action in ("buys", "acquires", "acquisition", "profit", "merger", "results", "quarterly")):
+                return False, 0.0, f"NON_ARTICLE_URL: {label} article title indicates a generic stock price/quote page ('{art.title[:45]}')"
+
+        # Step 0b: 24-hour freshness policy verification for both sources
+        from config import get_settings
+        settings = get_settings()
+        max_freshness_hours = getattr(settings, "STORY_FRESHNESS_HOURS", 24.0)
+        now_utc = datetime.now(timezone.utc)
+        for art, label in ((art1, "Primary"), (art2, "Secondary")):
+            if art.published_at:
+                pub_time = art.published_at
+                if pub_time.tzinfo is None:
+                    pub_time = pub_time.replace(tzinfo=timezone.utc)
+                age_hours = max(0.0, (now_utc - pub_time).total_seconds() / 3600.0)
+                if age_hours > max_freshness_hours:
+                    err_code = "STALE_PRIMARY_SOURCE" if label == "Primary" else "STALE_SECOND_SOURCE"
+                    return False, 0.0, f"{err_code}: {label} article published {age_hours:.1f}h ago exceeds allowable {max_freshness_hours:.0f}h freshness window"
+
         # Step 1: Detect Event Categories & Check Incompatibility
         cats1 = self.detect_event_categories(art1)
         cats2 = self.detect_event_categories(art2)
@@ -210,10 +235,27 @@ class TwoSourceVerifier:
                     if c2 in incompatible and not (cats1.intersection(cats2)):
                         return False, 0.0, f"EVENT_TYPE_MISMATCH: Incompatible event types ('{c1}' vs '{c2}')"
 
-        # Step 2: Shared Company / Entity Presence
+        # Step 2: Shared Company / Entity Presence using EventQueryBuilder
+        from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
+
+        entities1 = EventQueryBuilder.extract_entities(art1)
+        entities2 = EventQueryBuilder.extract_entities(art2)
+
+        set_ent1 = {e.lower().strip() for e in entities1 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST}
+        set_ent2 = {e.lower().strip() for e in entities2 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST}
+
+        # Check direct entity matches or partial company root matches (e.g. "Piramal Pharma" / "Piramal")
+        shared_entities = set()
+        for e1 in set_ent1:
+            for e2 in set_ent2:
+                if e1 == e2 or (len(e1) >= 4 and len(e2) >= 4 and (e1 in e2 or e2 in e1)):
+                    shared_entities.add(e1)
+
         stopwords = {
             "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from", "as",
-            "over", "under", "after", "before", "amid", "says", "said", "reports", "reported", "shows", "shown", "deal"
+            "over", "under", "after", "before", "amid", "says", "said", "reports", "reported", "shows", "shown", "deal",
+            "controlling", "stake", "majority", "minority", "acquisition", "sale", "completes", "equity", "hands",
+            "open", "limited", "private", "ltd", "pvt", "corp", "inc"
         }
         w1 = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in stopwords and len(w) >= 2}
         w2 = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in stopwords and len(w) >= 2}
@@ -225,17 +267,14 @@ class TwoSourceVerifier:
             "hdfc", "tata", "reliance", "nvidia", "infosys", "lt", "larsen", "toubro",
             "rio", "tinto", "arcadium", "apple", "google", "meta", "microsoft", "shiprocket",
             "nxt", "infra", "trust", "dersimelagon", "leo", "pharma", "adani", "wipro",
-            "icici", "sbi", "airtel", "bharti", "itc", "maruti", "mahindra", "bajaj"
+            "icici", "sbi", "airtel", "bharti", "itc", "maruti", "mahindra", "bajaj", "kfin",
+            "piramal", "yapan", "blackstone", "walmart", "target", "goldman"
         }
         shared_major = {w for w in overlap if w in major_entities}
 
-        proper1 = {w for w in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", art1.title) if w.lower() not in stopwords}
-        proper2 = {w for w in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", art2.title) if w.lower() not in stopwords}
-        shared_proper = {w.lower() for w in proper1}.intersection({w.lower() for w in proper2})
-
-        has_shared_entity = bool(shared_major or shared_proper or (len(overlap) >= 2 and any(len(w) >= 4 for w in overlap)))
+        has_shared_entity = bool(shared_entities or shared_major)
         if not has_shared_entity:
-            return False, title_similarity, f"INSUFFICIENT_EVENT_OVERLAP: No shared company or entity found in titles"
+            return False, 0.0, f"ENTITY_MISMATCH: No shared corporate entity found between articles ('{list(set_ent1)[:2]}' vs '{list(set_ent2)[:2]}')"
 
         # Step 3: Check Reporting Period / Financial Fact Consistency
         q1 = self._extract_reporting_quarter(f"{art1.title} {(art1.content_text or '')[:200]}")
@@ -243,8 +282,8 @@ class TwoSourceVerifier:
         if q1 and q2 and q1 != q2 and ("EARNINGS" in cats1 or "EARNINGS" in cats2):
             return False, 0.0, f"FINANCIAL_FACT_MISMATCH: Conflicting quarterly reporting periods ('{q1.upper()}' vs '{q2.upper()}')"
 
-        metrics1 = self._extract_metric_numbers(art1.title)
-        metrics2 = self._extract_metric_numbers(art2.title)
+        metrics1 = self._extract_metric_numbers(f"{art1.title} {(art1.content_text or '')[:300]}")
+        metrics2 = self._extract_metric_numbers(f"{art2.title} {(art2.content_text or '')[:300]}")
         shared_metrics = metrics1.intersection(metrics2)
 
         # Step 4: Evaluate Additional Event-Specific Signals
@@ -263,30 +302,37 @@ class TwoSourceVerifier:
             {"bharti", "airtel"},
             {"bajaj", "finance", "finserv", "auto"},
             {"maruti", "suzuki"},
+            {"kfin", "technologies", "general", "atlantic"},
+            {"piramal", "pharma", "yapan", "bio"},
+            {"investcorp", "20cube", "logistics"},
+            {"jbm", "auto", "bain"},
+            {"tube", "investments", "shanthi", "gears"},
+            {"idbi", "bank", "fairfax"},
+            {"manipal", "health"},
         ]
 
         matched_clusters = sum(1 for cluster in COMPANY_CLUSTERS if overlap.intersection(cluster))
-        has_counterpart_match = matched_clusters >= 2
+        has_counterpart_match = matched_clusters >= 2 or len(shared_entities) >= 2
 
         has_metric_match = bool(shared_metrics)
         has_period_match = bool(q1 and q2 and q1 == q2 and ("EARNINGS" in cats1 and "EARNINGS" in cats2))
 
         all_cluster_words = set().union(*COMPANY_CLUSTERS)
-        action_overlap = {w for w in overlap if w not in all_cluster_words and w not in shared_proper}
-        has_strong_title_overlap = len(action_overlap) >= 2 or (title_similarity >= 0.40 and len(action_overlap) >= 1)
+        action_overlap = {w for w in overlap if w not in all_cluster_words and w not in stopwords and w not in GENERIC_ENTITY_BLACKLIST}
+        has_strong_title_overlap = len(action_overlap) >= 2 or (title_similarity >= 0.35 and len(action_overlap) >= 1)
 
         if has_metric_match or has_counterpart_match or has_period_match or has_strong_title_overlap:
             score = max(title_similarity, 0.95 if has_metric_match or has_counterpart_match else 0.80)
             details = []
-            if shared_major or shared_proper:
-                details.append(f"entity={sorted(shared_major or shared_proper)}")
+            if shared_entities or shared_major:
+                details.append(f"entity={sorted(shared_entities or shared_major)}")
             if shared_metrics:
                 details.append(f"metrics={sorted(shared_metrics)}")
             if has_period_match:
                 details.append(f"period={q1.upper()}")
             return True, score, f"Corroborated: {', '.join(details)} (overlap={title_similarity:.2f})"
 
-        return False, title_similarity, f"INSUFFICIENT_EVENT_OVERLAP: Shared entity {sorted(shared_major or shared_proper)} but no matching event facts or counterpart details"
+        return False, title_similarity, f"INSUFFICIENT_EVENT_OVERLAP: Shared entity {sorted(shared_entities or shared_major)} but no matching event facts or counterpart details"
 
     def verify_event(
         self,
@@ -377,6 +423,15 @@ class TwoSourceVerifier:
             art1.source_name,
             art2.source_name,
         )
+        from app.models.enums import VerificationTier
+        event.verification_tier = VerificationTier.TWO_SOURCE_VERIFIED
+        event.verification_confidence = 95.0
+        event.primary_publisher = art1.source_name
+        event.primary_url = art1.url
+        event.secondary_publisher = art2.source_name
+        event.secondary_url = art2.url
+        event.verification_reason = f"Corroborated by independent publishers ({art1.source_name} and {art2.source_name})."
+
         return EventSourceVerification(
             event_id=event.id,
             primary_source=art1.source_name,

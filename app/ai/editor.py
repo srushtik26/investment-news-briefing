@@ -188,6 +188,31 @@ class GeminiEditorialEngine:
             except Exception as exc:
                 exc_str = str(exc)
                 is_rate_limit = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
+                is_daily_quota = is_rate_limit and any(
+                    marker.lower() in exc_str.lower()
+                    for marker in ("generaterequestsperday", "quotaid", "daily quota", "per day", "freetier")
+                )
+
+                if is_daily_quota:
+                    logger.error(
+                        "GEMINI_DAILY_QUOTA_EXHAUSTED in editorial curation. Halting editorial API calls immediately."
+                    )
+                    GeminiUsageLogger.record(
+                        stage="editorial",
+                        model=self.model_name,
+                        success=False,
+                        http_status=429,
+                        retry_number=attempt - 1,
+                        error_summary="DAILY_QUOTA_EXHAUSTED",
+                    )
+                    return EditorialResult(
+                        success=False,
+                        error_message=(
+                            f"{RATE_LIMITED_PREFIX} Editorial halted: daily quota exhausted (GenerateRequestsPerDayPerProjectPerModel-FreeTier)."
+                        ),
+                        attempts=attempt,
+                        raw_response=raw_text,
+                    )
 
                 if is_rate_limit:
                     consecutive_429s += 1
@@ -231,9 +256,30 @@ class GeminiEditorialEngine:
                     )
                     logger.error("Editorial API error (attempt %d): %s", attempt, exc, exc_info=True)
 
-        logger.error(
-            "Editorial selection rejected after %d attempts: %s", max_attempts, last_error
-        )
+        if not self.mock_responder:
+            logger.warning(
+                "Editorial API calls failed after %d attempts (%s). Falling back to deterministic editorial selection.",
+                max_attempts, last_error
+            )
+            try:
+                fallback_text = self._generate_offline_editorial_fallback(ranked_pool, articles_map)
+                parsed_json = self._extract_json_from_response(fallback_text)
+                payload = BriefingEditorialPayload.model_validate(parsed_json)
+                self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)
+                logger.info(
+                    "Deterministic fallback editorial curation successful: Selected %d India and %d International stories",
+                    len(payload.india_stories),
+                    len(payload.international_stories),
+                )
+                return EditorialResult(
+                    success=True,
+                    selection=payload,
+                    attempts=max_attempts,
+                    raw_response=fallback_text,
+                )
+            except Exception as fb_exc:
+                logger.error("Deterministic fallback editorial curation error: %s", fb_exc)
+
         return EditorialResult(
             success=False,
             error_message=last_error or "Editorial selection failed after retries",
@@ -268,10 +314,12 @@ class GeminiEditorialEngine:
                 )
 
         # 2. Validate India Same-Company Restriction
+        from app.models.entity_sanitizer import sanitize_company_entities
         seen_india_companies: Set[str] = set()
         for story in payload.india_stories:
             scored = valid_events[story.event_id]
-            companies = scored.event.companies_involved or [story.source]
+            raw_comps = scored.event.companies_involved or []
+            companies = sanitize_company_entities(raw_comps, publisher=story.source)
             for comp in companies:
                 norm = normalize_entity_name(comp)
                 if norm in seen_india_companies and norm != "unspecified_entity":
@@ -338,7 +386,9 @@ class GeminiEditorialEngine:
         ranked_pool: RankedCandidatePool,
         articles_map: Dict[str, Article],
     ) -> str:
-        """Deterministic heuristic fallback when no API key is present."""
+        """Deterministic heuristic fallback when offline or API limit reached."""
+        from app.models.entity_sanitizer import sanitize_company_entities
+
         india_selected: List[Dict[str, str]] = []
         seen_india_comps: Set[str] = set()
 
@@ -346,15 +396,24 @@ class GeminiEditorialEngine:
             if len(india_selected) >= 5:
                 break
             e = scored.event
-            comp = normalize_entity_name(
-                e.companies_involved[0] if e.companies_involved else "unspecified"
-            )
-            if comp in seen_india_comps and comp != "unspecified_entity":
-                continue
-            seen_india_comps.add(comp)
-
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Business Standard"
+
+            raw_comps = e.companies_involved or []
+            companies = sanitize_company_entities(raw_comps, publisher=source_name)
+
+            duplicate = False
+            for comp in companies:
+                norm = normalize_entity_name(comp)
+                if norm in seen_india_comps and norm != "unspecified_entity":
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+
+            for comp in companies:
+                seen_india_comps.add(normalize_entity_name(comp))
+
             url = art.url if art else f"https://example.com/india-{e.id}"
 
             india_selected.append({
@@ -384,3 +443,5 @@ class GeminiEditorialEngine:
             "india_stories": india_selected,
             "international_stories": intl_selected,
         })
+
+

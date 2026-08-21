@@ -62,6 +62,13 @@ def get_corroboration_count() -> int:
     return _run_corroboration_count
 
 
+def increment_corroboration_count(amount: int = 1) -> int:
+    """Increment the global corroboration search counter and return new total."""
+    global _run_corroboration_count
+    _run_corroboration_count += amount
+    return _run_corroboration_count
+
+
 @dataclass
 class CorroborationResult:
     """Outcome of an active corroboration search for one event."""

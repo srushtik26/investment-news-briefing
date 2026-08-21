@@ -38,67 +38,70 @@ def rule() -> DateFilterRule:
 
 
 class TestDateFilterRuleFreshnessBuckets:
-    """Each age bucket — accept/reject correctness."""
+    """Each age bucket — accept/reject correctness under 24-hour freshness policy."""
 
-    def test_24h_article_is_accepted(self, rule):
-        art = _make_article(24)
+    def test_12h_article_is_accepted(self, rule):
+        art = _make_article(12)
         result = rule.evaluate(art)
+        assert result.is_accepted, f"Expected 12h article to be accepted but got: {result.rejection_reason}"
+
+    def test_23h59m_article_is_accepted(self, rule):
+        art = _make_article(23.98)
+        result = rule.evaluate(art)
+        assert result.is_accepted, f"Expected 23h59m article to be accepted but got: {result.rejection_reason}"
+
+    def test_24h_exact_article_is_accepted(self, rule):
+        now = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
+        art = _make_article(24.0, base_time=now)
+        result = rule.evaluate(art, now_utc=now)
         assert result.is_accepted, f"Expected 24h article to be accepted but got: {result.rejection_reason}"
 
-    def test_36h_article_is_accepted(self, rule):
-        art = _make_article(36)
-        result = rule.evaluate(art)
-        assert result.is_accepted, f"Expected 36h article to be accepted but got: {result.rejection_reason}"
-
-    def test_48h_article_is_accepted(self, rule):
-        art = _make_article(48)
-        result = rule.evaluate(art)
-        assert result.is_accepted, f"Expected 48h article to be accepted but got: {result.rejection_reason}"
-
-    def test_60h_article_is_accepted(self, rule):
-        art = _make_article(60)
-        result = rule.evaluate(art)
-        assert result.is_accepted, f"Expected 60h article to be accepted but got: {result.rejection_reason}"
-
-    def test_72h_article_is_accepted(self, rule):
-        # Use 71h which is safely inside the 72h window (avoids float precision edge)
-        art = _make_article(71)
-        result = rule.evaluate(art)
-        assert result.is_accepted, f"Expected 71h article to be accepted but got: {result.rejection_reason}"
-
-    def test_73h_article_is_rejected(self, rule):
-        art = _make_article(73)
-        result = rule.evaluate(art)
-        assert not result.is_accepted, "Expected 73h article to be REJECTED"
+    def test_24h01m_article_is_rejected(self, rule):
+        now = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
+        art = _make_article(24.02, base_time=now)
+        result = rule.evaluate(art, now_utc=now)
+        assert not result.is_accepted, "Expected 24h01m article to be REJECTED"
         assert "exceeds" in result.rejection_reason.lower()
 
-    def test_100h_article_is_rejected(self, rule):
-        art = _make_article(100)
+    def test_36h_article_is_rejected(self, rule):
+        art = _make_article(36)
         result = rule.evaluate(art)
-        assert not result.is_accepted, "Expected 100h article to be REJECTED"
+        assert not result.is_accepted, "Expected 36h article to be REJECTED"
+        assert "exceeds" in result.rejection_reason.lower()
+
+    def test_48h_article_is_rejected(self, rule):
+        art = _make_article(48)
+        result = rule.evaluate(art)
+        assert not result.is_accepted, "Expected 48h article to be REJECTED"
+        assert "exceeds" in result.rejection_reason.lower()
+
+    def test_72h_article_is_rejected(self, rule):
+        art = _make_article(72)
+        result = rule.evaluate(art)
+        assert not result.is_accepted, "Expected 72h article to be REJECTED"
         assert "exceeds" in result.rejection_reason.lower()
 
 
 class TestDateFilterRuleFreshnessScores:
     """Freshness score metadata must be attached correctly to accepted articles."""
 
-    def test_0_24h_gets_score_1_0(self, rule):
-        art = _make_article(12)
+    def test_0_6h_gets_score_1_0(self, rule):
+        art = _make_article(3)
         rule.evaluate(art)
         assert art.metadata.get("freshness_score") == 1.0
 
-    def test_24_48h_gets_score_0_8(self, rule):
-        art = _make_article(36)
+    def test_6_12h_gets_score_0_9(self, rule):
+        art = _make_article(9)
+        rule.evaluate(art)
+        assert art.metadata.get("freshness_score") == 0.9
+
+    def test_12_24h_gets_score_0_8(self, rule):
+        art = _make_article(18)
         rule.evaluate(art)
         assert art.metadata.get("freshness_score") == 0.8
 
-    def test_48_72h_gets_score_0_5(self, rule):
-        art = _make_article(60)
-        rule.evaluate(art)
-        assert art.metadata.get("freshness_score") == 0.5
-
     def test_freshness_bucket_label_attached(self, rule):
-        for age, expected_bucket in [(12, "fresh_0_24h"), (36, "fresh_24_48h"), (60, "stale_48_72h")]:
+        for age, expected_bucket in [(3, "fresh_0_6h"), (9, "fresh_6_12h"), (18, "fresh_12_24h")]:
             art = _make_article(age)
             rule.evaluate(art)
             assert art.metadata.get("freshness_bucket") == expected_bucket, (
@@ -106,54 +109,16 @@ class TestDateFilterRuleFreshnessScores:
             )
 
     def test_age_hours_stored_in_metadata(self, rule):
-        art = _make_article(30)
+        art = _make_article(15)
         rule.evaluate(art)
         age = art.metadata.get("age_hours")
         assert age is not None
-        assert 29 <= age <= 31, f"Expected age_hours ~30, got {age}"
+        assert 14 <= age <= 16, f"Expected age_hours ~15, got {age}"
 
     def test_rejected_article_has_no_freshness_score(self, rule):
-        art = _make_article(80)
+        art = _make_article(30)
         rule.evaluate(art)
-        # Rejected articles should not have a freshness_score set
         assert art.metadata.get("freshness_score") is None
-
-
-class TestDateFilterRuleMondayExtension:
-    """Monday briefings have a 96h lookback window instead of 72h."""
-
-    def test_monday_80h_article_is_accepted(self, rule):
-        # Force a Monday timestamp
-        now = datetime(2026, 8, 17, 9, 0, 0, tzinfo=timezone.utc)  # This is a Monday
-        art = _make_article(80, base_time=now)
-        result = rule.evaluate(art, now_utc=now)
-        assert result.is_accepted, f"Expected Monday 80h article to be accepted: {result.rejection_reason}"
-
-    def test_monday_96h_article_is_accepted(self, rule):
-        now = datetime(2026, 8, 17, 9, 0, 0, tzinfo=timezone.utc)
-        art = _make_article(96, base_time=now)
-        result = rule.evaluate(art, now_utc=now)
-        assert result.is_accepted, f"Expected Monday 96h article to be accepted: {result.rejection_reason}"
-
-    def test_monday_97h_article_is_rejected(self, rule):
-        # Use a fixed Monday evaluation time and create the article relative to IT
-        monday_eval = datetime(2026, 8, 17, 9, 0, 0, tzinfo=timezone.utc)
-        art = MagicMock()
-        art.url = "https://example.com/monday-97h"
-        art.title = "Monday 97h article"
-        art.source_name = "Test Publisher"
-        art.published_at = monday_eval - timedelta(hours=97)
-        art.date_verified = True
-        art.metadata = {}
-        result = rule.evaluate(art, now_utc=monday_eval)
-        assert not result.is_accepted, "Expected Monday 97h article to be REJECTED"
-
-    def test_non_monday_49h_article_is_accepted(self, rule):
-        # Tuesday — uses 72h default
-        now = datetime(2026, 8, 18, 9, 0, 0, tzinfo=timezone.utc)  # Tuesday
-        art = _make_article(49, base_time=now)
-        result = rule.evaluate(art, now_utc=now)
-        assert result.is_accepted, f"Expected Tue 49h article to be accepted: {result.rejection_reason}"
 
 
 class TestDateFilterRuleEdgeCases:

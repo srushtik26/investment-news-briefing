@@ -60,9 +60,16 @@ class CandidatePoolRanker:
             else:
                 intl_scored.append(scored)
 
-        # Sort descending by investment_score
-        india_sorted = sorted(india_scored, key=lambda s: s.investment_score, reverse=True)
-        intl_sorted = sorted(intl_scored, key=lambda s: s.investment_score, reverse=True)
+        from app.models.enums import VerificationTier
+
+        def _ranking_key(s: ScoredEvent):
+            tier = getattr(s.event, "verification_tier", None)
+            is_two_source = 1 if (tier == VerificationTier.TWO_SOURCE_VERIFIED) else 0
+            return (is_two_source, s.investment_score)
+
+        # Sort descending: two-source verified first, then by investment_score
+        india_sorted = sorted(india_scored, key=_ranking_key, reverse=True)
+        intl_sorted = sorted(intl_scored, key=_ranking_key, reverse=True)
 
         # Assign ranks
         for idx, scored in enumerate(india_sorted, 1):
