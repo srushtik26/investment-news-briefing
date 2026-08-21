@@ -15,6 +15,7 @@ Design & Cost Control Principles:
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 import requests
@@ -33,15 +34,17 @@ logger = get_logger("verification.serpapi_corroborator")
 _run_serpapi_count = 0
 _serpapi_candidates_returned_total = 0
 _serpapi_accepted_sources_total = 0
+_serpapi_rejection_counts: Dict[str, int] = {}
 _serpapi_query_cache: Dict[str, List[dict]] = {}
 
 
 def reset_serpapi_counter() -> None:
-    """Reset the per-run SerpAPI search counter, candidate counts, and query cache."""
-    global _run_serpapi_count, _serpapi_candidates_returned_total, _serpapi_accepted_sources_total, _serpapi_query_cache
+    """Reset the per-run SerpAPI search counter, candidate counts, rejection stats, and query cache."""
+    global _run_serpapi_count, _serpapi_candidates_returned_total, _serpapi_accepted_sources_total, _serpapi_rejection_counts, _serpapi_query_cache
     _run_serpapi_count = 0
     _serpapi_candidates_returned_total = 0
     _serpapi_accepted_sources_total = 0
+    _serpapi_rejection_counts.clear()
     _serpapi_query_cache.clear()
 
 
@@ -60,6 +63,11 @@ def get_serpapi_accepted_sources() -> int:
     return _serpapi_accepted_sources_total
 
 
+def get_serpapi_rejection_reasons() -> Dict[str, int]:
+    """Return dictionary of canonical rejection reasons and counts for SerpAPI candidates."""
+    return dict(_serpapi_rejection_counts)
+
+
 class SerpAPICorroborator:
     """
     Optional secondary corroboration provider using SerpAPI Google News search engine.
@@ -71,7 +79,7 @@ class SerpAPICorroborator:
         self.max_searches = max_searches if max_searches is not None else settings.MAX_SERPAPI_SEARCHES_PER_RUN
         self._extractor = extractor
         self._verifier = TwoSourceVerifier()
-        self._active_corroborator = ActiveCorroborator()
+        self._active_corroborator = ActiveCorroborator(extractor=extractor)
 
     @property
     def has_api_key(self) -> bool:
@@ -84,43 +92,17 @@ class SerpAPICorroborator:
             self._extractor = ArticleExtractor()
         return self._extractor
 
-    def _build_targeted_query(self, article: Article) -> str:
+    def _build_targeted_query(self, article: Article, event: Optional[Event] = None) -> str:
         """
-        Build a concise, highly specific search query string using:
-        - primary company/entity
-        - second entity if available
-        - event type
-        - important financial number
+        Build a high-precision anchor query using shared EventQueryBuilder.
         """
-        entities = self._active_corroborator._extract_entities(article)
-        event_type = self._active_corroborator._detect_event_type(article)
-        numbers = self._active_corroborator._extract_numbers(article.title)
+        from app.verification.query_builder import EventQueryBuilder
+        return EventQueryBuilder.build_anchor_query(article, event=event)
 
-        primary_entity = entities[0] if entities else None
-        second_entity = entities[1] if len(entities) >= 2 else None
-
-        query_parts = []
-        if primary_entity:
-            query_parts.append(primary_entity)
-        if event_type and event_type != "business event":
-            query_parts.append(event_type)
-        if second_entity:
-            query_parts.append(second_entity)
-        elif numbers:
-            query_parts.append(numbers[0])
-
-        if not query_parts and article.title:
-            query_parts = article.title.split()[:5]
-
-        return " ".join(query_parts)
-
-    def _build_site_clause(self, article: Article) -> str:
-        """Build site: filter clause using approved extractable publishers excluding primary domain."""
-        return self._active_corroborator._build_site_clause(article)
-
-    def _search_serpapi(self, query: str, site_clause: str) -> List[dict]:
+    def _search_serpapi(self, query: str) -> List[dict]:
         """
         Execute Google News search via SerpAPI and return raw candidate dictionaries.
+        Searches the high-precision query broadly without restrictive site OR clauses.
         """
         global _run_serpapi_count, _serpapi_query_cache, _serpapi_candidates_returned_total
 
@@ -132,7 +114,7 @@ class SerpAPICorroborator:
             logger.info("SerpAPI budget exhausted (%d/%d). Skipping search.", _run_serpapi_count, self.max_searches)
             return []
 
-        full_query = f"{query}{site_clause}".strip()
+        full_query = query.strip()
 
         # Cache check
         if full_query in _serpapi_query_cache:
@@ -183,10 +165,15 @@ class SerpAPICorroborator:
             _serpapi_query_cache[full_query] = []
             return []
 
+    def _record_rejection(self, reason: str) -> None:
+        """Record canonical SerpAPI candidate rejection reason."""
+        global _serpapi_rejection_counts
+        _serpapi_rejection_counts[reason] = _serpapi_rejection_counts.get(reason, 0) + 1
+
     def corroborate(self, event: Event, primary_article: Article) -> CorroborationResult:
         """
         Perform SerpAPI fallback corroboration for a single-source event.
-        Candidate articles are extracted and verified via TwoSourceVerifier.
+        Candidate articles are extracted and verified via TwoSourceVerifier with detailed diagnostics.
         """
         global _serpapi_accepted_sources_total
 
@@ -211,9 +198,8 @@ class SerpAPICorroborator:
                 failure_reason=f"SerpAPI budget exhausted ({_run_serpapi_count}/{self.max_searches})",
             )
 
-        query = self._build_targeted_query(primary_article)
-        site_clause = self._build_site_clause(primary_article)
-        candidates = self._search_serpapi(query, site_clause)
+        query = self._build_targeted_query(primary_article, event=event)
+        candidates = self._search_serpapi(query)
 
         extractor = self._get_extractor()
         articles_fetched = 0
@@ -222,8 +208,16 @@ class SerpAPICorroborator:
             articles_fetched += 1
             cand_url = cand["url"].strip()
 
-            # Skip identical URL
+            # 1. Skip identical URL
             if cand_url.lower().rstrip("/") == primary_article.url.strip().lower().rstrip("/"):
+                self._record_rejection("SAME_URL")
+                continue
+
+            # 2. Check for non-article URL
+            from app.filtering.rules import URLFilterRule
+            is_valid_u, u_reason = URLFilterRule.is_valid_url(cand_url)
+            if not is_valid_u:
+                self._record_rejection("NON_ARTICLE_URL")
                 continue
 
             try:
@@ -236,30 +230,57 @@ class SerpAPICorroborator:
                 )
             except Exception as exc:
                 logger.debug("SerpAPI candidate extraction error: %s | %s", cand_url[:60], exc)
+                self._record_rejection("EXTRACTION_FAILED")
                 continue
 
             if not res.success or not res.article:
+                if res.extraction_method == "pre_url_filter":
+                    self._record_rejection("NON_ARTICLE_URL")
+                else:
+                    self._record_rejection("EXTRACTION_FAILED")
                 continue
 
             candidate_art = res.article
 
-            # Enforce TwoSourceVerifier checks
+            # 3. Check Freshness
+            if candidate_art.published_at:
+                now = datetime.now(timezone.utc)
+                p_dt = candidate_art.published_at if candidate_art.published_at.tzinfo else candidate_art.published_at.replace(tzinfo=timezone.utc)
+                age_hours = (now - p_dt.astimezone(timezone.utc)).total_seconds() / 3600.0
+                if age_hours > 96.0:
+                    self._record_rejection("STALE")
+                    continue
+
+            # 4. Check TwoSourceVerifier same-underlying-event
             is_same, score, reason = self._verifier.is_same_underlying_event(primary_article, candidate_art)
             if not is_same:
-                logger.debug("SerpAPI candidate NOT_SAME_EVENT: %s", candidate_art.title[:40])
+                if "EVENT_TYPE_MISMATCH" in (reason or ""):
+                    self._record_rejection("EVENT_TYPE_MISMATCH")
+                elif "FINANCIAL_FACT_MISMATCH" in (reason or ""):
+                    self._record_rejection("FINANCIAL_FACT_MISMATCH")
+                elif "ENTITY_MISMATCH" in (reason or ""):
+                    self._record_rejection("ENTITY_MISMATCH")
+                else:
+                    self._record_rejection("INSUFFICIENT_EVENT_OVERLAP")
+                logger.debug("SerpAPI candidate NOT_SAME_EVENT (%s): %s", reason, candidate_art.title[:40])
                 continue
 
+            # 5. Check Publisher Group Independence
             grp1 = self._verifier.get_publisher_group(primary_article)
             grp2 = self._verifier.get_publisher_group(candidate_art)
             if grp1 == grp2:
+                self._record_rejection("SAME_PUBLISHER_GROUP")
                 logger.debug("SerpAPI candidate SAME_PUBLISHER: %s", candidate_art.title[:40])
                 continue
 
+            # 6. Check Syndication
             is_synd, synd_reason = self._verifier.is_syndicated_republication(primary_article, candidate_art)
             if is_synd:
+                self._record_rejection("SYNDICATED_WIRE_FEED")
                 logger.debug("SerpAPI candidate SYNDICATED: %s", candidate_art.title[:40])
                 continue
 
+            # All checks passed — ACCEPT second source!
             logger.info(
                 "SERPAPI SECOND SOURCE ACCEPTED: '%s' (%s)",
                 candidate_art.source_name,
@@ -288,13 +309,17 @@ class SerpAPICorroborator:
             )
 
         fail_reason = "No independent second source found via SerpAPI fallback"
-        logger.info("SERPAPI FALLBACK FAILED for event '%s': %s", event.canonical_title[:45], fail_reason)
+        logger.info(
+            "SERPAPI FALLBACK FAILED for event '%s': %s",
+            event.canonical_title[:40],
+            fail_reason,
+        )
         return CorroborationResult(
             event_id=event.id,
             success=False,
             primary_article=primary_article,
             corroborating_article=None,
-            queries_fired=1,
+            queries_fired=1 if candidates or query in _serpapi_query_cache else 0,
             articles_fetched=articles_fetched,
             failure_reason=fail_reason,
         )

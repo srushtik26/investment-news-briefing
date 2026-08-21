@@ -150,60 +150,18 @@ class ActiveCorroborator:
             self._extractor = ArticleExtractor()
         return self._extractor
 
-    def _extract_entities(self, article: Article) -> List[str]:
-        """
-        Extract candidate entity tokens from article title and content.
-        Prioritizes multi-word proper nouns, uppercase company names, and title entities,
-        strictly excluding generic noise words.
-        """
-        title = article.title or ""
-        snippet = (article.content_text or "")[:300]
-        full_text = f"{title} {snippet}"
-
-        # Multi-word proper nouns (e.g. "Tata Motors", "Home Depot", "Astra Space")
-        multi_proper = re.findall(r"\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)+\b", full_text)
-
-        # Title proper nouns / acronyms
-        title_words = re.findall(r"\b[A-Z][a-zA-Z0-9]{2,}\b", title)
-        title_acronyms = re.findall(r"\b[A-Z]{2,}\b", title)
-
-        # Snippet proper nouns
-        snippet_words = re.findall(r"\b[A-Z][a-zA-Z0-9]{2,}\b", snippet)
-
-        candidates = multi_proper + title_words + title_acronyms + snippet_words
-
-        seen = set()
-        result = []
-        for cand in candidates:
-            tok = cand.strip()
-            norm = tok.lower()
-            if (
-                tok
-                and norm not in GENERIC_SINGLE_WORDS
-                and norm not in GENERIC_PHRASES
-                and norm not in seen
-            ):
-                seen.add(norm)
-                result.append(tok)
-
-        return result[:6]
+    def _extract_entities(self, article: Article, event: Optional[Event] = None) -> List[str]:
+        """Extract clean entity tokens using EventQueryBuilder."""
+        from app.verification.query_builder import EventQueryBuilder
+        return EventQueryBuilder.extract_entities(article, event=event)
 
     def _extract_numbers(self, text: str) -> List[str]:
         """Extract key financial numbers/percentages or deal values from text."""
-        matches = re.findall(
-            r"(?:₹|\$|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:%|crore|cr|billion|b|million|m)?",
-            text,
-            re.IGNORECASE,
-        )
-        cleaned = []
-        for m in matches:
-            tok = m.strip()
-            if any(c.isdigit() for c in tok) and tok.lower() not in ("1", "2", "3"):
-                cleaned.append(tok)
-        return cleaned[:3]
+        from app.verification.query_builder import EventQueryBuilder
+        return EventQueryBuilder.extract_numbers(text)
 
     def _detect_event_type(self, article: Article) -> str:
-        """Detect the dominant event type keyword from article title."""
+        """Detect the dominant event type keyword from article title and content."""
         title_lower = article.title.lower()
         content_snippet = (article.content_text or "")[:200].lower()
         combined = f"{title_lower} {content_snippet}"
@@ -213,77 +171,26 @@ class ActiveCorroborator:
                 return event_type
         return "business event"
 
-    def _build_corroboration_queries(self, article: Article) -> List[str]:
+    def _build_corroboration_queries(self, article: Article, event: Optional[Event] = None) -> List[str]:
         """
-        Construct up to MAX_QUERIES_PER_EVENT targeted search query strings.
-        Queries are compact and specific using primary company/entity, detected event type,
-        distinctive title words, secondary entities, and numbers.
+        Construct targeted search query strings using the shared EventQueryBuilder.
         """
-        entities = self._extract_entities(article)
-        event_type = self._detect_event_type(article)
-        numbers = self._extract_numbers(article.title)
+        from app.verification.query_builder import EventQueryBuilder
 
-        queries = []
+        q1 = EventQueryBuilder.build_anchor_query(article, event=event)
+        entities = EventQueryBuilder.extract_entities(article, event=event)
+        numbers = EventQueryBuilder.extract_numbers(article.title)
 
-        primary_entity = entities[0] if entities else None
-        second_entity = entities[1] if len(entities) >= 2 else None
+        queries = [q1]
+        if len(entities) >= 2:
+            q2_parts = [f'"{entities[0]}"' if " " in entities[0] else entities[0],
+                        f'"{entities[1]}"' if " " in entities[1] else entities[1]]
+            if numbers:
+                q2_parts.append(numbers[0])
+            queries.append(" ".join(q2_parts))
+        elif len(entities) == 1 and numbers:
+            queries.append(f"{entities[0]} {numbers[0]}")
 
-        # Distinctive title words (excluding generic noise and stop words)
-        stopwords = {"the", "a", "an", "and", "for", "with", "its", "in", "on", "at", "to", "of", "is", "by", "from", "as"}
-        title_tokens = [
-            w for w in re.findall(r"\b[a-zA-Z0-9]+\b", article.title)
-            if w.lower() not in stopwords and w.lower() not in GENERIC_SINGLE_WORDS and len(w) > 2
-        ]
-
-        if primary_entity:
-            # Query 1: Primary Entity + Event Type + Second Entity (or number)
-            event_kw = event_type if event_type != "business event" else ""
-            q1_parts = [primary_entity]
-            if event_kw:
-                q1_parts.append(event_kw)
-            if second_entity:
-                q1_parts.append(second_entity)
-            elif numbers:
-                q1_parts.append(numbers[0])
-            elif title_tokens:
-                for tt in title_tokens:
-                    if tt.lower() not in primary_entity.lower():
-                        q1_parts.append(tt)
-                        break
-
-            queries.append(" ".join(q1_parts))
-
-            # Query 2: Primary Entity + Second Entity + Number (or distinctive title terms)
-            if second_entity:
-                q2_parts = [primary_entity, second_entity]
-                if numbers:
-                    q2_parts.append(numbers[0])
-                queries.append(" ".join(q2_parts))
-            elif numbers:
-                q2_parts = [primary_entity, numbers[0]]
-                if title_tokens:
-                    for tt in title_tokens:
-                        if tt.lower() not in primary_entity.lower() and tt.lower() not in numbers[0].lower():
-                            q2_parts.append(tt)
-                            break
-                queries.append(" ".join(q2_parts))
-            elif title_tokens:
-                distinctive = [
-                    t for t in title_tokens
-                    if t.lower() not in primary_entity.lower()
-                ][:3]
-                if distinctive:
-                    queries.append(f"{primary_entity} " + " ".join(distinctive))
-                else:
-                    queries.append(primary_entity)
-        else:
-            # Fallback when no clear entity extracted: use top title words
-            if title_tokens:
-                queries.append(" ".join(title_tokens[:5]))
-                if len(title_tokens) >= 3:
-                    queries.append(" ".join(title_tokens[2:6]))
-
-        # Deduplicate while preserving order
         unique_queries = []
         for q in queries:
             q_clean = q.strip()

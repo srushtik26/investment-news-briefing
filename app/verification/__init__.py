@@ -19,6 +19,7 @@ from app.verification.serpapi_corroborator import (
     get_serpapi_count,
     get_serpapi_candidates_returned,
     get_serpapi_accepted_sources,
+    get_serpapi_rejection_reasons,
 )
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "get_serpapi_count",
     "get_serpapi_candidates_returned",
     "get_serpapi_accepted_sources",
+    "get_serpapi_rejection_reasons",
 ]

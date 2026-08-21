@@ -13,6 +13,7 @@ import re
 from typing import List, Optional
 
 from app.logging_config import get_logger
+from app.models.article import Article
 from app.models.event import Event
 from app.ranking.models import ScoreBreakdown, ScoredEvent
 
@@ -224,3 +225,69 @@ class InvestmentRelevanceScorer:
             base_score = min(100.0, base_score + 5.0)
 
         return base_score
+
+
+def calculate_corroboration_priority(event: Event, primary_article: Optional[Article] = None) -> float:
+    """
+    Calculate deterministic priority (0 to 100) for spending scarce corroboration requests.
+    Hard business events (M&A, earnings, IPO, regulatory) receive high priority (80-100).
+    Live stock quotes, market movements, turnaround narratives, and demand trends receive low priority (<30).
+    """
+    text = f"{event.canonical_title} {event.description}".lower()
+    if primary_article:
+        text = f"{text} {primary_article.title} {(primary_article.content_text or '')[:300]}".lower()
+
+    # 1. Check for immediate low-priority patterns (<30)
+    is_live_quote = bool(re.search(
+        r"\b(share price|stock price|live nse|live bse|price today|stock today|live updates|closing bell|opening bell|gmp|grey market premium|market live)\b",
+        text,
+    ))
+    if is_live_quote:
+        return 10.0
+
+    is_turnaround_or_trend = bool(re.search(
+        r"\b(turnaround is picking up steam|turnaround plan|turnaround effort|demand gets a lift|demand trend|industry outlook|explained|opinion|column|why are|what to watch|buzzing stocks|top gainers|top losers|outlook disappoints)\b",
+        text,
+    ))
+    # Check if stock price reaction without detailed hard financial earnings
+    has_concrete_earnings = bool(re.search(r"\b(net profit|q[1-4] results|q[1-4] profit|ebitda|operating profit|revenue rises|revenue falls|profit rises|profit falls)\b", text))
+    is_pure_price_reaction = bool(re.search(
+        r"\b(stock tumbles|shares tumble|shares slip|stock jumps|shares jump|shares drop|shares fall|shares rise|shares surge|stock climbs|rally)\b",
+        text,
+    )) and not has_concrete_earnings
+
+    if is_turnaround_or_trend or is_pure_price_reaction:
+        return 20.0
+
+    # If it's a generic industry narrative with no recognized company:
+    if "synthetic rubber" in text or "demand gets a lift" in text:
+        return 15.0
+
+    # 2. Check for Hard Event Types (60 - 100)
+    if re.search(r"\b(to buy|buys|acquires?|acquisition|merger|merges|takeover|buyout|stake purchase|all-cash deal|demerger|spin-off)\b", text):
+        base = 90.0
+    elif re.search(r"\b(rbi|sebi|cci|sec|antitrust|doj|penalty|fine|ban|order|charges|probe|inquiry)\b", text):
+        base = 85.0
+    elif re.search(r"\b(raises funding|funding round|qip|rights issue|capital raise|funds raised|files for ipo|files drhp|ipo allotment|shares list at|ipo listing)\b", text):
+        base = 85.0
+    elif re.search(r"\b(net profit|quarterly profit|revenue rises|revenue falls|profit rises|profit falls|q[1-4] results|q[1-4] profit|ebitda|earnings beat|earnings miss|guidance raised|guidance cut|outlook raised|outlook cut)\b", text):
+        base = 80.0
+    elif re.search(r"\b(plant investment|capacity expansion|new plant|capex|manufacturing facility|joint venture|partnership|tie-up)\b", text):
+        base = 70.0
+    elif re.search(r"\b(appoints ceo|md resigns|new managing director|new cfo|appoints chairman|steps down)\b", text):
+        base = 65.0
+    elif re.search(r"\b(gdp growth|cpi inflation|retail inflation|rate cut|rate hike|trade deficit)\b", text):
+        base = 60.0
+    else:
+        # Default with no recognizable hard event keyword
+        base = 25.0
+
+    # 3. Fact Enhancers
+    has_numbers = bool(re.search(r"(?:₹|\$|€|£|rs\.?\s*)\s*[\d,]+|\b\d+(?:\.\d+)?%", text))
+    if has_numbers and base >= 60.0:
+        base += 5.0
+
+    if event.companies_involved and base >= 60.0:
+        base += 5.0
+
+    return min(100.0, max(0.0, base))

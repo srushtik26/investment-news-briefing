@@ -18,16 +18,18 @@ from app.models.enums import NewsCategory
 
 logger = get_logger("ranking.pre_ranker")
 
-TIER_1_PUBLISHERS = {
-    "reuters.com", "bloomberg.com", "economictimes.indiatimes.com",
-    "business-standard.com", "livemint.com", "financialexpress.com",
-    "moneycontrol.com", "cnbc.com", "wsj.com", "ft.com", "marketwatch.com",
+ACCESSIBLE_PRIMARY_PUBLISHERS = {
+    "cnbc.com", "apnews.com", "bbc.com", "theguardian.com", "marketwatch.com", "fortune.com",
+    "economictimes.indiatimes.com", "business-standard.com", "livemint.com", "financialexpress.com",
+    "moneycontrol.com", "businesstoday.in", "ndtvprofit.com", "thehindu.com", "indianexpress.com",
 }
 
-TIER_2_PUBLISHERS = {
-    "apnews.com", "bbc.com", "theguardian.com", "businesstoday.in",
-    "ndtvprofit.com", "thehindu.com", "indianexpress.com", "fortune.com",
+SECONDARY_SIGNALLING_PUBLISHERS = {
+    "reuters.com", "bloomberg.com", "wsj.com", "ft.com",
 }
+
+TIER_1_PUBLISHERS = ACCESSIBLE_PRIMARY_PUBLISHERS | SECONDARY_SIGNALLING_PUBLISHERS
+TIER_2_PUBLISHERS = set()
 
 GENERIC_COMMENTARY_PATTERNS = [
     r"\btop\s+\d+\b",
@@ -99,12 +101,14 @@ class ArticlePreRanker:
         if proper or acronyms:
             score += 20.0
 
-        # 5. Publisher Pedigree (+15 pts)
+        # 5. Publisher Pedigree & Accessibility Priority (+20 pts for accessible, +10 for secondary)
         netloc = urlparse(article.url).netloc.lower().replace("www.", "")
-        if netloc in TIER_1_PUBLISHERS:
-            score += 15.0
-        elif netloc in TIER_2_PUBLISHERS:
+        if netloc in ACCESSIBLE_PRIMARY_PUBLISHERS:
+            score += 20.0
+        elif netloc in SECONDARY_SIGNALLING_PUBLISHERS:
             score += 10.0
+        else:
+            score += 5.0
 
         # 6. Freshness (+10 pts)
         if article.published_at:

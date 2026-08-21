@@ -76,6 +76,10 @@ class GeminiEditorialEngine:
             self.api_key = settings.GEMINI_API_KEY
         else:
             self.api_key = api_key
+
+        if self.api_key and isinstance(self.api_key, str):
+            self.api_key = self.api_key.strip().strip("'\"")
+
         self.model_name = model_name or settings.GEMINI_MODEL
         self.mock_responder = mock_responder
 

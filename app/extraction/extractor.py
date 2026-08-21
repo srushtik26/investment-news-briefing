@@ -19,6 +19,8 @@ from app.extraction.html_parser import HTMLArticleParser, ParsedArticleData, MIN
 from app.extraction.google_news_resolver import GoogleNewsURLResolver, ResolutionResult
 from app.extraction.models import ExtractionResult
 
+from urllib.parse import urlparse
+
 logger = get_logger("extraction.service")
 
 
@@ -36,6 +38,8 @@ class ArticleExtractor:
         self.fetcher = fetcher or ArticleFetcher()
         self.parser = parser or HTMLArticleParser()
         self.resolver = resolver or GoogleNewsURLResolver()
+        self.blocked_url_cache: set[str] = set()
+        self.domain_extraction_stats: dict[str, dict[str, int]] = {}
 
     def extract(
         self,
@@ -93,11 +97,31 @@ class ArticleExtractor:
                 word_count=0,
             )
 
+        norm_resolved = resolved_url.strip().lower().rstrip("/")
+        netloc = urlparse(resolved_url).netloc.lower().replace("www.", "")
+
+        # 1a. Check Blocked URL Cache (avoid repeating failed 401/403 requests)
+        if norm_resolved in self.blocked_url_cache:
+            logger.info("BLOCKED_URL_CACHE HIT: Skipping previously failed URL %s", resolved_url[:60])
+            self.domain_extraction_stats.setdefault(netloc, {"success": 0, "failed": 0, "blocked_401_403": 0})["failed"] += 1
+            return ExtractionResult(
+                success=False,
+                url=resolved_url,
+                original_url=original_url,
+                resolved_url=resolved_url,
+                status_code=403,
+                error_message="PREVIOUSLY_BLOCKED_URL: Domain or URL previously returned 401/403",
+                date_verified=False,
+                extraction_method="blocked_cache",
+                word_count=0,
+            )
+
         # 1b. Pre-Extraction Resolved URL Gate (Reject non-article URLs before downloading HTML)
         from app.filtering.rules import URLFilterRule
         is_valid_url, url_reject_reason = URLFilterRule.is_valid_url(resolved_url)
         if not is_valid_url:
             logger.info("PRE_EXTRACTION_URL_REJECTED: %s | %s", resolved_url[:80], url_reject_reason)
+            self.domain_extraction_stats.setdefault(netloc, {"success": 0, "failed": 0, "blocked_401_403": 0})["failed"] += 1
             return ExtractionResult(
                 success=False,
                 url=resolved_url,
@@ -114,6 +138,10 @@ class ArticleExtractor:
         fetch_success, html, status_code, error_msg = self.fetcher.fetch_html(resolved_url)
         if not fetch_success or not html:
             logger.warning("Failed to fetch article from %s: %s (Status: %s)", resolved_url, error_msg, status_code)
+            if status_code in (401, 403) or (error_msg and any(code in error_msg for code in ("401", "403", "forbidden", "unauthorized"))):
+                self.blocked_url_cache.add(norm_resolved)
+                self.domain_extraction_stats.setdefault(netloc, {"success": 0, "failed": 0, "blocked_401_403": 0})["blocked_401_403"] += 1
+            self.domain_extraction_stats.setdefault(netloc, {"success": 0, "failed": 0, "blocked_401_403": 0})["failed"] += 1
             return ExtractionResult(
                 success=False,
                 url=resolved_url,
@@ -127,7 +155,7 @@ class ArticleExtractor:
             )
 
         # 3. Parse and Validate HTML using Primary + Fallback strategies
-        return self.extract_from_html(
+        res = self.extract_from_html(
             html=html,
             url=resolved_url,
             original_url=original_url,
@@ -137,6 +165,14 @@ class ArticleExtractor:
             candidate_pub_date=candidate_pub_date,
             status_code=status_code or 200,
         )
+
+        stats = self.domain_extraction_stats.setdefault(netloc, {"success": 0, "failed": 0, "blocked_401_403": 0})
+        if res.success:
+            stats["success"] += 1
+        else:
+            stats["failed"] += 1
+
+        return res
 
     def extract_from_html(
         self,

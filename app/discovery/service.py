@@ -100,7 +100,7 @@ class NewsDiscoveryService:
         )
 
         discovered: List[DiscoveredArticle] = []
-        sources = SearchQueryBuilder.get_sources_for_country("International")
+        sources = SearchQueryBuilder.get_accessible_sources_for_country("International")
         site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources]) + ")"
 
         for cat_name, phrase_list in target_cats.items():

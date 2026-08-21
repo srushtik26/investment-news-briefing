@@ -166,18 +166,43 @@ INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
 }
 
 
+ACCESSIBLE_INTERNATIONAL_SOURCES: List[TargetSource] = [
+    TargetSource(name="CNBC", domain="cnbc.com", country="International"),
+    TargetSource(name="AP News", domain="apnews.com", country="International"),
+    TargetSource(name="BBC News", domain="bbc.com", country="International"),
+    TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
+    TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
+    TargetSource(name="Fortune", domain="fortune.com", country="International"),
+]
+
+SECONDARY_SIGNALLING_SOURCES: List[TargetSource] = [
+    TargetSource(name="Reuters", domain="reuters.com", country="International"),
+    TargetSource(name="Bloomberg", domain="bloomberg.com", country="International"),
+    TargetSource(name="Financial Times", domain="ft.com", country="International"),
+    TargetSource(name="Wall Street Journal", domain="wsj.com", country="International"),
+]
+
+
 class SearchQueryBuilder:
     """
-    Constructs search query strings combining category keywords with publisher site filters.
+    Constructs search query strings for Google News RSS.
     """
 
     @classmethod
     def get_sources_for_country(cls, country: str) -> List[TargetSource]:
-        """Return list of target sources for a given country."""
+        """Return approved sources for country."""
         norm = country.strip().title()
         if norm in ("India", "In"):
             return INDIA_SOURCES
         return INTERNATIONAL_SOURCES
+
+    @classmethod
+    def get_accessible_sources_for_country(cls, country: str) -> List[TargetSource]:
+        """Return extractable primary sources (accessible without aggressive paywalls)."""
+        norm = country.strip().title()
+        if norm in ("India", "In"):
+            return INDIA_SOURCES
+        return ACCESSIBLE_INTERNATIONAL_SOURCES
 
     @classmethod
     def get_categories_for_country(cls, country: str) -> Dict[str, List[str]]:

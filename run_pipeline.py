@@ -45,15 +45,17 @@ from app.verification import (
     get_serpapi_count,
     get_serpapi_candidates_returned,
     get_serpapi_accepted_sources,
+    get_serpapi_rejection_reasons,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
 )
 
 from app.deduplication import DeduplicationEngine, HistoryStore
-from app.ranking import CandidatePoolRanker, ArticlePreRanker
+from app.ranking import CandidatePoolRanker, ArticlePreRanker, calculate_corroboration_priority
 from app.ranking.scorer import InvestmentRelevanceScorer
 from app.ai import GeminiEditorialEngine, BriefingEditorialPayload, GeminiUsageLogger, RATE_LIMITED_PREFIX, EditorialResult
 from app.validation import FinalValidationEngine, ValidationStatus
 from app.formatting.formatter import BriefingFormatter
+from app.classification.region_classifier import EventRegionClassifier
 
 logger = get_logger("pipeline.runner")
 
@@ -62,34 +64,28 @@ DISCOVERY_STEPS = [20, 30, 40, 50]  # candidate budgets per section per expansio
 MIN_VERIFIED_PER_SECTION = get_settings().MIN_VERIFIED_INDIA
 
 # ---------------------------------------------------------------------------
-# Helper: discover & extract a batch
+# Helper: extract a batch of candidate articles
 # ---------------------------------------------------------------------------
 
-def _discover_and_extract(
-    discovery_service: NewsDiscoveryService,
+def _extract_candidates(
+    candidates_with_country: List[Tuple[Any, str]],
     extractor: ArticleExtractor,
-    max_india: int,
-    max_intl: int,
     seen_urls: Set[str],
     log_exec,
-) -> Tuple[List[Article], List[Dict], int, int, int, int]:
+) -> Tuple[List[Article], List[Dict], int, int, int, int, int]:
     """
-    Run one pass of Stage 1 + Stage 2.
-    Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok, pre_url_rejects).
+    Extract full text from a list of (DiscoveredArticle, country) candidates.
+    Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen).
     """
-    candidates = discovery_service.discover_all(max_india=max_india, max_international=max_intl)
-    india_raw = candidates.get("india", [])
-    intl_raw  = candidates.get("international", [])
-    all_discovered = [(c, "india") for c in india_raw] + [(c, "international") for c in intl_raw]
-    total = len(all_discovered)
-
+    total = len(candidates_with_country)
     extracted: List[Article] = []
     records: List[Dict] = []
-    google_count = resolved_ok = fallback_ok = pre_url_rejects = 0
+    google_count = resolved_ok = fallback_ok = pre_url_rejects = duplicate_seen = 0
 
-    for idx, (cand, country) in enumerate(all_discovered, 1):
+    for idx, (cand, country) in enumerate(candidates_with_country, 1):
         norm_url = cand.url.strip().lower().rstrip("/")
         if norm_url in seen_urls:
+            duplicate_seen += 1
             continue
         seen_urls.add(norm_url)
 
@@ -132,7 +128,7 @@ def _discover_and_extract(
                     fallback_ok += 1
                 log_exec(f"  -> SUCCESS ({res.extraction_method}): {res.word_count} words | URL: {res.resolved_url[:60]}")
             else:
-                if res.extraction_method == "pre_url_filter" or (res.error_message and "PRE_EXTRACTION_URL_REJECTED" in res.error_message):
+                if res.extraction_method in ("pre_url_filter", "blocked_cache") or (res.error_message and "PRE_EXTRACTION_URL_REJECTED" in res.error_message):
                     pre_url_rejects += 1
                     log_exec(f"  -> PRE_EXTRACTION_URL_REJECTED: {res.resolved_url[:60]} ({res.error_message})")
                 else:
@@ -142,7 +138,7 @@ def _discover_and_extract(
         except Exception as e:
             log_exec(f"  -> ERROR during extraction: {e}")
 
-    return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects
+    return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen
 
 
 # ---------------------------------------------------------------------------
@@ -182,33 +178,53 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
     discovery_service = NewsDiscoveryService(provider=GoogleNewsRSSDiscoveryProvider())
     extractor = ArticleExtractor()
+    reg_clf = EventRegionClassifier()
 
     # =========================================================================
-    # STAGE 1 + 2 (combined, with expansion loop)
+    # STAGE 1 + 2: Discovery Reserve Pool & Extraction
     # =========================================================================
     log_exec("=" * 60)
-    log_exec("STAGE 1+2: Discovery → Resolution → Extraction (with expansion if needed)")
+    log_exec("STAGE 1+2: Discovery Reserve Pool → Resolution → Extraction")
     log_exec("=" * 60)
 
     seen_urls: Set[str] = set()
     all_extracted: List[Article] = []
     all_records: List[Dict] = []
     total_google = total_resolved = total_fallback = total_pre_url_rejects = 0
-    india_discovered_total = intl_discovered_total = 0
+    duplicate_seen_candidates = 0
+    expansion_new_candidates = 0
 
-    # Expansion schedule: start at max_india/max_intl, step up in DISCOVERY_STEPS
-    initial_india = min(max_india, DISCOVERY_STEPS[0])
-    initial_intl  = min(max_international, DISCOVERY_STEPS[0])
+    log_exec(f"Fetching discovery reserve pools (up to {max_india} India, {max_international} International)...")
+    initial_discovery = discovery_service.discover_all(max_india=max_india, max_international=max_international)
+    india_reserve_pool = initial_discovery.get("india", [])
+    intl_reserve_pool  = initial_discovery.get("international", [])
 
-    log_exec(f"[Pass 1] Discovering {initial_india} India + {initial_intl} International candidates...")
-    batch_arts, batch_recs, gc, ro, fo, pur = _discover_and_extract(
-        discovery_service, extractor, initial_india, initial_intl, seen_urls, log_exec
+    discovered_total = len(india_reserve_pool) + len(intl_reserve_pool)
+    log_exec(f"Discovery Reserve Pool loaded: {len(india_reserve_pool)} India + {len(intl_reserve_pool)} International (Total: {discovered_total})")
+
+    # Pass 1: Extract top candidates from reserve pool (e.g. up to 20 each)
+    initial_india = min(len(india_reserve_pool), DISCOVERY_STEPS[0])
+    initial_intl  = min(len(intl_reserve_pool), DISCOVERY_STEPS[0])
+
+    pass1_candidates = (
+        [(c, "india") for c in india_reserve_pool[:initial_india]] +
+        [(c, "international") for c in intl_reserve_pool[:initial_intl]]
+    )
+    processed_india = initial_india
+    processed_intl  = initial_intl
+
+    log_exec(f"[Pass 1] Processing {initial_india} India + {initial_intl} International candidates from reserve...")
+    batch_arts, batch_recs, gc, ro, fo, pur, dup = _extract_candidates(
+        pass1_candidates, extractor, seen_urls, log_exec
     )
     all_extracted.extend(batch_arts)
     all_records.extend(batch_recs)
     total_google += gc; total_resolved += ro; total_fallback += fo; total_pre_url_rejects += pur
-    india_discovered_total += initial_india
-    intl_discovered_total  += initial_intl
+    duplicate_seen_candidates += dup
+    processed_pass1 = len(batch_arts)
+    reserve_remaining = (len(india_reserve_pool) - processed_india) + (len(intl_reserve_pool) - processed_intl)
+
+    log_exec(f"Pass 1 extracted: {len(batch_arts)} articles (Reserve remaining: {reserve_remaining})")
 
     log_exec(f"Pass 1: {len(batch_arts)} articles extracted from {initial_india + initial_intl} candidates.")
 
@@ -332,7 +348,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         event.financial_figures  = sorted(list(facts))[:5]
         primary_art = articles_lookup.get(event.article_ids[0])
         if primary_art:
-            event.event_category = primary_art.category
+            event.event_category = reg_clf.classify_event(event, [primary_art])
 
     verifier     = TwoSourceVerifier()
     corroborator = ActiveCorroborator(extractor=extractor)
@@ -342,7 +358,14 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     single_source_events: List[Event] = []
     rejected_events_list: List[Dict] = []
     corroboration_searches = 0
-    second_sources_found   = 0
+    second_sources_found = 0
+    # Stage 5 initial corroboration budget limits (leaves headroom for expansion passes)
+    STAGE5_INITIAL_MAX_RSS = 12
+    STAGE5_INITIAL_MAX_SERPAPI = 4
+
+    # Separate verified multi-source vs single-source candidates by section
+    india_single_source: List[Tuple[float, Event, Optional[Article]]] = []
+    intl_single_source: List[Tuple[float, Event, Optional[Article]]] = []
 
     for event in raw_events:
         event_articles = [articles_lookup[aid] for aid in event.article_ids if aid in articles_lookup]
@@ -352,58 +375,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             verified_events.append(event)
             log_exec(f"  -> VERIFIED: {event.canonical_title} ({len(event.article_ids)} sources)")
         elif verif_res.verification_status.value == "UNVERIFIED_SINGLE_SOURCE":
-            # Attempt active corroboration
-            single_source_events.append(event)
             primary_art = event_articles[0] if event_articles else None
-            if primary_art:
-                log_exec(f"  -> SINGLE SOURCE — attempting corroboration for: {event.canonical_title[:50]}")
-                corr_result = corroborator.corroborate(event=event, primary_article=primary_art)
-                corroboration_searches += corr_result.queries_fired
-
-                # Optional SerpAPI fallback if normal Google News RSS corroboration missed
-                if not corr_result.success:
-                    if serpapi_corroborator.has_api_key:
-                        log_exec(f"  -> RSS missed — attempting SerpAPI fallback for: {event.canonical_title[:50]}")
-                        corr_result = serpapi_corroborator.corroborate(event=event, primary_article=primary_art)
-                        corroboration_searches += corr_result.queries_fired
-                    else:
-                        log_exec(f"  -> RSS missed — SerpAPI fallback skipped (no SERPAPI_API_KEY set)")
-
-                if corr_result.success and corr_result.corroborating_article:
-                    second_sources_found += 1
-                    # Add corroborating article to lookup and event
-                    corr_art = corr_result.corroborating_article
-                    articles_lookup[corr_art.id] = corr_art
-                    event.article_ids.append(corr_art.id)
-
-                    # Re-verify with the new article
-                    re_verif = verifier.verify_event(event, [primary_art, corr_art])
-                    if re_verif.is_verified:
-                        verified_events.append(event)
-                        log_exec(
-                            f"    CORROBORATION SUCCESS: {event.canonical_title[:45]} "
-                            f"| Src1={primary_art.source_name} | Src2={corr_art.source_name}"
-                        )
-                    else:
-                        rejected_events_list.append({
-                            "event_title": event.canonical_title,
-                            "sources": [a.source_name for a in [primary_art, corr_art]],
-                            "reason": re_verif.matching_details,
-                        })
-                        log_exec(f"    CORROBORATION: 2nd source found but still rejected: {re_verif.matching_details}")
-                else:
-                    rejected_events_list.append({
-                        "event_title": event.canonical_title,
-                        "sources": [primary_art.source_name],
-                        "reason": corr_result.failure_reason or "No independent second source found",
-                    })
-                    log_exec(f"    CORROBORATION FAILED: {corr_result.failure_reason}")
+            prio = calculate_corroboration_priority(event, primary_art)
+            if event.event_category == NewsCategory.INDIA:
+                india_single_source.append((prio, event, primary_art))
             else:
-                rejected_events_list.append({
-                    "event_title": event.canonical_title,
-                    "sources": [],
-                    "reason": "Single source with no primary article available",
-                })
+                intl_single_source.append((prio, event, primary_art))
         else:
             rejected_events_list.append({
                 "event_title": event.canonical_title,
@@ -411,6 +388,90 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 "reason": verif_res.matching_details or "Failed two-source verification",
             })
             log_exec(f"  -> REJECTED: {event.canonical_title} — {verif_res.matching_details}")
+
+    # Sort each section descending by corroboration priority
+    india_single_source.sort(key=lambda x: x[0], reverse=True)
+    intl_single_source.sort(key=lambda x: x[0], reverse=True)
+
+    # Interleave fairly between India and International
+    interleaved_candidates: List[Tuple[float, Event, Optional[Article]]] = []
+    max_len = max(len(india_single_source), len(intl_single_source))
+    for i in range(max_len):
+        if i < len(india_single_source):
+            interleaved_candidates.append(india_single_source[i])
+        if i < len(intl_single_source):
+            interleaved_candidates.append(intl_single_source[i])
+
+    for prio, event, primary_art in interleaved_candidates:
+        single_source_events.append(event)
+        if prio < 40.0:
+            log_exec(f"  -> LOW CORROBORATION PRIORITY ({prio:.0f}/100) — skipping search for: {event.canonical_title[:50]}")
+            rejected_events_list.append({
+                "event_title": event.canonical_title,
+                "sources": [primary_art.source_name] if primary_art else [],
+                "reason": f"LOW_CORROBORATION_PRIORITY: Score {prio:.0f}/100 below threshold (live quote/commentary/trend)",
+            })
+            continue
+
+        if primary_art:
+            # Check Stage 5 initial budget caps (leave headroom for expansion)
+            rss_budget_ok = get_corroboration_count() < STAGE5_INITIAL_MAX_RSS
+            serpapi_budget_ok = (
+                serpapi_corroborator.has_api_key and
+                get_serpapi_count() < STAGE5_INITIAL_MAX_SERPAPI
+            )
+
+            if not rss_budget_ok and not serpapi_budget_ok:
+                log_exec(f"  -> Stage 5 initial budget reached (RSS={get_corroboration_count()}/{STAGE5_INITIAL_MAX_RSS}, SerpAPI={get_serpapi_count()}/{STAGE5_INITIAL_MAX_SERPAPI}) — saving remaining budget for expansion reserve.")
+                continue
+
+            log_exec(f"  -> SINGLE SOURCE (Priority {prio:.0f}/100) — attempting corroboration for: {event.canonical_title[:50]}")
+            corr_result = None
+            if rss_budget_ok:
+                corr_result = corroborator.corroborate(event=event, primary_article=primary_art)
+                corroboration_searches += corr_result.queries_fired
+
+            # Optional SerpAPI fallback if normal Google News RSS corroboration missed
+            if (corr_result is None or not corr_result.success) and serpapi_budget_ok:
+                log_exec(f"  -> RSS missed — attempting SerpAPI fallback for: {event.canonical_title[:50]}")
+                corr_result = serpapi_corroborator.corroborate(event=event, primary_article=primary_art)
+                corroboration_searches += corr_result.queries_fired
+
+            if corr_result and corr_result.success and corr_result.corroborating_article:
+                second_sources_found += 1
+                corr_art = corr_result.corroborating_article
+                articles_lookup[corr_art.id] = corr_art
+                event.article_ids.append(corr_art.id)
+
+                # Re-verify with the new article
+                re_verif = verifier.verify_event(event, [primary_art, corr_art])
+                if re_verif.is_verified:
+                    verified_events.append(event)
+                    log_exec(
+                        f"    CORROBORATION SUCCESS: {event.canonical_title[:45]} "
+                        f"| Src1={primary_art.source_name} | Src2={corr_art.source_name}"
+                    )
+                else:
+                    rejected_events_list.append({
+                        "event_title": event.canonical_title,
+                        "sources": [a.source_name for a in [primary_art, corr_art]],
+                        "reason": re_verif.matching_details,
+                    })
+                    log_exec(f"    CORROBORATION: 2nd source found but still rejected: {re_verif.matching_details}")
+            else:
+                fail_reason = corr_result.failure_reason if corr_result else "Corroboration budget skipped"
+                rejected_events_list.append({
+                    "event_title": event.canonical_title,
+                    "sources": [primary_art.source_name],
+                    "reason": fail_reason,
+                })
+                log_exec(f"    CORROBORATION FAILED: {fail_reason}")
+        else:
+            rejected_events_list.append({
+                "event_title": event.canonical_title,
+                "sources": [],
+                "reason": "Single source with no primary article available",
+            })
 
     log_exec(f"Stage 5 Summary:")
     log_exec(f"  Events found:            {len(raw_events)}")
@@ -429,9 +490,6 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     # =========================================================================
     # DISCOVERY EXPANSION (if insufficient verified events)
     # =========================================================================
-    from app.classification.region_classifier import EventRegionClassifier
-    reg_clf = EventRegionClassifier()
-
     for e in verified_events:
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
         e.event_category = reg_clf.classify_event(e, e_arts)
@@ -461,37 +519,61 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             log_exec("Both corroboration mechanisms exhausted (RSS & SerpAPI) — stopping discovery expansion.")
             break
 
-        # Check maximum discovery budget headroom
-        india_headroom = max(0, max_india - india_discovered_total)
-        intl_headroom  = max(0, max_international - intl_discovered_total)
+        # Check unseen candidates in reserve pools
+        unseen_india = india_reserve_pool[processed_india:] if processed_india < len(india_reserve_pool) else []
+        unseen_intl  = intl_reserve_pool[processed_intl:] if processed_intl < len(intl_reserve_pool) else []
 
-        if india_headroom == 0 and intl_headroom == 0:
-            log_exec("Maximum discovery budgets reached for both sections. Stopping expansion.")
-            break
+        step_india = min(len(unseen_india), min(20, max(5, india_deficit * 5))) if india_deficit > 0 else 0
+        step_intl  = min(len(unseen_intl), min(20, max(5, intl_deficit * 5))) if intl_deficit > 0 else 0
 
-        # Allocate targeted discovery steps proportional to section deficits
-        step_india = min(india_headroom, min(50, max(10, india_deficit * 10))) if india_deficit > 0 else 0
-        step_intl  = min(intl_headroom, min(50, max(10, intl_deficit * 10))) if intl_deficit > 0 else 0
+        expansion_candidates = []
+        if step_india > 0:
+            expansion_candidates.extend([(c, "india") for c in unseen_india[:step_india]])
+            processed_india += step_india
+        if step_intl > 0:
+            expansion_candidates.extend([(c, "international") for c in unseen_intl[:step_intl]])
+            processed_intl += step_intl
 
-        if step_india == 0 and step_intl == 0:
-            log_exec("No discovery budget available for deficient sections. Stopping expansion.")
+        # If reserve pool is exhausted for a deficient section, perform targeted category search
+        if step_india == 0 and india_deficit > 0:
+            extra_india = discovery_service.discover_india_news(
+                categories=["earnings_results", "acquisitions", "fundraises", "regulatory_actions"],
+                max_candidates=10
+            )
+            unseen_extra_india = [c for c in extra_india if c.url.strip().lower().rstrip("/") not in seen_urls]
+            if unseen_extra_india:
+                expansion_candidates.extend([(c, "india") for c in unseen_extra_india[:10]])
+
+        if step_intl == 0 and intl_deficit > 0:
+            extra_intl = discovery_service.discover_international_news(
+                categories=["us_earnings", "us_ma", "us_fundraises", "regulatory_actions"],
+                max_candidates=10
+            )
+            unseen_extra_intl = [c for c in extra_intl if c.url.strip().lower().rstrip("/") not in seen_urls]
+            if unseen_extra_intl:
+                expansion_candidates.extend([(c, "international") for c in unseen_extra_intl[:10]])
+
+        if not expansion_candidates:
+            log_exec("No unseen candidates remaining in reserve or targeted expansion. Stopping expansion.")
             break
 
         expansion_pass += 1
         log_exec(
             f"[Pass {expansion_pass}] SECTION DEFICIT EXPANSION: "
-            f"India verified={len(india_verified)} (Deficit={india_deficit}, Step={step_india}), "
-            f"Intl verified={len(intl_verified)} (Deficit={intl_deficit}, Step={step_intl})."
+            f"India verified={len(india_verified)} (Deficit={india_deficit}), "
+            f"Intl verified={len(intl_verified)} (Deficit={intl_deficit}), "
+            f"Extracting {len(expansion_candidates)} new candidates."
         )
 
-        batch_arts2, batch_recs2, gc2, ro2, fo2, pur2 = _discover_and_extract(
-            discovery_service, extractor, step_india, step_intl, seen_urls, log_exec
+        batch_arts2, batch_recs2, gc2, ro2, fo2, pur2, dup2 = _extract_candidates(
+            expansion_candidates, extractor, seen_urls, log_exec
         )
         all_extracted.extend(batch_arts2)
         all_records.extend(batch_recs2)
         total_google += gc2; total_resolved += ro2; total_fallback += fo2; total_pre_url_rejects += pur2
-        india_discovered_total += step_india
-        intl_discovered_total  += step_intl
+        duplicate_seen_candidates += dup2
+        expansion_new_candidates += len(batch_arts2)
+        reserve_remaining = max(0, len(india_reserve_pool) - processed_india) + max(0, len(intl_reserve_pool) - processed_intl)
 
         if not batch_arts2:
             log_exec("  No new articles discovered in this expansion pass. Stopping.")
@@ -801,16 +883,23 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     # =========================================================================
     # FINAL REPORT
     # =========================================================================
-    total_discovered = india_discovered_total + intl_discovered_total
+    india_discovered_total = len(india_reserve_pool)
+    intl_discovered_total  = len(intl_reserve_pool)
+    total_discovered = discovered_total
 
     print("\n" + "=" * 60)
     print(" PIPELINE EXECUTION COMPLETE — FULL REPORT")
     print("=" * 60)
-    print("\nDISCOVERY")
+    print("\nDISCOVERY & RESERVE POOL")
     print("-" * 30)
-    print(f"  India discovered:           {india_discovered_total}")
-    print(f"  International discovered:   {intl_discovered_total}")
-    print(f"  Total candidates:           {total_discovered}")
+    print(f"  India reserve discovered:   {len(india_reserve_pool)}")
+    print(f"  International discovered:   {len(intl_reserve_pool)}")
+    print(f"  Total discovered:           {discovered_total}")
+    print(f"  Processed in Pass 1:        {processed_pass1}")
+    print(f"  Reserve remaining:          {reserve_remaining}")
+    print(f"  Expansion new candidates:   {expansion_new_candidates}")
+    print(f"  Duplicate seen candidates:  {duplicate_seen_candidates}")
+
     # Compute deficits
     india_deficit = max(0, MIN_VERIFIED_PER_SECTION - len(india_verified))
     intl_deficit  = max(0, MIN_VERIFIED_PER_SECTION - len(intl_verified))
@@ -825,13 +914,17 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             code = raw_reason[:40]
         same_event_rejection_counts[code] = same_event_rejection_counts.get(code, 0) + 1
 
-    print("\nEXTRACTION")
+    print("\nEXTRACTION & DOMAIN METRICS")
     print("-" * 30)
     print(f"  Successful:                 {len(all_extracted)}")
     print(f"  Failed:                     {total_discovered - len(all_extracted)}")
     print(f"  Pre-extraction URL rejects: {total_pre_url_rejects}")
     print(f"  Google URLs resolved:       {total_resolved}")
     print(f"  Fallback extractions:       {total_fallback}")
+    if extractor.domain_extraction_stats:
+        print("  Per-domain extraction stats:")
+        for dom, d_stats in sorted(extractor.domain_extraction_stats.items(), key=lambda x: -x[1]["success"]):
+            print(f"    - {dom}: ok={d_stats['success']}, fail={d_stats['failed']}, blocked_401_403={d_stats['blocked_401_403']}")
     print("\nFILTERING")
     print("-" * 30)
     print(f"  Accepted:                   {len(accepted_articles)}")
@@ -857,6 +950,11 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     if same_event_rejection_counts:
         print("  Same-event rejection reasons:")
         for r_code, r_cnt in sorted(same_event_rejection_counts.items(), key=lambda x: -x[1]):
+            print(f"    - [{r_code}]: {r_cnt}")
+    serpapi_rejections = get_serpapi_rejection_reasons()
+    if serpapi_rejections:
+        print("  SerpAPI candidate rejection reasons:")
+        for r_code, r_cnt in sorted(serpapi_rejections.items(), key=lambda x: -x[1]):
             print(f"    - [{r_code}]: {r_cnt}")
     print("\nDEDUPLICATION")
     print("-" * 30)
