@@ -130,3 +130,61 @@ def test_serpapi_query_caching(mock_get, sample_event: Event, primary_article: A
     corroborator.corroborate(sample_event, primary_article)
     assert mock_get.call_count == 1  # Proves HTTP call count didn't increase
     assert get_serpapi_count() == 1
+
+
+@patch("requests.get")
+def test_serpapi_observability_counters(mock_get, sample_event: Event, primary_article: Article):
+    """Test tracking of candidates returned and accepted sources counters."""
+    from app.verification.serpapi_corroborator import (
+        get_serpapi_candidates_returned,
+        get_serpapi_accepted_sources,
+    )
+
+    assert get_serpapi_candidates_returned() == 0
+    assert get_serpapi_accepted_sources() == 0
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "news_results": [
+            {
+                "title": "Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium in Cash Deal",
+                "link": "https://www.cnbc.com/rio-tinto-arcadium-deal",
+                "source": {"name": "CNBC"},
+                "date": "2026-08-18T08:00:00Z",
+            },
+            {
+                "title": "Rio Tinto buying Arcadium Lithium for $6.7B",
+                "link": "https://www.wsj.com/rio-tinto-arcadium",
+                "source": {"name": "The Wall Street Journal"},
+                "date": "2026-08-18T09:00:00Z",
+            }
+        ]
+    }
+    mock_get.return_value = mock_response
+
+    mock_extractor = MagicMock()
+    mock_extract_result = MagicMock()
+    mock_extract_result.success = True
+    mock_extract_result.article = Article(
+        title="Rio Tinto Agrees $6.7 Billion Acquisition of Arcadium Lithium in Cash Deal",
+        url="https://www.cnbc.com/rio-tinto-arcadium-deal",
+        source_name="CNBC",
+        published_at=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        content_text="Mining giant Rio Tinto announced it will purchase US-based lithium producer Arcadium Lithium in a deal valued at 6.7 billion dollars.",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    mock_extractor.extract.return_value = mock_extract_result
+
+    corroborator = SerpAPICorroborator(extractor=mock_extractor, api_key="test_key", max_searches=5)
+    result = corroborator.corroborate(sample_event, primary_article)
+
+    assert result.success is True
+    assert get_serpapi_candidates_returned() == 2
+    assert get_serpapi_accepted_sources() == 1
+
+    # Reset
+    reset_serpapi_counter()
+    assert get_serpapi_candidates_returned() == 0
+    assert get_serpapi_accepted_sources() == 0
+

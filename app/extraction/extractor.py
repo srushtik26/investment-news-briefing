@@ -93,6 +93,23 @@ class ArticleExtractor:
                 word_count=0,
             )
 
+        # 1b. Pre-Extraction Resolved URL Gate (Reject non-article URLs before downloading HTML)
+        from app.filtering.rules import URLFilterRule
+        is_valid_url, url_reject_reason = URLFilterRule.is_valid_url(resolved_url)
+        if not is_valid_url:
+            logger.info("PRE_EXTRACTION_URL_REJECTED: %s | %s", resolved_url[:80], url_reject_reason)
+            return ExtractionResult(
+                success=False,
+                url=resolved_url,
+                original_url=original_url,
+                resolved_url=resolved_url,
+                status_code=None,
+                error_message=f"PRE_EXTRACTION_URL_REJECTED: {url_reject_reason}",
+                date_verified=False,
+                extraction_method="pre_url_filter",
+                word_count=0,
+            )
+
         # 2. Fetch raw HTML from resolved publisher URL
         fetch_success, html, status_code, error_msg = self.fetcher.fetch_html(resolved_url)
         if not fetch_success or not html:

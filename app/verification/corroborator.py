@@ -294,12 +294,13 @@ class ActiveCorroborator:
 
     def _build_site_clause(self, article: Article) -> str:
         """Build site: filter clause for RSS query, excluding primary publisher."""
-        primary_netloc = urlparse(article.url).netloc.lower().replace("www.", "")
+        from app.classification.region_classifier import EventRegionClassifier
+        from app.models.enums import NewsCategory
 
-        india_signals = ["economictimes", "business-standard", "livemint",
-                         "financialexpress", "moneycontrol", "businesstoday",
-                         "ndtvprofit", "thehindu", "indianexpress"]
-        is_india = any(sig in primary_netloc for sig in india_signals)
+        region_classifier = EventRegionClassifier()
+        cat = region_classifier.classify_article(article)
+        is_india = (cat == NewsCategory.INDIA)
+        primary_netloc = urlparse(article.url).netloc.lower().replace("www.", "")
 
         domains = self.INDIA_CORROBORATION_DOMAINS if is_india else self.INTL_CORROBORATION_DOMAINS
         # Exclude the primary publisher's domain
@@ -333,9 +334,11 @@ class ActiveCorroborator:
         ]
 
     def _detect_country(self, article: Article) -> str:
-        """Detect India vs International for the corroboration RSS query."""
+        """Detect India vs International using deterministic EventRegionClassifier."""
+        from app.classification.region_classifier import EventRegionClassifier
         from app.models.enums import NewsCategory
-        if article.category == NewsCategory.INDIA:
+        cat = EventRegionClassifier().classify_article(article)
+        if cat == NewsCategory.INDIA:
             return "India"
         return "International"
 

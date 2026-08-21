@@ -133,10 +133,15 @@ class TestURLFilterRule:
         ("https://economictimes.indiatimes.com/", "non-article"),
         ("https://economictimes.indiatimes.com/index.html", "non-article"),
         ("https://www.livemint.com/topic/tata-motors", "non-article"),
+        ("https://www.livemint.com/agency/pti/page/2", "non-article"),
+        ("https://www.cnbc.com/tags/tech-investing", "non-article"),
         ("https://www.business-standard.com/category/companies", "non-article"),
         ("https://www.reuters.com/newsletters/daily-brief", "non-article"),
+        ("https://example.com/newsletter/unsubscribe", "non-article"),
+        ("https://example.com/financial-report.pdf", "non-article"),
         ("https://www.bloomberg.com/live-blog/markets-today", "non-article"),
-        ("https://www.reuters.com/search/news?q=hdfc+bank", "search query"),
+        ("https://www.reuters.com/search/news?q=hdfc+bank", "search/query"),
+        ("https://example.com/search?s=reliance", "search/query"),
     ])
     def test_rejected_url_patterns(self, base_article: Article, bad_url: str, expected_reason: str):
         """Test rejection of topic pages, homepages, newsletters, live blogs, and search URLs."""
@@ -237,6 +242,30 @@ class TestStoryTypeFilterRule:
             "India July CPI Inflation Cools to 3.84%, Dropping Below RBI 4% Target",
             "Retail inflation based on the consumer price index eased to 3.84% in July, government data showed.",
         ),
+        (
+            "Goldman Sachs to buy LCN Capital Partners in up to $410 million deal",
+            "Goldman Sachs Asset Management announced an agreement to buy real estate firm LCN Capital Partners in a deal worth up to $410 million.",
+        ),
+        (
+            "Stripe acquires AI model routing startup OpenRouter",
+            "Fintech company Stripe has acquired AI routing provider OpenRouter to expand developer tools.",
+        ),
+        (
+            "Ola Electric files for IPO with SEBI to raise ₹5,500 crore",
+            "EV maker Ola Electric has filed draft red herring prospectus for its initial public offering.",
+        ),
+        (
+            "Tata Steel approves ₹2,000 crore plant investment and capacity expansion",
+            "Tata Steel board approved strategic plant investment and capacity expansion in Odisha.",
+        ),
+        (
+            "Infosys declares interim dividend of ₹28 per share and announces ₹9,300 crore share buyback",
+            "The board approved an interim dividend and a major share buyback program.",
+        ),
+        (
+            "Tech Mahindra revenue rises 4.5% as margins improve",
+            "Tech Mahindra posted higher quarterly revenue driven by enterprise software deal wins.",
+        ),
     ])
     def test_hard_business_events_accepted(
         self,
@@ -250,7 +279,7 @@ class TestStoryTypeFilterRule:
 
         rule = StoryTypeFilterRule()
         result = rule.evaluate(base_article)
-        assert result.is_accepted is True
+        assert result.is_accepted is True, f"Failed for '{event_title}': {result.rejection_reason}"
 
 
 class TestHardFilterEngine:

@@ -14,12 +14,14 @@ from app.classification.prompts import (
     SYSTEM_CLASSIFICATION_PROMPT,
     build_classification_user_prompt,
 )
+from app.classification.region_classifier import EventRegionClassifier
 
 __all__ = [
     "AIArticleClassifier",
     "AIArticleClassification",
     "ArticleEventType",
     "ClassificationResult",
+    "EventRegionClassifier",
     "GeminiRateLimitError",
     "SYSTEM_CLASSIFICATION_PROMPT",
     "build_classification_user_prompt",

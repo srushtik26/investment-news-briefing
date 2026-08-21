@@ -61,13 +61,22 @@ class EventClusterer:
             for art in cluster:
                 all_facts.update(normalize_metric_facts(f"{art.title} {art.content_text or ''}"))
 
-            # Synthesize canonical title and description
+            # Synthesize canonical title and description with deterministic region classification
+            from app.classification.region_classifier import EventRegionClassifier
+            region_classifier = EventRegionClassifier()
+            event_cat = region_classifier.classify(
+                title=primary_art.title,
+                content=primary_art.content_text,
+                financial_figures=sorted(list(all_facts))[:5],
+                companies=[primary_art.source_name] if not primary_art.author else [],
+            )
+
             event = Event(
                 canonical_title=primary_art.title,
                 description=primary_art.content_text[:300] if primary_art.content_text else primary_art.title,
                 companies_involved=[primary_art.source_name] if not primary_art.author else [],
                 financial_figures=sorted(list(all_facts))[:5],
-                event_category=primary_art.category,
+                event_category=event_cat,
                 article_ids=article_ids,
                 detected_at=datetime.now(timezone.utc),
             )

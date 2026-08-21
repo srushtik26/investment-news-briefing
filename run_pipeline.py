@@ -42,6 +42,9 @@ from app.verification import (
     reset_corroboration_counter,
     reset_serpapi_counter,
     get_corroboration_count,
+    get_serpapi_count,
+    get_serpapi_candidates_returned,
+    get_serpapi_accepted_sources,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
 )
 
@@ -69,10 +72,10 @@ def _discover_and_extract(
     max_intl: int,
     seen_urls: Set[str],
     log_exec,
-) -> Tuple[List[Article], List[Dict], int, int, int]:
+) -> Tuple[List[Article], List[Dict], int, int, int, int]:
     """
     Run one pass of Stage 1 + Stage 2.
-    Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok).
+    Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok, pre_url_rejects).
     """
     candidates = discovery_service.discover_all(max_india=max_india, max_international=max_intl)
     india_raw = candidates.get("india", [])
@@ -82,7 +85,7 @@ def _discover_and_extract(
 
     extracted: List[Article] = []
     records: List[Dict] = []
-    google_count = resolved_ok = fallback_ok = 0
+    google_count = resolved_ok = fallback_ok = pre_url_rejects = 0
 
     for idx, (cand, country) in enumerate(all_discovered, 1):
         norm_url = cand.url.strip().lower().rstrip("/")
@@ -129,13 +132,17 @@ def _discover_and_extract(
                     fallback_ok += 1
                 log_exec(f"  -> SUCCESS ({res.extraction_method}): {res.word_count} words | URL: {res.resolved_url[:60]}")
             else:
-                if res.original_url != res.resolved_url and not res.success:
-                    pass  # resolved but extraction failed (paywall etc.)
-                log_exec(f"  -> FAILED ({res.extraction_method}): {res.error_message}")
+                if res.extraction_method == "pre_url_filter" or (res.error_message and "PRE_EXTRACTION_URL_REJECTED" in res.error_message):
+                    pre_url_rejects += 1
+                    log_exec(f"  -> PRE_EXTRACTION_URL_REJECTED: {res.resolved_url[:60]} ({res.error_message})")
+                else:
+                    if res.original_url != res.resolved_url and not res.success:
+                        pass  # resolved but extraction failed (paywall etc.)
+                    log_exec(f"  -> FAILED ({res.extraction_method}): {res.error_message}")
         except Exception as e:
             log_exec(f"  -> ERROR during extraction: {e}")
 
-    return extracted, records, google_count, resolved_ok, fallback_ok
+    return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +193,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     seen_urls: Set[str] = set()
     all_extracted: List[Article] = []
     all_records: List[Dict] = []
-    total_google = total_resolved = total_fallback = 0
+    total_google = total_resolved = total_fallback = total_pre_url_rejects = 0
     india_discovered_total = intl_discovered_total = 0
 
     # Expansion schedule: start at max_india/max_intl, step up in DISCOVERY_STEPS
@@ -194,12 +201,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     initial_intl  = min(max_international, DISCOVERY_STEPS[0])
 
     log_exec(f"[Pass 1] Discovering {initial_india} India + {initial_intl} International candidates...")
-    batch_arts, batch_recs, gc, ro, fo = _discover_and_extract(
+    batch_arts, batch_recs, gc, ro, fo, pur = _discover_and_extract(
         discovery_service, extractor, initial_india, initial_intl, seen_urls, log_exec
     )
     all_extracted.extend(batch_arts)
     all_records.extend(batch_recs)
-    total_google += gc; total_resolved += ro; total_fallback += fo
+    total_google += gc; total_resolved += ro; total_fallback += fo; total_pre_url_rejects += pur
     india_discovered_total += initial_india
     intl_discovered_total  += initial_intl
 
@@ -422,28 +429,67 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     # =========================================================================
     # DISCOVERY EXPANSION (if insufficient verified events)
     # =========================================================================
+    from app.classification.region_classifier import EventRegionClassifier
+    reg_clf = EventRegionClassifier()
+
+    for e in verified_events:
+        e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+        e.event_category = reg_clf.classify_event(e, e_arts)
+
     india_verified = [e for e in verified_events if e.event_category == NewsCategory.INDIA]
     intl_verified  = [e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL]
 
     expansion_pass = 1
-    for step_max in DISCOVERY_STEPS[1:]:  # 30, 40, 50
-        if len(india_verified) >= MIN_VERIFIED_PER_SECTION and len(intl_verified) >= MIN_VERIFIED_PER_SECTION:
+    max_expansion_passes = 4
+
+    while expansion_pass <= max_expansion_passes:
+        # Calculate section deficits
+        india_deficit = max(0, settings.MIN_VERIFIED_INDIA - len(india_verified))
+        intl_deficit  = max(0, settings.MIN_VERIFIED_INTL - len(intl_verified))
+
+        if india_deficit == 0 and intl_deficit == 0:
+            log_exec(f"Sufficiency gate satisfied: India={len(india_verified)}, Intl={len(intl_verified)} (no deficits).")
             break
-        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
-            log_exec("Corroboration budget exhausted — skipping further discovery expansion.")
+
+        rss_available = get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN
+        serpapi_available = (
+            serpapi_corroborator.has_api_key and
+            get_serpapi_count() < settings.MAX_SERPAPI_SEARCHES_PER_RUN
+        )
+
+        if not rss_available and not serpapi_available:
+            log_exec("Both corroboration mechanisms exhausted (RSS & SerpAPI) — stopping discovery expansion.")
+            break
+
+        # Check maximum discovery budget headroom
+        india_headroom = max(0, max_india - india_discovered_total)
+        intl_headroom  = max(0, max_international - intl_discovered_total)
+
+        if india_headroom == 0 and intl_headroom == 0:
+            log_exec("Maximum discovery budgets reached for both sections. Stopping expansion.")
+            break
+
+        # Allocate targeted discovery steps proportional to section deficits
+        step_india = min(india_headroom, min(50, max(10, india_deficit * 10))) if india_deficit > 0 else 0
+        step_intl  = min(intl_headroom, min(50, max(10, intl_deficit * 10))) if intl_deficit > 0 else 0
+
+        if step_india == 0 and step_intl == 0:
+            log_exec("No discovery budget available for deficient sections. Stopping expansion.")
             break
 
         expansion_pass += 1
-        step_india = min(step_max, 50)
-        step_intl  = min(step_max, 50)
-        log_exec(f"[Pass {expansion_pass}] EXPANSION: India verified={len(india_verified)}, Intl verified={len(intl_verified)} < {MIN_VERIFIED_PER_SECTION}. Expanding to {step_india}+{step_intl}...")
+        log_exec(
+            f"[Pass {expansion_pass}] SECTION DEFICIT EXPANSION: "
+            f"India verified={len(india_verified)} (Deficit={india_deficit}, Step={step_india}), "
+            f"Intl verified={len(intl_verified)} (Deficit={intl_deficit}, Step={step_intl})."
+        )
 
-        batch_arts2, batch_recs2, gc2, ro2, fo2 = _discover_and_extract(
+        batch_arts2, batch_recs2, gc2, ro2, fo2, pur2 = _discover_and_extract(
             discovery_service, extractor, step_india, step_intl, seen_urls, log_exec
         )
         all_extracted.extend(batch_arts2)
         all_records.extend(batch_recs2)
-        total_google += gc2; total_resolved += ro2; total_fallback += fo2
+        total_google += gc2; total_resolved += ro2; total_fallback += fo2; total_pre_url_rejects += pur2
         india_discovered_total += step_india
         intl_discovered_total  += step_intl
 
@@ -482,6 +528,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     # Cluster + verify this new article
                     new_raw = clusterer.cluster_articles_into_events([art])
                     for event in new_raw:
+                        event.event_category = reg_clf.classify_event(event, [art])
                         for aid in event.article_ids:
                             existing_event = next(
                                 (e for e in verified_events + single_source_events
@@ -498,27 +545,46 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                                     ev_arts = [articles_lookup[i] for i in existing_event.article_ids if i in articles_lookup]
                                     rv = verifier.verify_event(existing_event, ev_arts)
                                     if rv.is_verified and existing_event not in verified_events:
+                                        existing_event.event_category = reg_clf.classify_event(existing_event, ev_arts)
                                         verified_events.append(existing_event)
                                         log_exec(f"    EXPANSION VERIFIED: {existing_event.canonical_title[:45]}")
                             else:
-                                # New unique event from expansion
+                                # Prioritize corroboration only if section still has deficit
+                                is_india_event = (event.event_category == NewsCategory.INDIA)
+                                section_has_deficit = (india_deficit > 0 if is_india_event else intl_deficit > 0)
+                                if not section_has_deficit:
+                                    single_source_events.append(event)
+                                    continue
+
                                 ev_arts = [articles_lookup.get(aid2) for aid2 in event.article_ids if aid2 in articles_lookup]
                                 ev_arts = [a for a in ev_arts if a]
                                 prim = ev_arts[0] if ev_arts else art
-                                corr = corroborator.corroborate(event=event, primary_article=prim)
-                                corroboration_searches += corr.queries_fired
-                                if not corr.success and serpapi_corroborator.has_api_key:
-                                    corr = serpapi_corroborator.corroborate(event=event, primary_article=prim)
+
+                                corr = None
+                                if get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN:
+                                    corr = corroborator.corroborate(event=event, primary_article=prim)
                                     corroboration_searches += corr.queries_fired
-                                if corr.success and corr.corroborating_article:
+
+                                if (corr is None or not corr.success) and serpapi_corroborator.has_api_key:
+                                    if get_serpapi_count() < settings.MAX_SERPAPI_SEARCHES_PER_RUN:
+                                        log_exec(f"  [Expansion] Attempting SerpAPI fallback for: {event.canonical_title[:50]}")
+                                        corr = serpapi_corroborator.corroborate(event=event, primary_article=prim)
+                                        corroboration_searches += corr.queries_fired
+
+                                if corr and corr.success and corr.corroborating_article:
                                     second_sources_found += 1
                                     ca = corr.corroborating_article
                                     articles_lookup[ca.id] = ca
                                     event.article_ids.append(ca.id)
                                     rv2 = verifier.verify_event(event, [prim, ca])
                                     if rv2.is_verified:
+                                        event.event_category = reg_clf.classify_event(event, [prim, ca])
                                         verified_events.append(event)
                                         log_exec(f"    EXPANSION CORROBORATED: {event.canonical_title[:45]} | Src2={ca.source_name}")
+
+        for e in verified_events:
+            e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+            e.event_category = reg_clf.classify_event(e, e_arts)
 
         india_verified = [e for e in verified_events if e.event_category == NewsCategory.INDIA]
         intl_verified  = [e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL]
@@ -603,34 +669,39 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         log_exec("PIPELINE SUFFICIENCY GATE: INSUFFICIENT VERIFIED STORIES")
         log_exec(f"  India verified candidates:  {india_pool_count} / {MIN_VERIFIED_PER_SECTION} required")
         log_exec(f"  International candidates:  {intl_pool_count} / {MIN_VERIFIED_PER_SECTION} required")
-        log_exec("  DO NOT call Gemini Editorial. Returning INSUFFICIENT_VERIFIED_STORIES.")
+        log_exec("  Stage 8 Editorial:        SKIPPED")
+        log_exec("  Stage 9 Final Validation: SKIPPED")
+        log_exec("  Stage 10 Formatter:       SKIPPED")
+        log_exec("  Pipeline Status:          INSUFFICIENT_VERIFIED_STORIES")
         log_exec("=" * 60)
 
-    # =========================================================================
-    # STAGE 8: Gemini Editorial (only if sufficient)
-    # =========================================================================
-    log_exec("=" * 60)
-    log_exec("STAGE 8: Gemini Editorial — final editorial curation")
-    log_exec("=" * 60)
-    editorial_res = None
-
-    if india_pool_count == 0 and intl_pool_count == 0:
-        log_exec("  -> STAGE 8 SKIPPED: Zero candidate events in pool. Preserving Gemini API quota.")
-        editorial_res = EditorialResult(
-            success=False,
-            error_message="NO_STORIES_AVAILABLE: Zero verified candidate events available for editorial selection.",
-            attempts=0,
-            raw_response=None,
-        )
-    elif not sufficient:
+        # Stage 8 SKIPPED
+        log_exec("=" * 60)
+        log_exec("STAGE 8: Gemini Editorial — SKIPPED (Sufficiency gate failed)")
+        log_exec("=" * 60)
         log_exec(f"  -> STAGE 8 SKIPPED: Insufficient stories (India={india_pool_count}, Intl={intl_pool_count}). Needs {MIN_VERIFIED_PER_SECTION} each.")
-        editorial_res = EditorialResult(
-            success=False,
-            error_message=f"INSUFFICIENT_VERIFIED_STORIES: India={india_pool_count}/{MIN_VERIFIED_PER_SECTION}, Intl={intl_pool_count}/{MIN_VERIFIED_PER_SECTION}",
-            attempts=0,
-            raw_response=None,
-        )
+        selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
+
+        # Stage 9 SKIPPED
+        log_exec("=" * 60)
+        log_exec("STAGE 9: Final Validation — SKIPPED (Sufficiency gate failed)")
+        log_exec("=" * 60)
+        log_exec("  -> STAGE 9 SKIPPED: Zero candidate briefing payload. Validation skipped cleanly.")
+        validation_report = None
+
+        # Stage 10 SKIPPED
+        log_exec("=" * 60)
+        log_exec("STAGE 10: Formatter — SKIPPED (Sufficiency gate failed)")
+        log_exec("=" * 60)
+        log_exec("  -> STAGE 10 SKIPPED: Briefing text not generated.")
+        briefing_text = ""
     else:
+        # =========================================================================
+        # STAGE 8: Gemini Editorial (only if sufficient)
+        # =========================================================================
+        log_exec("=" * 60)
+        log_exec("STAGE 8: Gemini Editorial — final editorial curation")
+        log_exec("=" * 60)
         editorial_engine = GeminiEditorialEngine()
         time.sleep(2)
         try:
@@ -639,81 +710,81 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             log_exec(f"  -> ERROR during editorial call: {e}")
             editorial_res = EditorialResult(success=False, error_message=str(e), attempts=1)
 
-    if editorial_res and not editorial_res.success:
-        if (editorial_res.error_message or "").startswith(RATE_LIMITED_PREFIX):
-            log_exec(f"  -> RATE_LIMITED: {editorial_res.error_message}")
+        if editorial_res and not editorial_res.success:
+            if (editorial_res.error_message or "").startswith(RATE_LIMITED_PREFIX):
+                log_exec(f"  -> RATE_LIMITED: {editorial_res.error_message}")
 
-    selection_payload = None
-    if editorial_res and editorial_res.success and editorial_res.selection:
-        selection_payload = editorial_res.selection
-        log_exec(f"Stage 8 Summary:")
-        log_exec(f"  Gemini selected: {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
+        selection_payload = None
+        if editorial_res and editorial_res.success and editorial_res.selection:
+            selection_payload = editorial_res.selection
+            log_exec(f"Stage 8 Summary:")
+            log_exec(f"  Gemini selected: {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
 
-        with open(data_dir / "final_10_stories.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "india":         [s.model_dump() for s in selection_payload.india_stories],
-                "international": [s.model_dump() for s in selection_payload.international_stories],
-            }, f, indent=2)
-    else:
-        err = editorial_res.error_message if editorial_res else "Unknown editorial error"
-        log_exec(f"Stage 8 Summary: FAILED/SKIPPED: {err}")
-        selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
+            with open(data_dir / "final_10_stories.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "india":         [s.model_dump() for s in selection_payload.india_stories],
+                    "international": [s.model_dump() for s in selection_payload.international_stories],
+                }, f, indent=2)
+        else:
+            err = editorial_res.error_message if editorial_res else "Unknown editorial error"
+            log_exec(f"Stage 8 Summary: FAILED/SKIPPED: {err}")
+            selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
 
-    # =========================================================================
-    # STAGE 9: Final Validation
-    # =========================================================================
-    log_exec("=" * 60)
-    log_exec("STAGE 9: Final Validation — 20-check deterministic gatekeeper")
-    log_exec("=" * 60)
-    validator = FinalValidationEngine(history_store=history_store)
-    validation_report = validator.validate_briefing(
-        payload=selection_payload,
-        events_lookup=event_by_id,
-        articles_lookup=articles_lookup,
-        target_date=date.today(),
-        strict_5_per_section=True,
-    )
-    log_exec(f"Stage 9 Summary:")
-    log_exec(f"  Status:        {validation_report.status.value}")
-    log_exec(f"  Passed checks: {validation_report.passed_checks} / 20")
-    log_exec(f"  Failed checks: {validation_report.failed_checks} / 20")
+        # =========================================================================
+        # STAGE 9: Final Validation
+        # =========================================================================
+        log_exec("=" * 60)
+        log_exec("STAGE 9: Final Validation — 20-check deterministic gatekeeper")
+        log_exec("=" * 60)
+        validator = FinalValidationEngine(history_store=history_store)
+        validation_report = validator.validate_briefing(
+            payload=selection_payload,
+            events_lookup=event_by_id,
+            articles_lookup=articles_lookup,
+            target_date=date.today(),
+            strict_5_per_section=True,
+        )
+        log_exec(f"Stage 9 Summary:")
+        log_exec(f"  Status:        {validation_report.status.value}")
+        log_exec(f"  Passed checks: {validation_report.passed_checks} / 20")
+        log_exec(f"  Failed checks: {validation_report.failed_checks} / 20")
 
-    # =========================================================================
-    # STAGE 10: Formatter
-    # =========================================================================
-    log_exec("=" * 60)
-    log_exec("STAGE 10: Formatter — generating final briefing text")
-    log_exec("=" * 60)
-    briefing_text = ""
-    if validation_report.is_valid:
-        try:
-            formatter = BriefingFormatter()
-            formatted = formatter.format(selection_payload, briefing_date=date.today())
-            briefing_text = formatted.text
-            log_exec("Briefing successfully formatted!")
-            with open(data_dir / "final_briefing.txt", "w", encoding="utf-8") as f:
-                f.write(briefing_text)
+        # =========================================================================
+        # STAGE 10: Formatter
+        # =========================================================================
+        log_exec("=" * 60)
+        log_exec("STAGE 10: Formatter — generating final briefing text")
+        log_exec("=" * 60)
+        briefing_text = ""
+        if validation_report.is_valid:
+            try:
+                formatter = BriefingFormatter()
+                formatted = formatter.format(selection_payload, briefing_date=date.today())
+                briefing_text = formatted.text
+                log_exec("Briefing successfully formatted!")
+                with open(data_dir / "final_briefing.txt", "w", encoding="utf-8") as f:
+                    f.write(briefing_text)
 
-            # Persist to history
-            history_stories = []
-            for s in selection_payload.india_stories + selection_payload.international_stories:
-                ev = event_by_id.get(s.event_id)
-                comp = ev.companies_involved[0] if (ev and ev.companies_involved) else "unspecified"
-                history_stories.append({
-                    "event_id":          s.event_id,
-                    "event_fingerprint": ev.canonical_title if ev else s.headline,
-                    "headline":          s.headline,
-                    "company_name":      comp,
-                    "category":          s.section,
-                    "source_count":      len(ev.article_ids) if ev else 1,
-                    "published_date":    date.today(),
-                })
-            history_store.save_briefing(date.today(), history_stories)
-            log_exec("Saved selected stories to SQLite briefing history.")
-        except Exception as e:
-            log_exec(f"Error during briefing formatting: {e}")
-    else:
-        log_exec(f"Briefing NOT formatted — validation failed: {validation_report.failure_reason}")
+                # Persist to history
+                history_stories = []
+                for s in selection_payload.india_stories + selection_payload.international_stories:
+                    ev = event_by_id.get(s.event_id)
+                    comp = ev.companies_involved[0] if (ev and ev.companies_involved) else "unspecified"
+                    history_stories.append({
+                        "event_id":          s.event_id,
+                        "event_fingerprint": ev.canonical_title if ev else s.headline,
+                        "headline":          s.headline,
+                        "company_name":      comp,
+                        "category":          s.section,
+                        "source_count":      len(ev.article_ids) if ev else 1,
+                        "published_date":    date.today(),
+                    })
+                history_store.save_briefing(date.today(), history_stories)
+                log_exec("Saved selected stories to SQLite briefing history.")
+            except Exception as e:
+                log_exec(f"Error during briefing formatting: {e}")
+        else:
+            log_exec(f"Briefing NOT formatted — validation failed: {validation_report.failure_reason}")
 
     # =========================================================================
     # STAGE 11: Output & URL Audit
@@ -740,10 +811,25 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print(f"  India discovered:           {india_discovered_total}")
     print(f"  International discovered:   {intl_discovered_total}")
     print(f"  Total candidates:           {total_discovered}")
+    # Compute deficits
+    india_deficit = max(0, MIN_VERIFIED_PER_SECTION - len(india_verified))
+    intl_deficit  = max(0, MIN_VERIFIED_PER_SECTION - len(intl_verified))
+
+    # Compute same-event rejection reason breakdown
+    same_event_rejection_counts: Dict[str, int] = {}
+    for rej in rejected_events_list:
+        raw_reason = rej.get("reason", "Unknown")
+        if ":" in raw_reason:
+            code = raw_reason.split(":")[0].strip()
+        else:
+            code = raw_reason[:40]
+        same_event_rejection_counts[code] = same_event_rejection_counts.get(code, 0) + 1
+
     print("\nEXTRACTION")
     print("-" * 30)
     print(f"  Successful:                 {len(all_extracted)}")
     print(f"  Failed:                     {total_discovered - len(all_extracted)}")
+    print(f"  Pre-extraction URL rejects: {total_pre_url_rejects}")
     print(f"  Google URLs resolved:       {total_resolved}")
     print(f"  Fallback extractions:       {total_fallback}")
     print("\nFILTERING")
@@ -757,36 +843,52 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print(f"  Live Gemini calls:          {live_class_count}")
     print(f"  Offline heuristic:          {offline_class_count}")
     print(f"  Accepted by AI:             {len(classified_articles)}")
-    print("\nVERIFICATION")
+    print("\nVERIFICATION & CORROBORATION")
     print("-" * 30)
     print(f"  Events found:               {len(raw_events)}")
     print(f"  Single-source events:       {len(single_source_events)}")
-    print(f"  Corroboration searches:     {corroboration_searches}")
-    print(f"  Second sources found:       {second_sources_found}")
+    print(f"  RSS corroboration searches: {get_corroboration_count()} / {MAX_CORROBORATION_SEARCHES_PER_RUN}")
+    print(f"  SerpAPI searches:           {get_serpapi_count()} / {settings.MAX_SERPAPI_SEARCHES_PER_RUN}")
+    print(f"  SerpAPI candidates returned:{get_serpapi_candidates_returned()}")
+    print(f"  SerpAPI accepted 2nd sources:{get_serpapi_accepted_sources()}")
+    print(f"  Total 2nd sources found:    {second_sources_found}")
     print(f"  Verified events:            {len(verified_events)}")
     print(f"  Verification failures:      {len(rejected_events_list)}")
+    if same_event_rejection_counts:
+        print("  Same-event rejection reasons:")
+        for r_code, r_cnt in sorted(same_event_rejection_counts.items(), key=lambda x: -x[1]):
+            print(f"    - [{r_code}]: {r_cnt}")
     print("\nDEDUPLICATION")
     print("-" * 30)
     print(f"  Removed (history/dedup):    {len(rejected_stories)}")
     print(f"  Remaining:                  {len(accepted_stories)}")
-    print("\nRANKING")
+    print("\nRANKING & SUFFICIENCY")
     print("-" * 30)
     print(f"  India candidates:           {india_pool_count}")
     print(f"  International candidates:   {intl_pool_count}")
+    print(f"  India deficit:              {india_deficit}")
+    print(f"  International deficit:      {intl_deficit}")
     print(f"  Sufficiency gate:           {'PASSED' if sufficient else 'FAILED (INSUFFICIENT_VERIFIED_STORIES)'}")
     print("\nEDITORIAL (Gemini)")
     print("-" * 30)
-    editorial_calls = gemini_stats["by_stage"].get("editorial", 0)
-    print(f"  Gemini editorial calls:     {editorial_calls}")
-    print(f"  Selected India:             {len(selection_payload.india_stories)}")
-    print(f"  Selected International:     {len(selection_payload.international_stories)}")
+    if sufficient and editorial_res and editorial_res.success:
+        editorial_calls = gemini_stats["by_stage"].get("editorial", 0)
+        print(f"  Gemini editorial calls:     {editorial_calls}")
+        print(f"  Selected India:             {len(selection_payload.india_stories)}")
+        print(f"  Selected International:     {len(selection_payload.international_stories)}")
+    else:
+        print("  Status:                     SKIPPED (INSUFFICIENT_VERIFIED_STORIES)")
+
     print("\nVALIDATION")
     print("-" * 30)
-    print(f"  Status:                     {validation_report.status.value}")
-    print(f"  Passed checks:              {validation_report.passed_checks} / 20")
-    print(f"  Failed checks:              {validation_report.failed_checks} / 20")
-    if not validation_report.is_valid:
-        print(f"  Failure reason:             {validation_report.failure_reason}")
+    if validation_report:
+        print(f"  Status:                     {validation_report.status.value}")
+        print(f"  Passed checks:              {validation_report.passed_checks} / 20")
+        print(f"  Failed checks:              {validation_report.failed_checks} / 20")
+        if not validation_report.is_valid:
+            print(f"  Failure reason:             {validation_report.failure_reason}")
+    else:
+        print("  Status:                     SKIPPED (INSUFFICIENT_VERIFIED_STORIES)")
     print("\nGEMINI API USAGE")
     print("-" * 30)
     print(f"  Total calls:                {gemini_stats['total_calls']}")
@@ -846,12 +948,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         print("------------------------\n")
     else:
         print(f"\nFINAL BRIEFING: NOT GENERATED")
-        if validation_report.failure_reason:
-            print(f"Reason: {validation_report.failure_reason}")
-        elif not sufficient:
+        if not sufficient:
             print("Reason: INSUFFICIENT_VERIFIED_STORIES — fewer than 5+5 independently verified events found.")
+        elif validation_report and validation_report.failure_reason:
+            print(f"Reason: {validation_report.failure_reason}")
 
-    return 0 if validation_report.is_valid else 1
+    return 0 if (sufficient and validation_report and validation_report.is_valid) else 1
 
 
 if __name__ == "__main__":

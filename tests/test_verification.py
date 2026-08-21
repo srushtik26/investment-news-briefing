@@ -196,3 +196,188 @@ def test_package_exports_and_instantiates_two_source_verifier():
     verifier = PackageVerifier()
     assert isinstance(verifier, PackageVerifier)
 
+
+class TestSameEventVerificationQualityRegression:
+    """Regression tests ensuring strict same-underlying-event validation."""
+
+    def test_lt_nxt_infra_vs_nxt_infra_earnings_rejected(self):
+        """
+        Regression Test: Exact live bug scenario.
+        Primary: 'L&T buys over 2 crore units of Nxt-Infra Trust for ₹250 Crore' (ACQUISITION/PURCHASE)
+        Secondary: 'Nxt-Infra Trust consolidated net profit rises 71.83% in June 2026 quarter' (EARNINGS)
+        Must be rejected with EVENT_TYPE_MISMATCH.
+        """
+        art_deal = Article(
+            title="L&T buys over 2 crore units of Nxt-Infra Trust for ₹250 Crore",
+            url="https://www.livemint.com/market/lt-buys-nxt-infra",
+            source_name="Livemint",
+            content_text="Larsen & Toubro has acquired over 2 crore units of Nxt-Infra Trust in a block deal worth ₹250 crore.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art_earnings = Article(
+            title="Nxt-Infra Trust consolidated net profit rises 71.83% in June 2026 quarter",
+            url="https://www.business-standard.com/companies/nxt-infra-q1-results",
+            source_name="Business Standard",
+            content_text="Nxt-Infra Trust posted a 71.83% increase in consolidated net profit for the quarter ended June 2026.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(art_deal, art_earnings)
+
+        assert is_same is False
+        assert "EVENT_TYPE_MISMATCH" in reason
+        assert "ACQUISITION_M_A" in reason or "EARNINGS" in reason
+
+    def test_acquisition_vs_same_target_acquisition_accepted(self):
+        """Test: Acquisition of same target by same buyer across two publishers is ACCEPTED."""
+        art1 = Article(
+            title="Rio Tinto Agrees $6.7 Billion All-Cash Acquisition of Arcadium Lithium",
+            url="https://www.reuters.com/rio-tinto-arcadium",
+            source_name="Reuters",
+            content_text="Mining giant Rio Tinto has agreed to acquire Arcadium Lithium for $6.7 billion in cash.",
+            category=NewsCategory.INTERNATIONAL,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art2 = Article(
+            title="Rio Tinto to Buy Arcadium Lithium for $6.7 Billion",
+            url="https://www.cnbc.com/rio-arcadium-deal",
+            source_name="CNBC",
+            content_text="Rio Tinto announced a takeover of Arcadium Lithium in a deal valued at $6.7 billion.",
+            category=NewsCategory.INTERNATIONAL,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(art1, art2)
+
+        assert is_same is True
+        assert score >= 0.80
+        assert "Corroborated" in reason
+
+    def test_same_quarter_earnings_accepted(self):
+        """Test: Earnings for the same company and same quarter are ACCEPTED."""
+        art1 = Article(
+            title="HDFC Bank Q1 Net Profit Surges 18% to ₹16,175 Crore",
+            url="https://www.business-standard.com/hdfc-q1",
+            source_name="Business Standard",
+            content_text="HDFC Bank reported net profit of ₹16,175 crore for Q1.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art2 = Article(
+            title="HDFC Bank Q1 Profit Rises 18% YoY",
+            url="https://economictimes.indiatimes.com/hdfc-q1",
+            source_name="The Economic Times",
+            content_text="HDFC Bank announced an 18% rise in Q1 profit.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(art1, art2)
+
+        assert is_same is True
+        assert score >= 0.80
+
+    def test_different_reporting_quarters_rejected_financial_fact_mismatch(self):
+        """Test: Same company but Q1 vs Q2 earnings are rejected with FINANCIAL_FACT_MISMATCH."""
+        art_q1 = Article(
+            title="Tata Motors Q1 Net Profit Surges 74% to ₹5,566 Crore",
+            url="https://www.livemint.com/tata-motors-q1",
+            source_name="Livemint",
+            content_text="Tata Motors posted strong Q1 results.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art_q2 = Article(
+            title="Tata Motors Q2 Net Profit Falls 10% to ₹3,200 Crore",
+            url="https://economictimes.indiatimes.com/tata-motors-q2",
+            source_name="The Economic Times",
+            content_text="Tata Motors reported Q2 profit drop.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(art_q1, art_q2)
+
+        assert is_same is False
+        assert "FINANCIAL_FACT_MISMATCH" in reason
+
+    def test_same_company_unrelated_events_rejected_insufficient_overlap(self):
+        """Test: Same company mentioned without matching event facts or counterpart is REJECTED with INSUFFICIENT_EVENT_OVERLAP."""
+        art1 = Article(
+            title="Reliance Retail Expands Footprint Across Tier-2 Cities",
+            url="https://www.livemint.com/reliance-expansion",
+            source_name="Livemint",
+            content_text="Reliance Retail announced plans to open 200 new stores across India.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art2 = Article(
+            title="Reliance Retail Partners with Global Fashion Brand",
+            url="https://economictimes.indiatimes.com/reliance-fashion",
+            source_name="The Economic Times",
+            content_text="Reliance Retail inked an exclusive distribution agreement with an Italian luxury label.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(art1, art2)
+
+        assert is_same is False
+        assert "INSUFFICIENT_EVENT_OVERLAP" in reason
+
+    def test_canonical_rejection_codes_present(self):
+        """Test that TwoSourceVerifier produces expected canonical error codes for observability."""
+        verifier = TwoSourceVerifier()
+
+        # 1. Event Type Mismatch
+        art_earn = Article(
+            title="Nxt-Infra Trust Consolidated Net Profit Rises 71.83% in June 2026 Quarter",
+            url="https://www.livemint.com/nxt-infra-q1",
+            source_name="Livemint",
+            content_text="Q1 earnings rose.",
+        )
+        art_mna = Article(
+            title="L&T buys over 2 crore units of Nxt-Infra Trust",
+            url="https://economictimes.indiatimes.com/lt-nxt-infra",
+            source_name="The Economic Times",
+            content_text="L&T purchased units in block deal.",
+        )
+        is_same1, _, reason1 = verifier.is_same_underlying_event(art_earn, art_mna)
+        assert is_same1 is False
+        assert "EVENT_TYPE_MISMATCH" in reason1
+
+        # 2. Same Publisher Group
+        art_p1 = Article(title="Test", url="https://economictimes.indiatimes.com/a", source_name="The Economic Times")
+        art_p2 = Article(title="Test", url="https://timesofindia.indiatimes.com/b", source_name="Times of India")
+        grp1 = verifier.get_publisher_group(art_p1)
+        grp2 = verifier.get_publisher_group(art_p2)
+        assert grp1 == grp2 == "times_group"
+
+

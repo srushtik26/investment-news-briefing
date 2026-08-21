@@ -17,6 +17,8 @@ from app.verification.serpapi_corroborator import (
     SerpAPICorroborator,
     reset_serpapi_counter,
     get_serpapi_count,
+    get_serpapi_candidates_returned,
+    get_serpapi_accepted_sources,
 )
 
 __all__ = [
@@ -31,4 +33,6 @@ __all__ = [
     "SerpAPICorroborator",
     "reset_serpapi_counter",
     "get_serpapi_count",
+    "get_serpapi_candidates_returned",
+    "get_serpapi_accepted_sources",
 ]

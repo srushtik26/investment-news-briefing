@@ -240,54 +240,70 @@ class URLFilterRule(BaseFilterRule):
     """
     Deterministic URL Pattern Filter Rule.
     
-    Rejects topic hubs, section indices, category pages, homepages,
-    newsletters, live blogs, and search query results.
+    Rejects topic hubs, section indices, category pages, agency pagination, homepages,
+    newsletters, unsubscribe redirects, live blogs, search results, and non-HTML files.
     """
 
     REJECT_PATH_PATTERNS = [
-        r"^/?$",                          # Root homepage
-        r"^/(index|home|default)\.(html|htm|php|asp)/?$", # Homepage files
-        r"/(topics?|tags?|theme|hubs?)/", # Topic/tag hubs
-        r"/(category|categories|section|all-news)/", # Category landing pages
-        r"/(newsletters?|bulletins?|daily-brief)/", # Newsletter signup/archive
-        r"/(live-blog|liveblog|live-updates|live-coverage)/", # Live commentary feeds
-        r"/(search|find|query)/",         # Search result directories
+        r"^/?$",                                                              # Root homepage
+        r"^/(index|home|default)\.(html|htm|php|asp)/?$",                     # Homepage files
+        r"^/(index|home|default)/?$",                                         # Homepage subpath
+        r"/(topics?|tags?|theme|hubs?)/",                                     # Topic/tag hubs
+        r"/(category|categories|section|sections|all-news)/",                 # Category landing pages
+        r"/(agency|agencies|author|authors|profile)/",                        # Agency/author feeds
+        r"/(page|pages|p)/\d+/?$",                                            # Standalone pagination pages
+        r"/(newsletters?|bulletins?|daily-brief|unsubscribe|opt-out|email-preferences?)/", # Newsletter / opt-out
+        r"/(live-blog|liveblog|live-updates|live-coverage)/",                 # Live commentary feeds
+        r"/(search|find|query)/",                                             # Search result directories
+        r"\.(pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp4|mp3|avi|mov|exe)$",         # Non-HTML document/media files
     ]
 
-    REJECT_QUERY_PARAMS = ["q=", "query=", "search="]
+    REJECT_QUERY_PARAMS = ["q=", "query=", "search=", "s="]
+
+    @classmethod
+    def is_valid_url(cls, url: str) -> Tuple[bool, str]:
+        """
+        Evaluate if a URL points to a plausible article page before attempting network extraction.
+        Returns:
+            (is_valid, reason)
+        """
+        if not url or not url.strip():
+            return False, "Empty or missing URL"
+
+        parsed = urlparse(url.strip())
+        if not parsed.scheme or not parsed.netloc:
+            return False, f"Invalid URL structure: '{url}'"
+
+        path = parsed.path.lower()
+        query = parsed.query.lower()
+
+        # 1. Check Path Patterns
+        for pat in cls.REJECT_PATH_PATTERNS:
+            if re.search(pat, path):
+                return False, f"URL path matches non-article pattern '{pat}'"
+
+        # 2. Check Query Parameters
+        for qp in cls.REJECT_QUERY_PARAMS:
+            if qp in query:
+                return False, f"URL contains search/query parameter '{qp}'"
+
+        return True, "Valid article URL"
 
     @property
     def rule_name(self) -> str:
         return "URL"
 
     def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
-        parsed = urlparse(article.url)
-        path = parsed.path.lower()
-        query = parsed.query.lower()
-
-        # 1. Check Path Patterns
-        for pat in self.REJECT_PATH_PATTERNS:
-            if re.search(pat, path):
-                return FilterResult(
-                    is_accepted=False,
-                    article_url=article.url,
-                    article_title=article.title,
-                    rule_failed=self.rule_name,
-                    rejection_reason=f"URL matches non-article directory/hub pattern '{pat}'",
-                    matched_patterns=[pat],
-                )
-
-        # 2. Check Search Query Parameters
-        for qp in self.REJECT_QUERY_PARAMS:
-            if qp in query:
-                return FilterResult(
-                    is_accepted=False,
-                    article_url=article.url,
-                    article_title=article.title,
-                    rule_failed=self.rule_name,
-                    rejection_reason=f"URL contains search query parameter '{qp}'",
-                    matched_patterns=[qp],
-                )
+        is_valid, reason = self.is_valid_url(article.url)
+        if not is_valid:
+            return FilterResult(
+                is_accepted=False,
+                article_url=article.url,
+                article_title=article.title,
+                rule_failed=self.rule_name,
+                rejection_reason=reason,
+                matched_patterns=[reason],
+            )
 
         return FilterResult(
             is_accepted=True,
@@ -338,23 +354,23 @@ class StoryTypeFilterRule(BaseFilterRule):
     ACCEPT_EVENT_PATTERNS: List[Tuple[str, str]] = [
         (
             "earnings_figures",
-            r"\b(net profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|margin|surges|jumps|rises \d+%|falls \d+%|reports profit of|₹\s*[\d,]+|rs\.?\s*[\d,]+|\$\s*[\d,]+|crore|billion|quarterly results|annual results|net income|operating income|gross profit|comparable sales|same-store sales)\b",
+            r"\b(net profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|margin|surges|jumps|rises \d+%|falls \d+%|reports profit of|profit rises|profit falls|revenue rises|revenue falls|profit jumps|profit drops|earnings beat|earnings miss|₹\s*[\d,]+|rs\.?\s*[\d,]+|\$\s*[\d,]+|crore|billion|million|quarterly results|annual results|net income|operating income|gross profit|comparable sales|same-store sales)\b",
         ),
         (
             "acquisitions_mergers",
-            r"\b(acquires|acquisition|merger|demerger|buyout|takeover|nclt scheme|amalgamation|splits into|splits of)\b",
+            r"\b(to buy|buys\b|acquires?|acquisition|mergers?|merge|buyout|takeover|nclt scheme|amalgamation|demerger|spin-off|splits into|splits of|deal to buy|agrees to buy|all-cash deal)\b",
         ),
         (
             "contracts_orders",
             r"\b(epc contract|epc order|bags order|secures contract|wins order|mega order|order worth|contract worth|processing facility)\b",
         ),
         (
-            "stake_purchases",
-            r"\b(buys stake|stake purchase|block deal|bulk deal|promoter increases stake)\b",
+            "stake_and_investment",
+            r"\b(buys stake|stake purchase|stake sale|block deal|bulk deal|promoter increases stake|invests in|investment in|invests\b|investment\b|plant investment|capacity expansion|strategic investment)\b",
         ),
         (
             "fundraises_qips",
-            r"\b(raises funds|qip|qualified institutional placement|funding round|rights issue|capital raise|secures funding)\b",
+            r"\b(raises funds|raises funding|funding round|qip|qualified institutional placement|rights issue|capital raise|secures funding|fundraise)\b",
         ),
         (
             "bond_issuances",
@@ -362,7 +378,11 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "ipo_listings",
-            r"\b(ipo listing|ipo debut|listing day|files drhp|draft ipo papers|shares list at)\b",
+            r"\b(ipo listing|ipo debut|listing day|files drhp|draft ipo papers|shares list at|files for ipo|ipo\b)\b",
+        ),
+        (
+            "corporate_actions",
+            r"\b(dividend|special dividend|interim dividend|share buyback|stock buyback|buyback)\b",
         ),
         (
             "regulatory_actions",
@@ -386,7 +406,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "guidance_corporate",
-            r"\b(reaffirms? guidance|narrows? guidance|raises? guidance|maintains? outlook|updates? guidance|full.year guidance|fiscal year guidance|capex guidance|capital expenditure guidance|raises? forecast|lowers? forecast)\b",
+            r"\b(reaffirms? guidance|narrows? guidance|raises? guidance|guidance raised|guidance cut|lowers? guidance|cuts? guidance|maintains? outlook|updates? guidance|full.year guidance|fiscal year guidance|capex guidance|capital expenditure guidance|raises? forecast|lowers? forecast)\b",
         ),
         (
             "joint_venture",
@@ -394,7 +414,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "divestiture",
-            r"\b(divests?|divestiture|asset sale|sells? stake|exits? business|monetises?|monetizes?|sells? unit|hives? off)\b",
+            r"\b(divests?|divestiture|divestment|asset sale|sells? stake|exits? business|monetises?|monetizes?|sells? unit|hives? off)\b",
         ),
         (
             "restructuring",

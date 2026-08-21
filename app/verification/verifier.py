@@ -110,35 +110,183 @@ class TwoSourceVerifier:
 
         return False, f"Distinct editorial formulations (similarity {jaccard:.2f})"
 
+    EVENT_CATEGORY_PATTERNS: Dict[str, List[str]] = {
+        "EARNINGS": [
+            r"\b(net profit|quarterly profit|profit|net loss|ebitda|quarterly results|earnings|operating income|sales jump|sales surge|profit rises|profit falls|profit surges|profit drops|profit jumps|topline|bottomline|pat|pbt)\b",
+            r"\b(q[1-4]|quarter ended|june quarter|march quarter|september quarter|december quarter|first quarter|second quarter|third quarter|fourth quarter)\b",
+        ],
+        "ACQUISITION_M_A": [
+            r"\b(buys\b|buys stake|stake purchase|stake sale|acquires?|acquisition|buyout|merger|takeover|amalgamation|demerger|purchases?|invests in|investment in|units of|all-cash deal|block deal|deal to buy|agrees to buy)\b",
+        ],
+        "FUNDRAISING": [
+            r"\b(qip|qualified institutional placement|ipo|drhp|listing day|rights issue|raises? funds|funding round|debt issuance|bonds? issue|ncds?|share sale|preferential issue|fundraising)\b",
+        ],
+        "REGULATORY": [
+            r"\b(penalty|fine|ban|rbi order|sebi order|antitrust|lawsuit|charges|sec charges|probe|investigation|enforcement|show-cause)\b",
+        ],
+        "LEADERSHIP": [
+            r"\b(appoints? ceo|new ceo|steps down|resigns?|managing director|chief executive|cfo|appoints? md|executive chairman|leadership change)\b",
+        ],
+        "CONTRACT_ORDER": [
+            r"\b(bags order|wins contract|secures contract|order worth|epc contract|epc order|contract win)\b",
+        ],
+        "POLICY_MACRO": [
+            r"\b(gdp growth|inflation|cpi|interest rate|repo rate|tariff|customs duty|fed rate)\b",
+        ],
+        "RESTRUCTURING": [
+            r"\b(layoffs?|job cuts|restructuring|workforce reduction|headcount reduction)\b",
+        ],
+    }
+
+    INCOMPATIBLE_CATEGORIES: Dict[str, Set[str]] = {
+        "EARNINGS": {"ACQUISITION_M_A", "REGULATORY", "LEADERSHIP", "CONTRACT_ORDER", "RESTRUCTURING", "POLICY_MACRO"},
+        "ACQUISITION_M_A": {"EARNINGS", "REGULATORY", "LEADERSHIP", "CONTRACT_ORDER", "POLICY_MACRO"},
+        "FUNDRAISING": {"EARNINGS", "LEADERSHIP", "CONTRACT_ORDER", "POLICY_MACRO"},
+        "REGULATORY": {"EARNINGS", "ACQUISITION_M_A", "FUNDRAISING", "LEADERSHIP", "CONTRACT_ORDER"},
+        "LEADERSHIP": {"EARNINGS", "ACQUISITION_M_A", "FUNDRAISING", "REGULATORY", "CONTRACT_ORDER", "POLICY_MACRO"},
+        "CONTRACT_ORDER": {"EARNINGS", "ACQUISITION_M_A", "FUNDRAISING", "REGULATORY", "LEADERSHIP", "POLICY_MACRO"},
+    }
+
+    def detect_event_categories(self, article: Article) -> Set[str]:
+        """Detect event categories present in article title and initial snippet."""
+        text = f"{article.title} {(article.content_text or '')[:300]}".lower()
+        cats = set()
+        for cat, patterns in self.EVENT_CATEGORY_PATTERNS.items():
+            if any(re.search(pat, text) for pat in patterns):
+                cats.add(cat)
+        return cats
+
+    def _extract_metric_numbers(self, text: str) -> Set[str]:
+        """Extract and normalize numerical and percentage facts from text."""
+        facts = set()
+        for pct in re.findall(r"\b\d+(?:\.\d+)?%", text):
+            norm = pct.replace("%", "").strip()
+            if norm:
+                facts.add(f"{norm}%")
+        for num in re.findall(r"(?:₹|\$|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:crore|cr|billion|million|b|m)?", text, re.IGNORECASE):
+            norm = num.lower().replace("₹", "").replace("$", "").replace("rs.", "").replace("rs", "").replace(",", "").strip()
+            norm = re.sub(r"\s+", "", norm)
+            if norm and any(c.isdigit() for c in norm) and norm not in ("1", "2", "3", "2024", "2025", "2026"):
+                facts.add(norm)
+        for raw in re.findall(r"\b\d+(?:\.\d+)?\b", text):
+            if len(raw) >= 2 and raw not in ("2024", "2025", "2026"):
+                facts.add(raw)
+        return facts
+
+    def _extract_reporting_quarter(self, text: str) -> Optional[str]:
+        """Extract quarterly reporting period if explicitly mentioned."""
+        t_low = text.lower()
+        for q in ("q1", "q2", "q3", "q4", "first quarter", "second quarter", "third quarter", "fourth quarter", "june quarter", "march quarter", "september quarter", "december quarter"):
+            if q in t_low:
+                if q in ("q1", "first quarter", "june quarter"):
+                    return "q1"
+                if q in ("q2", "second quarter", "september quarter"):
+                    return "q2"
+                if q in ("q3", "third quarter", "december quarter"):
+                    return "q3"
+                if q in ("q4", "fourth quarter", "march quarter"):
+                    return "q4"
+        return None
+
     def is_same_underlying_event(self, art1: Article, art2: Article) -> Tuple[bool, float, str]:
         """
-        Determine if two articles refer to the same corporate/economic event.
+        Determine if two articles refer to the exact same corporate/economic event.
+        Enforces:
+        1. Shared primary entity/company
+        2. Compatible event type (incompatibility rejects immediately)
+        3. At least one additional event-specific signal (counterpart, shared numbers, period, strong overlap).
         """
-        # Tokenize titles (allow 2-letter tokens like q1, q2, cr, 18, ai, it, ev)
-        stopwords = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from", "as"}
-        t1_words = {w for w in re.findall(r"[a-zA-Z0-9]+", art1.title.lower()) if w not in stopwords and len(w) >= 2}
-        t2_words = {w for w in re.findall(r"[a-zA-Z0-9]+", art2.title.lower()) if w not in stopwords and len(w) >= 2}
+        t1 = art1.title.lower()
+        t2 = art2.title.lower()
 
-        title_overlap = t1_words.intersection(t2_words)
-        title_union = t1_words.union(t2_words)
-        title_similarity = len(title_overlap) / len(title_union) if title_union else 0.0
+        # Step 1: Detect Event Categories & Check Incompatibility
+        cats1 = self.detect_event_categories(art1)
+        cats2 = self.detect_event_categories(art2)
 
-        # Extract shared numbers / currency figures
-        nums1 = set(re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", art1.title))
-        nums2 = set(re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", art2.title))
-        shared_nums = nums1.intersection(nums2)
+        if cats1 and cats2:
+            for c1 in cats1:
+                incompatible = self.INCOMPATIBLE_CATEGORIES.get(c1, set())
+                for c2 in cats2:
+                    if c2 in incompatible and not (cats1.intersection(cats2)):
+                        return False, 0.0, f"EVENT_TYPE_MISMATCH: Incompatible event types ('{c1}' vs '{c2}')"
 
-        # Check shared key company words / stems
-        major_org_words1 = {w for w in t1_words if w in ("hdfc", "tata", "reliance", "nvidia", "infosys", "lt", "larsen", "toubro", "rio", "tinto", "arcadium", "apple", "google", "meta", "microsoft")}
-        major_org_words2 = {w for w in t2_words if w in ("hdfc", "tata", "reliance", "nvidia", "infosys", "lt", "larsen", "toubro", "rio", "tinto", "arcadium", "apple", "google", "meta", "microsoft")}
-        shared_orgs = major_org_words1.intersection(major_org_words2)
+        # Step 2: Shared Company / Entity Presence
+        stopwords = {
+            "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from", "as",
+            "over", "under", "after", "before", "amid", "says", "said", "reports", "reported", "shows", "shown", "deal"
+        }
+        w1 = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in stopwords and len(w) >= 2}
+        w2 = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in stopwords and len(w) >= 2}
+        overlap = w1.intersection(w2)
+        union = w1.union(w2)
+        title_similarity = len(overlap) / len(union) if union else 0.0
 
-        # Event matching logic
-        if title_similarity >= 0.25 or (shared_orgs and (shared_nums or title_similarity >= 0.15)) or len(title_overlap) >= 3:
-            score = max(title_similarity, 0.90 if shared_nums else 0.70)
-            return True, score, f"Matching entities/words {title_overlap} with {title_similarity:.2f} title overlap"
+        major_entities = {
+            "hdfc", "tata", "reliance", "nvidia", "infosys", "lt", "larsen", "toubro",
+            "rio", "tinto", "arcadium", "apple", "google", "meta", "microsoft", "shiprocket",
+            "nxt", "infra", "trust", "dersimelagon", "leo", "pharma", "adani", "wipro",
+            "icici", "sbi", "airtel", "bharti", "itc", "maruti", "mahindra", "bajaj"
+        }
+        shared_major = {w for w in overlap if w in major_entities}
 
-        return False, title_similarity, f"Low semantic correlation (title overlap {title_similarity:.2f})"
+        proper1 = {w for w in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", art1.title) if w.lower() not in stopwords}
+        proper2 = {w for w in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", art2.title) if w.lower() not in stopwords}
+        shared_proper = {w.lower() for w in proper1}.intersection({w.lower() for w in proper2})
+
+        has_shared_entity = bool(shared_major or shared_proper or (len(overlap) >= 2 and any(len(w) >= 4 for w in overlap)))
+        if not has_shared_entity:
+            return False, title_similarity, f"INSUFFICIENT_EVENT_OVERLAP: No shared company or entity found in titles"
+
+        # Step 3: Check Reporting Period / Financial Fact Consistency
+        q1 = self._extract_reporting_quarter(f"{art1.title} {(art1.content_text or '')[:200]}")
+        q2 = self._extract_reporting_quarter(f"{art2.title} {(art2.content_text or '')[:200]}")
+        if q1 and q2 and q1 != q2 and ("EARNINGS" in cats1 or "EARNINGS" in cats2):
+            return False, 0.0, f"FINANCIAL_FACT_MISMATCH: Conflicting quarterly reporting periods ('{q1.upper()}' vs '{q2.upper()}')"
+
+        metrics1 = self._extract_metric_numbers(art1.title)
+        metrics2 = self._extract_metric_numbers(art2.title)
+        shared_metrics = metrics1.intersection(metrics2)
+
+        # Step 4: Evaluate Additional Event-Specific Signals
+        COMPANY_CLUSTERS = [
+            {"reliance", "retail", "jio", "industries"},
+            {"tata", "motors", "steel", "power", "consultancy", "tcs"},
+            {"hdfc", "bank", "life", "ergo"},
+            {"larsen", "toubro", "lt"},
+            {"nxt", "infra", "trust"},
+            {"rio", "tinto"},
+            {"arcadium", "lithium"},
+            {"leo", "pharma"},
+            {"adani", "ports", "power", "enterprises", "green"},
+            {"icici", "bank", "prudential", "securities"},
+            {"state", "bank", "india", "sbi"},
+            {"bharti", "airtel"},
+            {"bajaj", "finance", "finserv", "auto"},
+            {"maruti", "suzuki"},
+        ]
+
+        matched_clusters = sum(1 for cluster in COMPANY_CLUSTERS if overlap.intersection(cluster))
+        has_counterpart_match = matched_clusters >= 2
+
+        has_metric_match = bool(shared_metrics)
+        has_period_match = bool(q1 and q2 and q1 == q2 and ("EARNINGS" in cats1 and "EARNINGS" in cats2))
+
+        all_cluster_words = set().union(*COMPANY_CLUSTERS)
+        action_overlap = {w for w in overlap if w not in all_cluster_words and w not in shared_proper}
+        has_strong_title_overlap = len(action_overlap) >= 2 or (title_similarity >= 0.40 and len(action_overlap) >= 1)
+
+        if has_metric_match or has_counterpart_match or has_period_match or has_strong_title_overlap:
+            score = max(title_similarity, 0.95 if has_metric_match or has_counterpart_match else 0.80)
+            details = []
+            if shared_major or shared_proper:
+                details.append(f"entity={sorted(shared_major or shared_proper)}")
+            if shared_metrics:
+                details.append(f"metrics={sorted(shared_metrics)}")
+            if has_period_match:
+                details.append(f"period={q1.upper()}")
+            return True, score, f"Corroborated: {', '.join(details)} (overlap={title_similarity:.2f})"
+
+        return False, title_similarity, f"INSUFFICIENT_EVENT_OVERLAP: Shared entity {sorted(shared_major or shared_proper)} but no matching event facts or counterpart details"
 
     def verify_event(
         self,

@@ -241,6 +241,24 @@ class TestArticleExtractor:
         assert result.url == url
         assert "could not be confirmed as a valid article" in (result.error_message or "")
 
+    def test_pre_extraction_url_gate_rejects_non_articles(self):
+        """Test that topic hubs, tags, PDFs, and agency feeds are rejected before downloading HTML."""
+        extractor = ArticleExtractor()
+        non_article_urls = [
+            "https://economictimes.indiatimes.com/topic/banking",
+            "https://www.reuters.com/tags/markets",
+            "https://www.livemint.com/agency/pti/page/2",
+            "https://www.business-standard.com/category/companies",
+            "https://example.com/quarterly-report.pdf",
+            "https://example.com/newsletter/unsubscribe",
+            "https://example.com/search?q=tata",
+        ]
+        for url in non_article_urls:
+            res = extractor.extract(url)
+            assert res.success is False
+            assert "PRE_EXTRACTION_URL_REJECTED" in (res.error_message or "")
+            assert res.extraction_method == "pre_url_filter"
+
 
 class TestArticleFetcher:
     """Tests for ArticleFetcher client and retry handling."""

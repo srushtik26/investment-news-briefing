@@ -79,30 +79,8 @@ def generate_event_fingerprint(
 def are_articles_same_event(art1: Article, art2: Article) -> bool:
     """
     Evaluate if two articles represent the exact same underlying event.
-
-    Example:
-    - Reuters: "Company X profit rises 15%"
-    - Business Standard: "Company X Q1 profit jumps 15%"
-    -> Returns True (Must become ONE event).
+    Delegates to TwoSourceVerifier.is_same_underlying_event for consistent, robust verification.
     """
-    t1 = art1.title.lower()
-    t2 = art2.title.lower()
-
-    # Extract words
-    stopwords = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from"}
-    w1 = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in stopwords and len(w) >= 2}
-    w2 = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in stopwords and len(w) >= 2}
-
-    overlap = w1.intersection(w2)
-    union = w1.union(w2)
-    similarity = len(overlap) / len(union) if union else 0.0
-
-    facts1 = set(normalize_metric_facts(t1))
-    facts2 = set(normalize_metric_facts(t2))
-    shared_facts = facts1.intersection(facts2)
-
-    # If shared facts exist and high word similarity or overlap >= 3
-    if (shared_facts and similarity >= 0.25) or similarity >= 0.45 or len(overlap) >= 4:
-        return True
-
-    return False
+    from app.verification.verifier import TwoSourceVerifier
+    is_same, _, _ = TwoSourceVerifier().is_same_underlying_event(art1, art2)
+    return is_same

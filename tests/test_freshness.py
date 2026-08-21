@@ -18,9 +18,9 @@ from app.models.article import Article
 from app.models.enums import NewsCategory
 
 
-def _make_article(age_hours: float, *, date_verified: bool = True) -> Article:
+def _make_article(age_hours: float, *, date_verified: bool = True, base_time: datetime = None) -> Article:
     """Create a test article published `age_hours` hours ago."""
-    now = datetime.now(timezone.utc)
+    now = base_time or datetime.now(timezone.utc)
     pub_at = now - timedelta(hours=age_hours)
     art = MagicMock(spec=Article)
     art.url = f"https://example.com/article-{age_hours}h"
@@ -125,13 +125,13 @@ class TestDateFilterRuleMondayExtension:
     def test_monday_80h_article_is_accepted(self, rule):
         # Force a Monday timestamp
         now = datetime(2026, 8, 17, 9, 0, 0, tzinfo=timezone.utc)  # This is a Monday
-        art = _make_article(80)
+        art = _make_article(80, base_time=now)
         result = rule.evaluate(art, now_utc=now)
         assert result.is_accepted, f"Expected Monday 80h article to be accepted: {result.rejection_reason}"
 
     def test_monday_96h_article_is_accepted(self, rule):
         now = datetime(2026, 8, 17, 9, 0, 0, tzinfo=timezone.utc)
-        art = _make_article(96)
+        art = _make_article(96, base_time=now)
         result = rule.evaluate(art, now_utc=now)
         assert result.is_accepted, f"Expected Monday 96h article to be accepted: {result.rejection_reason}"
 
@@ -151,7 +151,7 @@ class TestDateFilterRuleMondayExtension:
     def test_non_monday_49h_article_is_accepted(self, rule):
         # Tuesday — uses 72h default
         now = datetime(2026, 8, 18, 9, 0, 0, tzinfo=timezone.utc)  # Tuesday
-        art = _make_article(49)
+        art = _make_article(49, base_time=now)
         result = rule.evaluate(art, now_utc=now)
         assert result.is_accepted, f"Expected Tue 49h article to be accepted: {result.rejection_reason}"
 

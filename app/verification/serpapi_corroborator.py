@@ -29,21 +29,35 @@ from app.verification.verifier import TwoSourceVerifier
 
 logger = get_logger("verification.serpapi_corroborator")
 
-# Module-level run counter and query cache
+# Module-level run counters and query cache
 _run_serpapi_count = 0
+_serpapi_candidates_returned_total = 0
+_serpapi_accepted_sources_total = 0
 _serpapi_query_cache: Dict[str, List[dict]] = {}
 
 
 def reset_serpapi_counter() -> None:
-    """Reset the per-run SerpAPI search counter and query cache."""
-    global _run_serpapi_count, _serpapi_query_cache
+    """Reset the per-run SerpAPI search counter, candidate counts, and query cache."""
+    global _run_serpapi_count, _serpapi_candidates_returned_total, _serpapi_accepted_sources_total, _serpapi_query_cache
     _run_serpapi_count = 0
+    _serpapi_candidates_returned_total = 0
+    _serpapi_accepted_sources_total = 0
     _serpapi_query_cache.clear()
 
 
 def get_serpapi_count() -> int:
     """Return the number of SerpAPI search queries executed this run."""
     return _run_serpapi_count
+
+
+def get_serpapi_candidates_returned() -> int:
+    """Return total number of candidates returned across all SerpAPI queries this run."""
+    return _serpapi_candidates_returned_total
+
+
+def get_serpapi_accepted_sources() -> int:
+    """Return total number of second sources accepted via SerpAPI this run."""
+    return _serpapi_accepted_sources_total
 
 
 class SerpAPICorroborator:
@@ -106,10 +120,9 @@ class SerpAPICorroborator:
 
     def _search_serpapi(self, query: str, site_clause: str) -> List[dict]:
         """
-        Execute targeted SerpAPI Google News search if budget allows.
-        Returns list of candidate dicts: [{'url': ..., 'title': ..., 'source': ..., 'published_at': ...}].
+        Execute Google News search via SerpAPI and return raw candidate dictionaries.
         """
-        global _run_serpapi_count, _serpapi_query_cache
+        global _run_serpapi_count, _serpapi_query_cache, _serpapi_candidates_returned_total
 
         if not self.has_api_key:
             logger.debug("SerpAPI skipped: no API key configured")
@@ -161,6 +174,7 @@ class SerpAPICorroborator:
                     })
 
             logger.info("SERPAPI CANDIDATES FOUND: %d", len(parsed_results))
+            _serpapi_candidates_returned_total += len(parsed_results)
             _serpapi_query_cache[full_query] = parsed_results
             return parsed_results
 
@@ -174,6 +188,8 @@ class SerpAPICorroborator:
         Perform SerpAPI fallback corroboration for a single-source event.
         Candidate articles are extracted and verified via TwoSourceVerifier.
         """
+        global _serpapi_accepted_sources_total
+
         if not self.has_api_key:
             return CorroborationResult(
                 event_id=event.id,
@@ -249,6 +265,7 @@ class SerpAPICorroborator:
                 candidate_art.source_name,
                 candidate_art.url[:60],
             )
+            _serpapi_accepted_sources_total += 1
 
             p_date = primary_article.published_at.isoformat() if primary_article.published_at else None
             c_date = candidate_art.published_at.isoformat() if candidate_art.published_at else None

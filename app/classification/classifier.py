@@ -115,21 +115,158 @@ class AIArticleClassifier:
                 attempts=0,
             )
 
+    def _classify_deterministic(self, article: Article) -> Optional[AIArticleClassification]:
+        """
+        Attempt high-confidence deterministic classification without calling Gemini API.
+        Returns AIArticleClassification if clearly resolved, or None if borderline/ambiguous.
+        """
+        title = article.title
+        content = article.content_text or ""
+        combined = f"{title} {content[:800]}"
+        combined_lower = combined.lower()
+
+        # 1. Extract financial numbers & percentages
+        nums = re.findall(
+            r"(?:₹|\$|€|£|rs\.?\s*)\s*[\d,]+(?:\.\d+)?\s*(?:crore|cr|billion|million|trillion|lakh)?\b|\b\d+(?:\.\d+)?\s*(?:crore|billion|million|trillion)\b",
+            combined,
+            re.IGNORECASE,
+        )
+        nums = [n.strip() for n in nums if n.strip()][:5]
+        pcts = re.findall(r"\b\d+(?:\.\d+)?%", combined)[:5]
+
+        # 2. Extract company entities
+        KNOWN_COMPANIES = [
+            "Reliance", "Tata Motors", "Tata Steel", "TCS", "HDFC Bank", "ICICI Bank",
+            "State Bank of India", "SBI", "Larsen & Toubro", "L&T", "Nxt-Infra", "Infosys",
+            "Adani Ports", "Adani Enterprises", "Bharti Airtel", "Bajaj Finance", "Maruti Suzuki",
+            "Nvidia", "Apple", "Microsoft", "Amazon", "Alphabet", "Google", "Meta",
+            "Goldman Sachs", "Rio Tinto", "Arcadium Lithium", "LEO Pharma", "Stripe", "OpenRouter",
+            "Ola Electric", "Tech Mahindra", "Wipro", "Zomato", "Swiggy", "Paytm", "Shiprocket"
+        ]
+        identified_companies = []
+        for comp in KNOWN_COMPANIES:
+            if re.search(rf"\b{re.escape(comp)}\b", combined, re.IGNORECASE):
+                if comp not in identified_companies:
+                    identified_companies.append(comp)
+
+        # 3. Clear Event Type Detection
+        event_type = None
+        is_hard_event = False
+        is_inv_rel = False
+
+        # Clear Earnings
+        if re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings beat|earnings miss)\b", combined_lower):
+            if nums or pcts:
+                event_type = ArticleEventType.EARNINGS
+                is_hard_event = True
+                is_inv_rel = True
+
+        # Clear M&A / Takeovers
+        elif re.search(r"\b(to buy|buys|acquires?|acquisition|merger|takeover|buyout|demerger|spin-off|all-cash deal)\b", combined_lower):
+            if len(identified_companies) >= 1 or nums:
+                event_type = ArticleEventType.MA
+                is_hard_event = True
+                is_inv_rel = True
+
+        # Clear Fundraising / QIP / IPO
+        elif re.search(r"\b(raises funding|funding round|qip|rights issue|capital raise|files for ipo|files drhp|ipo listing|shares list at)\b", combined_lower):
+            event_type = ArticleEventType.FUNDRAISING
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Regulatory Action
+        elif re.search(r"\b(rbi|sebi|cci|sec|antitrust|doj)\b.*\b(penalty|fine|order|ban|charges|probe|investigation)\b|\b(monetary penalty|regulatory penalty|tribunal order)\b", combined_lower):
+            event_type = ArticleEventType.REGULATORY
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Leadership Changes
+        elif re.search(r"\b(appoints ceo|md resigns|new managing director|new cfo|appoints chairman|steps down)\b", combined_lower):
+            event_type = ArticleEventType.LEADERSHIP
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Macro Data
+        elif re.search(r"\b(gdp growth|cpi inflation|retail inflation|iip data|trade deficit|interest rate steady|rate cut|rate hike)\b", combined_lower):
+            if pcts or nums:
+                event_type = ArticleEventType.MACRO
+                is_hard_event = True
+                is_inv_rel = True
+
+        # Clear Corporate Actions / Dividend / Buyback
+        elif re.search(r"\b(dividend|special dividend|interim dividend|share buyback|stock buyback|buyback)\b", combined_lower):
+            event_type = ArticleEventType.POLICY
+            is_hard_event = True
+            is_inv_rel = True
+
+        # If clearly resolved as a qualifying hard business event:
+        if is_hard_event and event_type:
+            return AIArticleClassification(
+                event_type=event_type,
+                company_names=identified_companies[:3],
+                financial_numbers=nums[:3],
+                percentages=pcts[:3],
+                deal_value=nums[0] if nums and event_type in (ArticleEventType.MA, ArticleEventType.FUNDRAISING) else None,
+                market_indices=["Nifty 50"] if "nifty" in combined_lower else [],
+                commodity_prices=["Brent Crude"] if ("crude" in combined_lower or "brent" in combined_lower) else [],
+                currency_values=[],
+                key_outcome=f"{title.strip().rstrip('.')}.",
+                is_hard_business_event=True,
+                has_specific_quantified_impact=bool(nums or pcts),
+                is_investment_relevant=True,
+            )
+
+        # If clearly pure noise without numbers or corporate entities:
+        if not nums and not pcts and not identified_companies:
+            return AIArticleClassification(
+                event_type=ArticleEventType.OTHER,
+                company_names=[],
+                financial_numbers=[],
+                percentages=[],
+                deal_value=None,
+                market_indices=[],
+                commodity_prices=[],
+                currency_values=[],
+                key_outcome=f"{title.strip().rstrip('.')}.",
+                is_hard_business_event=False,
+                has_specific_quantified_impact=False,
+                is_investment_relevant=False,
+            )
+
+        # Ambiguous / borderline case -> None (eligible for Gemini API if quota allows)
+        return None
+
     def classify(self, article: Article) -> ClassificationResult:
         """
-        Classify an article into structured format with one retry on recoverable API errors
-        (429, 500, 502, 503) or malformed JSON.
-
-        If Gemini is disabled, max_articles cap is reached, or an unrecoverable API error
-        / rate limit occurs, falls back to the deterministic offline classifier for the
-        current article and all remaining candidates.
+        Classify an article into structured format.
+        
+        Uses deterministic fast-path classification for obvious events/noise to preserve
+        Gemini API quota. Routes ambiguous/borderline cases to live Gemini if quota allows,
+        falling back cleanly to offline heuristic when quota is exhausted or disabled.
         """
-        logger.info("Classifying article '%s' via Gemini AI...", article.title[:50])
+        # 1. Check deterministic fast-path (0 API calls)
+        if not self.mock_responder:
+            deterministic = self._classify_deterministic(article)
+            if deterministic is not None:
+                logger.info(
+                    "Deterministic classification resolved (0 API calls): event_type=%s, hard_event=%s",
+                    deterministic.event_type.value,
+                    deterministic.is_hard_business_event,
+                )
+                return ClassificationResult(
+                    success=True,
+                    classification=deterministic,
+                    attempts=0,
+                    raw_response="[Deterministic Classification]",
+                )
+
+        logger.info("Classifying borderline article '%s' via Gemini AI...", article.title[:50])
 
         # Enforce per-run cap or forced offline mode — fall back to offline heuristic
         if (
             self._force_offline_mode
             or self._live_call_count >= self.max_articles
+            or not self.api_key
         ):
             logger.info(
                 "Using offline classification fallback for: %s", article.title[:50],
