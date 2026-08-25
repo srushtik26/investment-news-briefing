@@ -195,7 +195,7 @@ class GeminiEditorialEngine:
 
                 if is_daily_quota:
                     logger.error(
-                        "GEMINI_DAILY_QUOTA_EXHAUSTED in editorial curation. Halting editorial API calls immediately."
+                        "GEMINI_DAILY_QUOTA_EXHAUSTED in editorial curation. Falling back to deterministic editorial selection."
                     )
                     GeminiUsageLogger.record(
                         stage="editorial",
@@ -205,14 +205,8 @@ class GeminiEditorialEngine:
                         retry_number=attempt - 1,
                         error_summary="DAILY_QUOTA_EXHAUSTED",
                     )
-                    return EditorialResult(
-                        success=False,
-                        error_message=(
-                            f"{RATE_LIMITED_PREFIX} Editorial halted: daily quota exhausted (GenerateRequestsPerDayPerProjectPerModel-FreeTier)."
-                        ),
-                        attempts=attempt,
-                        raw_response=raw_text,
-                    )
+                    last_error = f"{RATE_LIMITED_PREFIX} daily quota exhausted"
+                    break
 
                 if is_rate_limit:
                     consecutive_429s += 1
@@ -225,19 +219,11 @@ class GeminiEditorialEngine:
                         error_summary="RESOURCE_EXHAUSTED",
                     )
                     if consecutive_429s >= 2:
-                        # Two consecutive 429s — stop immediately
                         logger.error(
-                            "Two consecutive 429s in editorial curation. Stopping Gemini calls."
+                            "Two consecutive 429s in editorial curation. Falling back to deterministic editorial selection."
                         )
-                        return EditorialResult(
-                            success=False,
-                            error_message=(
-                                f"{RATE_LIMITED_PREFIX} Editorial halted after two consecutive "
-                                "429 RESOURCE_EXHAUSTED responses. Quota exceeded for today."
-                            ),
-                            attempts=attempt,
-                            raw_response=raw_text,
-                        )
+                        last_error = f"{RATE_LIMITED_PREFIX} 429 RESOURCE_EXHAUSTED"
+                        break
                     # First 429 → wait then retry
                     logger.warning(
                         "Rate limit 429 on editorial attempt %d. Backing off %ds...",
@@ -424,6 +410,27 @@ class GeminiEditorialEngine:
                 "url": url,
             })
 
+        # Fill remaining slots if deduplication reduced count below 5
+        if len(india_selected) < 5:
+            selected_ids = {s["event_id"] for s in india_selected}
+            for scored in ranked_pool.india_candidates:
+                if len(india_selected) >= 5:
+                    break
+                e = scored.event
+                if e.id in selected_ids:
+                    continue
+                art = articles_map.get(e.article_ids[0]) if e.article_ids else None
+                source_name = art.source_name if art else "Business Standard"
+                url = art.url if art else f"https://example.com/india-{e.id}"
+                india_selected.append({
+                    "section": "india",
+                    "event_id": e.id,
+                    "headline": e.canonical_title,
+                    "source": source_name,
+                    "url": url,
+                })
+                selected_ids.add(e.id)
+
         intl_selected: List[Dict[str, str]] = []
         for scored in ranked_pool.international_candidates[:5]:
             e = scored.event
@@ -440,8 +447,8 @@ class GeminiEditorialEngine:
             })
 
         return json.dumps({
-            "india_stories": india_selected,
-            "international_stories": intl_selected,
+            "india_stories": india_selected[:5],
+            "international_stories": intl_selected[:5],
         })
 
 

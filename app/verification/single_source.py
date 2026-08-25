@@ -28,18 +28,25 @@ SINGLE_SOURCE_MIN_CONFIDENCE = 80.0
 TRUSTED_INDIA_PUBLISHERS: Set[str] = {
     "economic times",
     "the economic times",
+    "economictimes",
     "business standard",
+    "bsindia",
+    "@bsindia",
     "mint",
     "livemint",
     "financial express",
     "the financial express",
+    "financialexpress",
     "moneycontrol",
+    "moneycontrol.com",
     "business today",
+    "businesstoday",
     "ndtv profit",
     "ndtv",
     "the hindu business line",
     "the hindu businessline",
     "hindu business line",
+    "hindu businessline",
     "businessline",
     "reuters",
     "bloomberg",
@@ -56,6 +63,10 @@ TRUSTED_INDIA_PUBLISHERS: Set[str] = {
     "cnbc tv18",
     "cnbctv18",
     "zee business",
+    "bse",
+    "nse",
+    "sebi",
+    "rbi",
 }
 
 TRUSTED_INTL_PUBLISHERS: Set[str] = {
@@ -76,6 +87,7 @@ TRUSTED_INTL_PUBLISHERS: Set[str] = {
     "wsj",
     "the wall street journal",
     "the guardian",
+    "guardian",
     "yahoo finance",
     "business insider",
     "barron's",
@@ -86,13 +98,11 @@ TRUSTED_INTL_PUBLISHERS: Set[str] = {
     "globenewswire",
     "business wire",
     "dow jones",
+    "sec",
     "sec edgar",
     "federal reserve",
     "ecb",
     "bank of england",
-    "business wire",
-    "globenewswire",
-    "pr newswire",
 }
 
 # Allowed hard-event types
@@ -307,6 +317,14 @@ class SingleSourceEvaluator:
 
         # B. Clear named company/entity (+15, or -30 if missing)
         clean_companies = [c for c in event.companies_involved if is_valid_named_company_entity(c)]
+        if not clean_companies:
+            from app.verification.query_builder import EventQueryBuilder
+            from app.models.entity_sanitizer import sanitize_company_entities
+            extracted = EventQueryBuilder.extract_entities(primary_article)
+            clean_companies = [c for c in sanitize_company_entities(extracted, publisher=source) if is_valid_named_company_entity(c)]
+            if clean_companies:
+                event.companies_involved = clean_companies
+
         if clean_companies:
             score += 15.0
             reasons.append(f"entity({clean_companies[0]})(+15)")

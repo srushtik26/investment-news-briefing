@@ -185,23 +185,24 @@ def test_get_section_quality_state_calculation():
     assert state2["slot_deficit"] == 0
     assert state2["section_complete"] is True
 
-    # Case 3: 2 two-source + 3 single-source (Must fail two-source minimum of 3)
+    # Case 3: 2 two-source + 3 single-source (Under Quality Model, total 5 passes)
     evs3_two = [make_ev(f"e{i}", NewsCategory.INTERNATIONAL, VerificationTier.TWO_SOURCE_VERIFIED) for i in range(2)]
     evs3_sng = [make_ev(f"s{i}", NewsCategory.INTERNATIONAL, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE) for i in range(3)]
     state3 = get_section_quality_state(evs3_two, evs3_sng, NewsCategory.INTERNATIONAL)
     assert state3["two_source_count"] == 2
-    assert state3["two_source_min_deficit"] == 1
-    assert state3["section_complete"] is False
+    assert state3["single_source_count"] == 3
+    assert state3["eligible_total"] == 5
+    assert state3["slot_deficit"] == 0
+    assert state3["section_complete"] is True
 
-    # Case 4: 1 two-source + 1 single-source (SlotsNeeded=3, TwoSourceNeeded=2, SingleCapacity=1)
+    # Case 4: 1 two-source + 1 single-source (SlotsNeeded=3, eligible_total=2)
     evs4_two = [make_ev("e1", NewsCategory.INTERNATIONAL, VerificationTier.TWO_SOURCE_VERIFIED)]
     evs4_sng = [make_ev("s1", NewsCategory.INTERNATIONAL, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE)]
     state4 = get_section_quality_state(evs4_two, evs4_sng, NewsCategory.INTERNATIONAL)
     assert state4["two_source_count"] == 1
     assert state4["single_source_count"] == 1
+    assert state4["eligible_total"] == 2
     assert state4["slot_deficit"] == 3
-    assert state4["two_source_min_deficit"] == 2
-    assert state4["single_source_capacity"] == 1
     assert state4["section_complete"] is False
 
 

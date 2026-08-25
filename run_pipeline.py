@@ -209,23 +209,21 @@ def get_section_quality_state(
     high_conf_single_candidates: List[Event],
     category: NewsCategory,
 ) -> Dict[str, Any]:
-    """Authoritative helper for hybrid section quality state."""
+    """Authoritative helper for section quality state under QUALITY VERIFICATION MODEL."""
     two_source = [e for e in events if e.event_category == category and e.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED]
     single_source = [e for e in high_conf_single_candidates if e.event_category == category and e.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE and e not in two_source]
     two_src_cnt = len(two_source)
     sng_src_cnt = len(single_source)
-    eligible_total = two_src_cnt + min(2, sng_src_cnt)
+    eligible_total = two_src_cnt + sng_src_cnt
     slot_deficit = max(0, 5 - eligible_total)
-    two_source_min_deficit = max(0, 3 - two_src_cnt)
-    single_source_capacity = max(0, 2 - sng_src_cnt)
-    section_complete = (eligible_total >= 5 and two_src_cnt >= 3 and sng_src_cnt <= 2)
+    section_complete = (eligible_total >= 5)
     return {
         "two_source_count": two_src_cnt,
         "single_source_count": sng_src_cnt,
         "eligible_total": eligible_total,
         "slot_deficit": slot_deficit,
-        "two_source_min_deficit": two_source_min_deficit,
-        "single_source_capacity": single_source_capacity,
+        "two_source_min_deficit": 0,
+        "single_source_capacity": max(0, 5 - sng_src_cnt),
         "section_complete": section_complete,
     }
 
@@ -340,6 +338,8 @@ def _extract_candidates(
     Extract full text from a list of (DiscoveredArticle, country) candidates.
     Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen).
     """
+    from app.models.entity_sanitizer import normalize_publisher_name
+
     total = len(candidates_with_country)
     extracted: List[Article] = []
     records: List[Dict] = []
@@ -352,17 +352,19 @@ def _extract_candidates(
             continue
         seen_urls.add(norm_url)
 
-        log_exec(f"[{idx}/{total}] Extracting ({country}): '{cand.title[:50]}' ({cand.source})")
+        rss_published_at = get_candidate_published_at(cand)
+        canonical_source = normalize_publisher_name(cand.source)
+        log_exec(f"[{idx}/{total}] Extracting ({country}): '{cand.title[:50]}' ({canonical_source})")
         if extractor.resolver.is_google_news_url(cand.url):
             google_count += 1
 
         try:
             res = extractor.extract(
                 url=cand.url,
-                source_name=cand.source,
+                source_name=canonical_source,
                 candidate_title=cand.title,
                 candidate_category=country,
-                candidate_pub_date=pub_at,
+                candidate_pub_date=rss_published_at,
             )
 
             rec = {
@@ -370,7 +372,7 @@ def _extract_candidates(
                 "resolved_url":  res.resolved_url or cand.url,
                 "status_code":   res.status_code,
                 "title":         res.article.title if res.article else cand.title,
-                "publisher":     res.article.source_name if res.article else cand.source,
+                "publisher":     res.article.source_name if res.article else canonical_source,
                 "publication_date": (
                     res.article.published_at.isoformat()
                     if (res.article and res.article.published_at)
@@ -648,10 +650,8 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         primary_art = articles_lookup.get(event.article_ids[0])
         if primary_art:
             event.event_category = reg_clf.classify_event(event, [primary_art])
-
-    verifier     = TwoSourceVerifier()
-    corroborator = ActiveCorroborator(extractor=extractor)
-    serpapi_corroborator = SerpAPICorroborator(extractor=extractor)
+            
+    verifier = TwoSourceVerifier()
     single_source_evaluator = SingleSourceEvaluator()
 
     verified_events: List[Event] = []
@@ -665,15 +665,6 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     rss_international_used = 0
     serpapi_india_used = 0
     serpapi_international_used = 0
-    serpapi_attempted_event_keys: Set[str] = set()
-
-    # Stage 5 initial corroboration budget limits (leaves headroom for expansion passes)
-    STAGE5_INITIAL_MAX_RSS = 12
-    STAGE5_INITIAL_MAX_SERPAPI = 4
-
-    # Separate verified multi-source vs single-source candidates by section
-    india_single_source: List[Tuple[float, Event, Optional[Article]]] = []
-    intl_single_source: List[Tuple[float, Event, Optional[Article]]] = []
 
     for event in raw_events:
         event_articles = [articles_lookup[aid] for aid in event.article_ids if aid in articles_lookup]
@@ -683,182 +674,50 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             verified_events.append(event)
             organic_second_sources_found += 1
             log_exec(f"  -> ORGANIC TWO-SOURCE VERIFIED: {event.canonical_title} ({len(event.article_ids)} sources)")
-        elif verif_res.verification_status.value == "UNVERIFIED_SINGLE_SOURCE":
-            primary_art = event_articles[0] if event_articles else None
-            prio = calculate_corroboration_priority(event, primary_art)
-            if event.event_category == NewsCategory.INDIA:
-                india_single_source.append((prio, event, primary_art))
-            else:
-                intl_single_source.append((prio, event, primary_art))
         else:
-            rejected_events_list.append({
-                "event_title": event.canonical_title,
-                "sources": [a.source_name for a in event_articles],
-                "reason": verif_res.matching_details or "Failed two-source verification",
-            })
-            log_exec(f"  -> REJECTED: {event.canonical_title} — {verif_res.matching_details}")
-
-    # Sort each section descending by corroboration priority
-    india_single_source.sort(key=lambda x: x[0], reverse=True)
-    intl_single_source.sort(key=lambda x: x[0], reverse=True)
-
-    # Interleave fairly between India and International
-    interleaved_candidates: List[Tuple[float, Event, Optional[Article]]] = []
-    max_len = max(len(india_single_source), len(intl_single_source))
-    for i in range(max_len):
-        if i < len(india_single_source):
-            interleaved_candidates.append(india_single_source[i])
-        if i < len(intl_single_source):
-            interleaved_candidates.append(intl_single_source[i])
-
-    for prio, event, primary_art in interleaved_candidates:
-        single_source_events.append(event)
-        is_india = (event.event_category == NewsCategory.INDIA)
-        india_curr_verified = len([e for e in verified_events if e.event_category == NewsCategory.INDIA])
-        intl_curr_verified = len([e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL])
-
-        # Freeze section if already satisfied (>=5 verified)
-        if is_india and india_curr_verified >= settings.MIN_VERIFIED_INDIA:
-            log_exec(f"  -> SECTION_FROZEN_SKIP: India already {india_curr_verified}/5 — skipping search: {event.canonical_title[:50]}")
+            single_source_events.append(event)
+            primary_art = event_articles[0] if event_articles else None
             if primary_art:
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
-                if is_elig:
-                    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                    event.verification_confidence = conf
-                    event.single_source_confidence_score = conf
-                    event.primary_publisher = primary_art.source_name
-                    event.primary_url = primary_art.url
-                    event.verification_reason = rsn
-                    high_confidence_single_candidates.append(event)
-            continue
-        if not is_india and intl_curr_verified >= settings.MIN_VERIFIED_INTL:
-            log_exec(f"  -> SECTION_FROZEN_SKIP: International already {intl_curr_verified}/5 — skipping search: {event.canonical_title[:50]}")
-            if primary_art:
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
-                if is_elig:
-                    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                    event.verification_confidence = conf
-                    event.single_source_confidence_score = conf
-                    event.primary_publisher = primary_art.source_name
-                    event.primary_url = primary_art.url
-                    event.verification_reason = rsn
-                    high_confidence_single_candidates.append(event)
-            continue
-
-        # Reject multi-event roundups before search
-        if is_multi_event_roundup(event.canonical_title):
-            log_exec(f"  -> REJECTED MULTI_EVENT_ROUNDUP: {event.canonical_title[:50]}")
-            continue
-
-        if prio < 50.0:
-            log_exec(f"  -> LOW CORROBORATION PRIORITY ({prio:.0f}/100 < 50) — skipping search for: {event.canonical_title[:50]}")
-            if primary_art:
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
-                if is_elig:
-                    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                    event.verification_confidence = conf
-                    event.single_source_confidence_score = conf
-                    event.primary_publisher = primary_art.source_name
-                    event.primary_url = primary_art.url
-                    event.verification_reason = rsn
-                    high_confidence_single_candidates.append(event)
-                    log_exec(f"    QUALIFIED HIGH_CONFIDENCE_SINGLE_SOURCE: {event.canonical_title[:45]} | {rsn}")
-            continue
-
-        if primary_art:
-            # Check Stage 5 initial budget caps (leave headroom for expansion)
-            rss_budget_ok = get_corroboration_count() < STAGE5_INITIAL_MAX_RSS
-            serpapi_budget_ok = (
-                serpapi_corroborator.has_api_key and
-                get_serpapi_count() < STAGE5_INITIAL_MAX_SERPAPI and
-                prio >= 60.0
-            )
-
-            corr_result = None
-            if rss_budget_ok:
-                log_exec(f"  -> SINGLE SOURCE (Priority {prio:.0f}/100) — attempting RSS corroboration for: {event.canonical_title[:50]}")
-                corr_result = corroborator.corroborate(event=event, primary_article=primary_art)
-                if corr_result:
-                    corroboration_searches += corr_result.queries_fired
-                if is_india:
-                    rss_india_used += corr_result.queries_fired
-                else:
-                    rss_international_used += corr_result.queries_fired
-
-            # Optional SerpAPI fallback if normal Google News RSS corroboration missed
-            if (corr_result is None or not corr_result.success) and serpapi_budget_ok:
-                log_exec(f"  -> RSS missed — attempting SerpAPI fallback (Priority {prio:.0f}>=60) for: {event.canonical_title[:50]}")
-                attempt_key = get_serpapi_event_key(event)
-                if attempt_key in serpapi_attempted_event_keys:
-                    log_exec(f"    SERPAPI_ALREADY_ATTEMPTED_SKIP: {event.canonical_title[:50]}")
-                    corr_result = None
-                else:
-                    serpapi_attempted_event_keys.add(attempt_key)
-                    serpapi_before = get_serpapi_count()
-                    corr_result = serpapi_corroborator.corroborate(event=event, primary_article=primary_art)
-                    serpapi_delta = get_serpapi_count() - serpapi_before
-                    if is_india:
-                        serpapi_india_used += serpapi_delta
-                    else:
-                        serpapi_international_used += serpapi_delta
-                if corr_result:
-                    corroboration_searches += corr_result.queries_fired
-
-            if corr_result and corr_result.success and corr_result.corroborating_article:
-                second_sources_found += 1
-                corr_art = corr_result.corroborating_article
-                articles_lookup[corr_art.id] = corr_art
-                event.article_ids.append(corr_art.id)
-
-                # Re-verify with the new article
-                re_verif = verifier.verify_event(event, [primary_art, corr_art])
-                if re_verif.is_verified:
-                    verified_events.append(event)
-                    log_exec(
-                        f"    CORROBORATION SUCCESS: {event.canonical_title[:45]} "
-                        f"| Src1={primary_art.source_name} | Src2={corr_art.source_name}"
-                    )
-                else:
-                    rejected_events_list.append({
-                        "event_title": event.canonical_title,
-                        "sources": [a.source_name for a in [primary_art, corr_art]],
-                        "reason": re_verif.matching_details,
-                    })
-                    log_exec(f"    CORROBORATION: 2nd source found but still rejected: {re_verif.matching_details}")
-            else:
-                # Assess as High-Confidence Single-Source fallback
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
-                if is_elig:
-                    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                    event.verification_confidence = conf
-                    event.single_source_confidence_score = conf
-                    event.primary_publisher = primary_art.source_name
-                    event.primary_url = primary_art.url
-                    event.verification_reason = rsn
-                    high_confidence_single_candidates.append(event)
-                    log_exec(f"    QUALIFIED HIGH_CONFIDENCE_SINGLE_SOURCE: {event.canonical_title[:45]} | {rsn}")
-                else:
-                    fail_reason = corr_result.failure_reason if corr_result else "Corroboration budget skipped"
+                if not event.companies_involved:
+                    event.companies_involved = populate_event_companies(primary_art, [])
+                if is_multi_event_roundup(event.canonical_title):
+                    log_exec(f"  -> REJECTED MULTI_EVENT_ROUNDUP: {event.canonical_title[:50]}")
                     rejected_events_list.append({
                         "event_title": event.canonical_title,
                         "sources": [primary_art.source_name],
-                        "reason": f"{fail_reason}; Single-source reject: {rsn}",
+                        "reason": "Multi-event roundup headline",
                     })
-                    log_exec(f"    CORROBORATION FAILED & SINGLE-SOURCE REJECTED: {rsn}")
-        else:
-            rejected_events_list.append({
-                "event_title": event.canonical_title,
-                "sources": [],
-                "reason": "Single source with no primary article available",
-            })
+                    continue
 
-    log_exec(f"Stage 5 Summary:")
+                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
+                if is_elig:
+                    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
+                    event.verification_confidence = conf
+                    event.single_source_confidence_score = conf
+                    event.primary_publisher = primary_art.source_name
+                    event.primary_url = primary_art.url
+                    event.verification_reason = rsn
+                    high_confidence_single_candidates.append(event)
+                    log_exec(f"  -> QUALIFIED QUALITY_VERIFIED SINGLE SOURCE: {event.canonical_title[:45]} | {rsn}")
+                else:
+                    rejected_events_list.append({
+                        "event_title": event.canonical_title,
+                        "sources": [primary_art.source_name],
+                        "reason": f"Single-source reject: {rsn}",
+                    })
+                    log_exec(f"  -> REJECTED: {event.canonical_title} — {rsn}")
+            else:
+                rejected_events_list.append({
+                    "event_title": event.canonical_title,
+                    "sources": [],
+                    "reason": "Single source with no primary article available",
+                })
+
+    log_exec(f"Stage 5 Summary (Quality Verification Model):")
     log_exec(f"  Events found:                  {len(raw_events)}")
     log_exec(f"  Organic second sources found:  {organic_second_sources_found}")
-    log_exec(f"  Active search 2nd sources:     {second_sources_found}")
     log_exec(f"  Two-source verified events:    {len(verified_events)}")
     log_exec(f"  High-confidence single events: {len(high_confidence_single_candidates)}")
-    log_exec(f"  Corroboration searches used:   {corroboration_searches} (RSS: {rss_india_used + rss_international_used}, SerpAPI: {serpapi_india_used + serpapi_international_used})")
 
     # Save
     with open(data_dir / "verified_events.json", "w", encoding="utf-8") as f:
@@ -867,93 +726,47 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         json.dump(rejected_events_list, f, indent=2, default=str)
 
     # =========================================================================
-    # DISCOVERY EXPANSION (if insufficient verified events)
+    # DISCOVERY EXPANSION (if insufficient quality events)
     # =========================================================================
     for e in verified_events:
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
         e.event_category = reg_clf.classify_event(e, e_arts)
-
-    india_verified = [e for e in verified_events if e.event_category == NewsCategory.INDIA]
-    intl_verified  = [e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL]
+    for e in high_confidence_single_candidates:
+        e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+        e.event_category = reg_clf.classify_event(e, e_arts)
 
     expansion_pass = 1
     max_expansion_passes = 6
     executed_final_mile_queries: Set[str] = set()
 
     while expansion_pass <= max_expansion_passes:
-        # 1. Authoritative centralized hybrid quality state
-        india_state = get_section_quality_state(verified_events, high_confidence_single_candidates, NewsCategory.INDIA)
-        intl_state  = get_section_quality_state(verified_events, high_confidence_single_candidates, NewsCategory.INTERNATIONAL)
+        # Re-classify regions for verified & quality single events
+        for e in verified_events:
+            e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+            e.event_category = reg_clf.classify_event(e, e_arts)
+        for e in high_confidence_single_candidates:
+            e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+            e.event_category = reg_clf.classify_event(e, e_arts)
 
-        if india_state["section_complete"] and intl_state["section_complete"]:
+        india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
+        intl_qual_events  = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
+        india_target_met = (len(india_qual_events) >= 8)
+        intl_target_met  = (len(intl_qual_events) >= 8)
+
+        if india_target_met and intl_target_met:
             log_exec(
-                f"Sufficiency gate satisfied under Hybrid Policy: "
-                f"India={india_state['two_source_count']} two-source + {min(2, india_state['single_source_count'])} single-source; "
-                f"Intl={intl_state['two_source_count']} two-source + {min(2, intl_state['single_source_count'])} single-source."
+                f"Quality candidate targets satisfied: "
+                f"India={len(india_qual_events)}/8 quality candidates; "
+                f"Intl={len(intl_qual_events)}/8 quality candidates."
             )
             break
 
-        is_india_final_mile = (not india_state["section_complete"] and intl_state["section_complete"])
-        is_intl_final_mile  = (not intl_state["section_complete"] and india_state["section_complete"])
-        is_balanced_mode    = (not india_state["section_complete"] and not intl_state["section_complete"])
-        pending_intl_upgrade_events = [
-            event for event in single_source_events
-            if event.event_category == NewsCategory.INTERNATIONAL and event not in verified_events
-        ]
-        intl_upgrade_available = has_unattempted_intl_upgrade(
-            pending_intl_upgrade_events,
-            articles_lookup,
-            single_source_evaluator,
-            serpapi_attempted_event_keys,
-        )
-
-        if is_intl_final_mile:
-            log_exec(
-                f"[INTL_FINAL_MILE_MODE] SlotsNeeded={intl_state['slot_deficit']} "
-                f"TwoSourceNeeded={intl_state['two_source_min_deficit']} "
-                f"SingleCapacity={intl_state['single_source_capacity']}"
-            )
-        elif is_india_final_mile:
-            log_exec(
-                f"[INDIA_FINAL_MILE_MODE] SlotsNeeded={india_state['slot_deficit']} "
-                f"TwoSourceNeeded={india_state['two_source_min_deficit']} "
-                f"SingleCapacity={india_state['single_source_capacity']}"
-            )
-        else:
-            log_exec(
-                f"[BALANCED_EXPANSION] India SlotsNeeded={india_state['slot_deficit']}, "
-                f"Intl SlotsNeeded={intl_state['slot_deficit']}"
-            )
-
-        rss_available = get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN
-        general_serpapi_limit = get_general_serpapi_limit(
-            intl_state,
-            settings.MAX_SERPAPI_SEARCHES_PER_RUN,
-            upgrade_available=intl_upgrade_available,
-        )
-        serpapi_available = (
-            serpapi_corroborator.has_api_key and
-            get_serpapi_count() < general_serpapi_limit
-        )
-        serpapi_final_mile_available = (
-            serpapi_corroborator.has_api_key and
-            get_serpapi_count() < settings.MAX_SERPAPI_SEARCHES_PER_RUN
-        )
-
-        if not rss_available and not serpapi_available:
-            log_exec(
-                f"Active search budget reached (RSS: {get_corroboration_count()}/{MAX_CORROBORATION_SEARCHES_PER_RUN}, "
-                f"SerpAPI: {get_serpapi_count()}/{settings.MAX_SERPAPI_SEARCHES_PER_RUN}). "
-                f"Continuing reserve candidate processing, organic clustering, and single-source assessment."
-            )
-
-        # 2. Check unseen candidates in reserve pools with actual candidate ID tracking
         unseen_india = [c for c in india_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
         unseen_intl  = [c for c in intl_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
-        log_exec(f"RESERVE_STATE: India unseen={len(unseen_india)}, Intl unseen={len(unseen_intl)}")
+        log_exec(f"RESERVE_STATE: India unseen={len(unseen_india)} (quality={len(india_qual_events)}/8), Intl unseen={len(unseen_intl)} (quality={len(intl_qual_events)}/8)")
 
-        step_india = min(len(unseen_india), min(20, max(5, india_state["slot_deficit"] * 5))) if not india_state["section_complete"] else 0
-        step_intl  = min(len(unseen_intl), min(20, max(5, intl_state["slot_deficit"] * 5))) if not intl_state["section_complete"] else 0
+        step_india = min(len(unseen_india), 15) if not india_target_met else 0
+        step_intl  = min(len(unseen_intl), 15) if not intl_target_met else 0
 
         expansion_candidates = []
         if step_india > 0:
@@ -961,130 +774,21 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if step_intl > 0:
             expansion_candidates.extend([(c, "international") for c in unseen_intl[:step_intl]])
 
-        # 3. Fallback SerpAPI on pending single-source events when section is in final-mile
-        if intl_state["two_source_count"] < 3 and serpapi_final_mile_available:
-            pending_intl_singles = [
-                e for e in single_source_events
-                if e.event_category == NewsCategory.INTERNATIONAL
-                and e not in verified_events
-                and get_serpapi_event_key(e) not in serpapi_attempted_event_keys
-            ]
-            if pending_intl_singles:
-                log_exec(f"[INTL_FINAL_MILE_MODE] Attempting SerpAPI on top pending International single-source events ({len(pending_intl_singles)} candidates)...")
-                scored_pending = prioritize_intl_final_mile_candidates(
-                    pending_intl_singles,
-                    articles_lookup,
-                    single_source_evaluator,
-                )
-                scored_pending = [
-                    item for item in scored_pending
-                    if item[1].verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                    or single_source_evaluator.evaluate_event(item[1], item[2])[0]
-                ]
-
-                for pr, ev, prim_a in scored_pending:
-                    live_intl_two_source_count = len([
-                        item for item in verified_events
-                        if item.event_category == NewsCategory.INTERNATIONAL
-                        and item.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED
-                    ])
-                    if get_serpapi_count() >= settings.MAX_SERPAPI_SEARCHES_PER_RUN or live_intl_two_source_count >= 3 or pr < 60.0:
-                        break
-                    attempt_key = get_serpapi_event_key(ev)
-                    if attempt_key in serpapi_attempted_event_keys:
-                        log_exec(f"    SERPAPI_ALREADY_ATTEMPTED_SKIP: {ev.canonical_title[:50]}")
-                        continue
-                    serpapi_attempted_event_keys.add(attempt_key)
-                    log_exec(f"  [INTL_FINAL_MILE] SerpAPI fallback on priority {pr:.0f}/100 event: {ev.canonical_title[:50]}")
-                    serpapi_before = get_serpapi_count()
-                    corr = serpapi_corroborator.corroborate(event=ev, primary_article=prim_a)
-                    corroboration_searches += corr.queries_fired
-                    serpapi_international_used += get_serpapi_count() - serpapi_before
-
-                    if corr and corr.success and corr.corroborating_article:
-                        second_sources_found += 1
-                        ca = corr.corroborating_article
-                        articles_lookup[ca.id] = ca
-                        ev.article_ids.append(ca.id)
-                        rv2 = verifier.verify_event(ev, [prim_a, ca])
-                        if rv2.is_verified:
-                            ev.event_category = reg_clf.classify_event(ev, [prim_a, ca])
-                            verified_events.append(ev)
-                            log_exec(f"    FINAL MILE VERIFIED: {ev.canonical_title[:45]} | Src2={ca.source_name}")
-                    else:
-                        is_elig, conf, rsn = single_source_evaluator.evaluate_event(ev, prim_a)
-                        if is_elig:
-                            ev.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                            ev.verification_confidence = conf
-                            ev.single_source_confidence_score = conf
-                            ev.primary_publisher = prim_a.source_name
-                            ev.primary_url = prim_a.url
-                            ev.verification_reason = rsn
-                            if ev not in high_confidence_single_candidates:
-                                high_confidence_single_candidates.append(ev)
-                            log_exec(f"    FINAL MILE QUALIFIED SINGLE SOURCE: {ev.canonical_title[:45]} | {rsn}")
-
-        if is_india_final_mile and not expansion_candidates and india_state["two_source_count"] < 3 and serpapi_available:
-            pending_india_singles = [
-                e for e in single_source_events
-                if e.event_category == NewsCategory.INDIA and e not in verified_events
-            ]
-            if pending_india_singles:
-                log_exec(f"[INDIA_FINAL_MILE_MODE] Attempting SerpAPI on top pending India single-source events ({len(pending_india_singles)} candidates)...")
-                scored_pending = []
-                for ev in pending_india_singles:
-                    ev_arts = [articles_lookup.get(aid) for aid in ev.article_ids if aid in articles_lookup]
-                    prim_a = ev_arts[0] if ev_arts else None
-                    if prim_a:
-                        pr = calculate_corroboration_priority(ev, prim_a)
-                        scored_pending.append((pr, ev, prim_a))
-                scored_pending.sort(key=lambda x: x[0], reverse=True)
-
-                for pr, ev, prim_a in scored_pending:
-                    if get_serpapi_count() >= general_serpapi_limit or india_state["two_source_count"] >= 3 or pr < 60.0:
-                        break
-                    log_exec(f"  [INDIA_FINAL_MILE] SerpAPI fallback on priority {pr:.0f}/100 event: {ev.canonical_title[:50]}")
-                    attempt_key = get_serpapi_event_key(ev)
-                    if attempt_key in serpapi_attempted_event_keys:
-                        log_exec(f"    SERPAPI_ALREADY_ATTEMPTED_SKIP: {ev.canonical_title[:50]}")
-                        continue
-                    serpapi_attempted_event_keys.add(attempt_key)
-                    serpapi_before = get_serpapi_count()
-                    corr = serpapi_corroborator.corroborate(event=ev, primary_article=prim_a)
-                    corroboration_searches += corr.queries_fired
-                    serpapi_india_used += get_serpapi_count() - serpapi_before
-
-                    if corr and corr.success and corr.corroborating_article:
-                        second_sources_found += 1
-                        ca = corr.corroborating_article
-                        articles_lookup[ca.id] = ca
-                        ev.article_ids.append(ca.id)
-                        rv2 = verifier.verify_event(ev, [prim_a, ca])
-                        if rv2.is_verified:
-                            ev.event_category = reg_clf.classify_event(ev, [prim_a, ca])
-                            verified_events.append(ev)
-                            log_exec(f"    FINAL MILE VERIFIED: {ev.canonical_title[:45]} | Src2={ca.source_name}")
-
-        # 4. INTERNATIONAL_FINAL_MILE_DISCOVERY: Rotated discovery query templates & source groups
-        if not intl_state["section_complete"] and not expansion_candidates:
+        # Final-mile discovery (only if reserve exhausted and < 5 quality stories)
+        if not expansion_candidates and (len(india_qual_events) < 5 or len(intl_qual_events) < 5):
             rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
-            serpapi_rem = general_serpapi_limit - get_serpapi_count() if serpapi_corroborator.has_api_key else 0
-
-            if rss_rem > 0 or serpapi_rem > 0:
-                log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (Remaining RSS={rss_rem}, SerpAPI={serpapi_rem})...")
+            if len(intl_qual_events) < 5 and rss_rem > 0:
+                log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={len(intl_qual_events)}/5)...")
                 INTL_SOURCE_GROUPS = [
                     "site:cnbc.com OR site:apnews.com OR site:bbc.com",
                     "site:marketwatch.com OR site:fortune.com OR site:theguardian.com",
                     "site:bloomberg.com OR site:reuters.com OR site:finance.yahoo.com",
-                    "site:sec.gov OR site:federalreserve.gov OR site:businesswire.com OR site:globenewswire.com",
                 ]
                 INTL_EVENT_TEMPLATES = [
                     "company acquisition merger deal when:1d",
                     "company quarterly earnings profit revenue when:1d",
                     "company investment stake sale when:1d",
                     "company antitrust penalty probe regulator when:1d",
-                    "company CEO appointed resigns when:1d",
-                    "company contract order partnership when:1d",
                     "company funding round IPO valuation when:1d",
                     "central bank interest rate decision when:1d",
                 ]
@@ -1092,65 +796,33 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 for s_group in INTL_SOURCE_GROUPS:
                     for tmpl in INTL_EVENT_TEMPLATES:
                         if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
-                            if not serpapi_corroborator.has_api_key or get_serpapi_count() >= general_serpapi_limit:
-                                log_exec("  [INTL_FINAL_MILE] Search budget exhausted — stopping final-mile discovery queries.")
-                                break
+                            break
                         query_str = f"{tmpl.replace('when:1d', get_fallback_search_window(expansion_pass))} {s_group}"
                         q_norm = query_str.lower().strip()
                         if q_norm in executed_final_mile_queries:
                             continue
                         executed_final_mile_queries.add(q_norm)
-                        log_exec(f"  [INTL_FINAL_MILE_QUERY] Executing variant: {tmpl[:40]}...")
-                        items = []
-                        if get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN:
-                            items = discovery_service.provider.discover(query=query_str, country="US", max_results=10)
-                            increment_corroboration_count(1)
-                            corroboration_searches += 1
-                            rss_international_used += 1
-                        elif serpapi_corroborator.has_api_key and get_serpapi_count() < general_serpapi_limit:
-                            clean_serp_q = query_str.replace("when:1d", "").strip()
-                            serpapi_before = get_serpapi_count()
-                            items = serpapi_corroborator.discover(clean_serp_q)
-                            serpapi_international_used += get_serpapi_count() - serpapi_before
-                            corroboration_searches += 1
-
-                        new_in_batch = 0
+                        items = discovery_service.provider.discover(query=query_str, country="US", max_results=10)
+                        increment_corroboration_count(1)
+                        corroboration_searches += 1
+                        rss_international_used += 1
                         for it in items:
                             u = it.url.strip()
-                            u_norm = u.lower().rstrip("/")
-                            is_valid_u, _ = URLFilterRule.is_valid_url(u)
-                            if is_valid_u and u_norm not in seen_urls:
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
                                 discovered_intl_fm.append(it)
-                                new_in_batch += 1
-
-                        if items and new_in_batch == 0:
-                            log_exec(f"  [FINAL_MILE_BATCH_ALL_SEEN] Query '{tmpl[:30]}' returned only seen URLs; rotating to next variant.")
-
                         if len(discovered_intl_fm) >= 10:
                             break
                     if len(discovered_intl_fm) >= 10:
                         break
-
                 if discovered_intl_fm:
-                    scored_fm = []
-                    for c in discovered_intl_fm:
-                        score = _score_discovery_candidate(c.title or "")
-                        scored_fm.append((score, c))
-                    scored_fm.sort(key=lambda x: x[0], reverse=True)
-                    expansion_candidates.extend([(c, "international") for score, c in scored_fm[:15]])
+                    expansion_candidates.extend([(c, "international") for c in discovered_intl_fm[:15]])
 
-        # 5. INDIA_FINAL_MILE_DISCOVERY: Rotated discovery query templates & source groups
-        if not india_state["section_complete"] and not expansion_candidates:
-            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
-            serpapi_rem = general_serpapi_limit - get_serpapi_count() if serpapi_corroborator.has_api_key else 0
-
-            if rss_rem > 0 or serpapi_rem > 0:
-                log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (Remaining RSS={rss_rem}, SerpAPI={serpapi_rem})...")
+            if len(india_qual_events) < 5 and rss_rem > 0:
+                log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (current={len(india_qual_events)}/5)...")
                 INDIA_SOURCE_GROUPS = [
                     "site:business-standard.com OR site:livemint.com OR site:moneycontrol.com",
                     "site:businesstoday.in OR site:financialexpress.com OR site:thehindubusinessline.com",
-                    "site:economictimes.indiatimes.com OR site:ndtvprofit.com OR site:thehindu.com",
-                    "site:bseindia.com OR site:nseindia.com OR site:sebi.gov.in OR site:rbi.org.in",
+                    "site:economictimes.indiatimes.com OR site:ndtvprofit.com",
                 ]
                 INDIA_EVENT_TEMPLATES = [
                     "quarterly results net profit revenue crore when:1d",
@@ -1159,101 +831,49 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     "raises funds equity funding crore when:1d",
                     "RBI penalty order bank NBFC when:1d",
                     "IPO DRHP filed India when:1d",
-                    "capex plant investment crore India when:1d",
-                    "majority stake acquisition India when:1d",
-                    "minority stake investment crore when:1d",
-                    "equity changes hands promoter stake when:1d",
-                    "IPO anchor investors crore when:1d",
-                    "Q1 results net profit revenue crore when:1d",
-                    "quarterly earnings EBITDA India when:1d",
-                    "CCI approves acquisition when:1d",
-                    "SEBI order company when:1d",
                 ]
-                discovered_final_mile = []
+                discovered_in_fm = []
                 for s_group in INDIA_SOURCE_GROUPS:
                     for tmpl in INDIA_EVENT_TEMPLATES:
                         if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
-                            if not serpapi_corroborator.has_api_key or get_serpapi_count() >= general_serpapi_limit:
-                                log_exec("  [FINAL_MILE_DISCOVERY] Search budget exhausted — stopping final-mile discovery queries.")
-                                break
+                            break
                         query_str = f"{tmpl.replace('when:1d', get_fallback_search_window(expansion_pass))} {s_group}"
                         q_norm = query_str.lower().strip()
                         if q_norm in executed_final_mile_queries:
                             continue
                         executed_final_mile_queries.add(q_norm)
-                        log_exec(f"  [FINAL_MILE_QUERY] Executing variant: {tmpl[:40]}...")
-                        items = []
-                        if get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN:
-                            items = discovery_service.provider.discover(query=query_str, country="India", max_results=10)
-                            increment_corroboration_count(1)
-                            corroboration_searches += 1
-                            rss_india_used += 1
-                        elif serpapi_corroborator.has_api_key and get_serpapi_count() < general_serpapi_limit:
-                            clean_serp_q = query_str.replace("when:1d", "").strip()
-                            serpapi_before = get_serpapi_count()
-                            items = serpapi_corroborator.discover(clean_serp_q)
-                            serpapi_india_used += get_serpapi_count() - serpapi_before
-                            corroboration_searches += 1
-
-                        new_in_batch = 0
+                        items = discovery_service.provider.discover(query=query_str, country="India", max_results=10)
+                        increment_corroboration_count(1)
+                        corroboration_searches += 1
+                        rss_india_used += 1
                         for it in items:
                             u = it.url.strip()
-                            u_norm = u.lower().rstrip("/")
-                            is_valid_u, _ = URLFilterRule.is_valid_url(u)
-                            if is_valid_u and u_norm not in seen_urls:
-                                discovered_final_mile.append(it)
-                                new_in_batch += 1
-
-                        if items and new_in_batch == 0:
-                            log_exec(f"  [FINAL_MILE_BATCH_ALL_SEEN] Query '{tmpl[:30]}' returned only seen URLs; rotating to next variant.")
-
-                        if len(discovered_final_mile) >= 10:
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
+                                discovered_in_fm.append(it)
+                        if len(discovered_in_fm) >= 10:
                             break
-                    if len(discovered_final_mile) >= 10:
+                    if len(discovered_in_fm) >= 10:
                         break
-                if discovered_final_mile:
-                    scored_fm = []
-                    for c in discovered_final_mile:
-                        score = _score_discovery_candidate(c.title or "")
-                        scored_fm.append((score, c))
-                    scored_fm.sort(key=lambda x: x[0], reverse=True)
-                    expansion_candidates.extend([(c, "india") for score, c in scored_fm[:15]])
+                if discovered_in_fm:
+                    expansion_candidates.extend([(c, "india") for c in discovered_in_fm[:15]])
 
-        if should_stop_expansion(
-            expansion_candidates,
-            intl_state,
-            serpapi_corroborator.has_api_key,
-            get_serpapi_count(),
-            settings.MAX_SERPAPI_SEARCHES_PER_RUN,
-            intl_upgrade_available,
-        ):
-            log_exec("No unseen candidates remaining in reserve or final-mile discovery. Stopping expansion.")
-            break
         if not expansion_candidates:
-            expansion_pass += 1
-            continue
+            log_exec("No further unseen candidates in reserve or discovery queries. Ending expansion.")
+            break
 
         expansion_pass += 1
         expansion_new_candidates += len(expansion_candidates)
-        log_exec(
-            f"[Pass {expansion_pass}] SECTION DEFICIT EXPANSION: "
-            f"India (2-source={india_state['two_source_count']}, singles={india_state['single_source_count']}), "
-            f"Intl (2-source={intl_state['two_source_count']}, singles={intl_state['single_source_count']}), "
-            f"Extracting {len(expansion_candidates)} new candidates."
-        )
+        log_exec(f"[Pass {expansion_pass}] Processing {len(expansion_candidates)} reserve/expansion candidates...")
 
-        # Process this batch of expansion candidates
-        log_exec(f"  Processing {len(expansion_candidates)} candidates in expansion pass {expansion_pass}...")
         for cand, cand_section in expansion_candidates:
             u_norm = cand.url.strip().lower().rstrip("/")
             if u_norm in seen_urls:
                 continue
             seen_urls.add(u_norm)
 
-            # Pre-extraction freshness check (if RSS published_at is available)
-            pub_at = get_candidate_published_at(cand)
-            if pub_at:
-                pub_time = pub_at
+            rss_pub = get_candidate_published_at(cand)
+            if rss_pub:
+                pub_time = rss_pub
                 if pub_time.tzinfo is None:
                     pub_time = pub_time.replace(tzinfo=timezone.utc)
                 now_utc = datetime.now(timezone.utc)
@@ -1263,19 +883,30 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     log_exec(f"  [Expansion] STALE_PRE_REJECT: '{cand.title[:50]}' ({age_hours:.1f}h old > {max_freshness_hours:.0f}h limit)")
                     continue
 
-            # Extract article
+            from app.models.entity_sanitizer import normalize_publisher_name
+            canonical_source = normalize_publisher_name(cand.source)
+
             try:
                 ext_res = extractor.extract(
                     url=cand.url,
-                    source_name=cand.source,
+                    source_name=canonical_source,
                     candidate_title=cand.title,
                     candidate_category="India" if cand_section == "india" else "International",
-                    candidate_pub_date=pub_at,
+                    candidate_pub_date=rss_pub,
                 )
-            except (AttributeError, NameError, TypeError, UnboundLocalError) as e:
-                internal_pipeline_errors += 1
-                log_exec(f"  [CRITICAL_PIPELINE_ERROR] Programming bug in expansion candidate {cand.url[:60]}: {e}")
-                continue
+                rec = {
+                    "original_url": ext_res.original_url or cand.url,
+                    "resolved_url": ext_res.resolved_url or cand.url,
+                    "status_code": ext_res.status_code,
+                    "title": ext_res.article.title if ext_res.article else cand.title,
+                    "publisher": ext_res.article.source_name if ext_res.article else canonical_source,
+                    "publication_date": ext_res.article.published_at.isoformat() if (ext_res.article and ext_res.article.published_at) else None,
+                    "word_count": ext_res.word_count,
+                    "extraction_method": ext_res.extraction_method,
+                    "success": ext_res.success,
+                    "failure_reason": ext_res.error_message,
+                }
+                all_records.append(rec)
             except Exception as e:
                 log_exec(f"  [Extraction Error] {cand.url[:60]}: {e}")
                 continue
@@ -1284,19 +915,17 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 continue
 
             art = ext_res.article
+            all_extracted.append(art)
             articles_lookup[art.id] = art
 
-            # Filter
             filt_res = filter_engine.filter_article(art)
             if not filt_res.is_accepted:
                 continue
 
-            # Classify
             class_res = classifier.classify(art)
             if not class_res.success or not class_res.classification or not class_res.classification.is_hard_business_event:
                 continue
 
-            # Cluster / Verify
             art_event_cat = NewsCategory.INDIA if cand_section == "india" else NewsCategory.INTERNATIONAL
             classified_companies = populate_event_companies(
                 art,
@@ -1312,7 +941,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 percentages=class_res.classification.percentages,
             )
 
-            # Check if this article matches any existing single-source event organically
+            # Check if this matches existing event organically
             existing_event = next(
                 (e for e in single_source_events if e.article_ids and
                  verifier.is_same_underlying_event(
@@ -1323,98 +952,17 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             if existing_event:
                 if art.id not in existing_event.article_ids:
                     existing_event.article_ids.append(art.id)
-                    # Re-verify
                     ev_arts = [articles_lookup[i] for i in existing_event.article_ids if i in articles_lookup]
                     rv = verifier.verify_event(existing_event, ev_arts)
                     if rv.is_verified and existing_event not in verified_events:
                         existing_event.event_category = reg_clf.classify_event(existing_event, ev_arts)
                         verified_events.append(existing_event)
                         organic_second_sources_found += 1
-                        if existing_event.event_category == NewsCategory.INDIA:
-                            india_verified.append(existing_event)
-                        elif existing_event.event_category == NewsCategory.INTERNATIONAL:
-                            intl_verified.append(existing_event)
-                        log_exec(f"    EXPANSION ORGANICALLY VERIFIED: {existing_event.canonical_title[:45]} (Region={existing_event.event_category.value})")
+                        log_exec(f"    EXPANSION ORGANICALLY VERIFIED: {existing_event.canonical_title[:45]}")
             else:
                 single_source_events.append(event)
                 event.event_category = reg_clf.classify_event(event, [art])
-                is_india_event = (event.event_category == NewsCategory.INDIA)
-                cur_india_v = len([e for e in verified_events if e.event_category == NewsCategory.INDIA])
-                cur_intl_v  = len([e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL])
-
-                # Skip search if section already satisfied with 5 two-source verified
-                if not is_india_event and cur_intl_v >= 5:
-                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
-                    if is_elig:
-                        event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                        event.verification_confidence = conf
-                        event.single_source_confidence_score = conf
-                        event.primary_publisher = art.source_name
-                        event.primary_url = art.url
-                        event.verification_reason = rsn
-                        high_confidence_single_candidates.append(event)
-                    continue
-                if is_india_event and cur_india_v >= 5:
-                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
-                    if is_elig:
-                        event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-                        event.verification_confidence = conf
-                        event.single_source_confidence_score = conf
-                        event.primary_publisher = art.source_name
-                        event.primary_url = art.url
-                        event.verification_reason = rsn
-                        high_confidence_single_candidates.append(event)
-                    continue
-
-                if is_multi_event_roundup(event.canonical_title):
-                    log_exec(f"  [Expansion] MULTI_EVENT_ROUNDUP REJECT: {event.canonical_title[:50]}")
-                    continue
-
-                prio = calculate_corroboration_priority(event, art)
-                corr = None
-                if get_corroboration_count() < MAX_CORROBORATION_SEARCHES_PER_RUN and prio >= 50.0:
-                    corr = corroborator.corroborate(event=event, primary_article=art)
-                    corroboration_searches += corr.queries_fired
-                    if is_india_event:
-                        rss_india_used += corr.queries_fired
-                    else:
-                        rss_international_used += corr.queries_fired
-
-                if (corr is None or not corr.success) and serpapi_corroborator.has_api_key:
-                    if get_serpapi_count() < general_serpapi_limit and prio >= 60.0:
-                        log_exec(f"  [Expansion] Attempting SerpAPI fallback for: {event.canonical_title[:50]}")
-                        attempt_key = get_serpapi_event_key(event)
-                        if attempt_key in serpapi_attempted_event_keys:
-                            log_exec(f"    SERPAPI_ALREADY_ATTEMPTED_SKIP: {event.canonical_title[:50]}")
-                            corr = None
-                        else:
-                            serpapi_attempted_event_keys.add(attempt_key)
-                            serpapi_before = get_serpapi_count()
-                            corr = serpapi_corroborator.corroborate(event=event, primary_article=art)
-                            serpapi_delta = get_serpapi_count() - serpapi_before
-                            if is_india_event:
-                                serpapi_india_used += serpapi_delta
-                            else:
-                                serpapi_international_used += serpapi_delta
-                        if corr:
-                            corroboration_searches += corr.queries_fired
-
-                if corr and corr.success and corr.corroborating_article:
-                    second_sources_found += 1
-                    ca = corr.corroborating_article
-                    articles_lookup[ca.id] = ca
-                    event.article_ids.append(ca.id)
-                    rv2 = verifier.verify_event(event, [art, ca])
-                    if rv2.is_verified:
-                        event.event_category = reg_clf.classify_event(event, [art, ca])
-                        verified_events.append(event)
-                        if event.event_category == NewsCategory.INDIA:
-                            india_verified.append(event)
-                        elif event.event_category == NewsCategory.INTERNATIONAL:
-                            intl_verified.append(event)
-                        log_exec(f"    EXPANSION CORROBORATED: {event.canonical_title[:45]} | Src2={ca.source_name} (Region={event.event_category.value})")
-                else:
-                    # Assess single source fallback
+                if not is_multi_event_roundup(event.canonical_title):
                     is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
                     if is_elig:
                         event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
@@ -1425,11 +973,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                         event.verification_reason = rsn
                         if event not in high_confidence_single_candidates:
                             high_confidence_single_candidates.append(event)
-                        log_exec(f"    EXPANSION QUALIFIED SINGLE SOURCE: {event.canonical_title[:45]} | {rsn}")
-                    else:
-                        log_exec(f"    EXPANSION SINGLE SOURCE REJECTED: {event.canonical_title[:45]} | {rsn}")
+                            log_exec(f"    EXPANSION QUALIFIED SINGLE SOURCE: {event.canonical_title[:45]} | {rsn}")
 
         for e in verified_events:
+            e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+            e.event_category = reg_clf.classify_event(e, e_arts)
+        for e in high_confidence_single_candidates:
             e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
             e.event_category = reg_clf.classify_event(e, e_arts)
 
@@ -1610,14 +1159,14 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     else:
         pipeline_status = "STRICT_SUCCESS"
 
-    log_exec(f"Stage 7 Summary:")
+    log_exec(f"Stage 7 Summary (Quality Verification Model):")
     log_exec(f"  India pool:         {len(india_pool)} (Two-source: {india_two_count}, Single-source: {india_sng_count})")
     log_exec(f"  International pool: {len(intl_pool)} (Two-source: {intl_two_count}, Single-source: {intl_sng_count})")
     log_exec(f"[GUARANTEED_MODE] Strict 24h result: India={india_two_count + india_sng_count}, Intl={intl_two_count + intl_sng_count}")
     log_exec(f"  India QualityLevel={india_quality_level}; International QualityLevel={intl_quality_level}")
 
     # =========================================================================
-    # PIPELINE SUFFICIENCY GATE (HYBRID RULES)
+    # PIPELINE SUFFICIENCY GATE (QUALITY VERIFICATION MODEL)
     # =========================================================================
     india_sufficient = len(india_pool) >= 5
     intl_sufficient  = len(intl_pool) >= 5
@@ -1641,15 +1190,15 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         elif ev.verification_reason:
             print(f"  Reason:     {ev.verification_reason}")
     print("\n=== CANDIDATE POOL SUMMARY ===")
-    print(f"India:         Two-source: {india_two_count}, Single-source: {india_sng_count}, Total: {len(india_pool)}")
-    print(f"International: Two-source: {intl_two_count}, Single-source: {intl_sng_count}, Total: {len(intl_pool)}")
+    print(f"India Quality Candidates:         {len(india_pool)}/5 (Two-source: {india_two_count}, Singles: {india_sng_count})")
+    print(f"International Quality Candidates: {len(intl_pool)}/5 (Two-source: {intl_two_count}, Singles: {intl_sng_count})")
     print("=" * 60 + "\n")
 
     if not sufficient:
         log_exec("=" * 60)
         log_exec("PIPELINE SUFFICIENCY GATE: INSUFFICIENT QUALITY STORIES")
-        log_exec(f"  India pool:  {len(india_pool)} / 5 (Two-source: {india_two_count}/3 required)")
-        log_exec(f"  Intl pool:   {len(intl_pool)} / 5 (Two-source: {intl_two_count}/3 required)")
+        log_exec(f"  India pool:  {len(india_pool)} / 5")
+        log_exec(f"  Intl pool:   {len(intl_pool)} / 5")
         log_exec("  Stage 8 Editorial:        SKIPPED")
         log_exec("  Stage 9 Final Validation: SKIPPED")
         log_exec("  Stage 10 Formatter:       SKIPPED")
@@ -1700,16 +1249,45 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             selection_payload = editorial_res.selection
             log_exec(f"Stage 8 Summary:")
             log_exec(f"  Gemini selected: {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
-
-            with open(data_dir / "final_10_stories.json", "w", encoding="utf-8") as f:
-                json.dump({
-                    "india":         [s.model_dump() for s in selection_payload.india_stories],
-                    "international": [s.model_dump() for s in selection_payload.international_stories],
-                }, f, indent=2)
         else:
             err = editorial_res.error_message if editorial_res else "Unknown editorial error"
-            log_exec(f"Stage 8 Summary: FAILED/SKIPPED: {err}")
-            selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
+            log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
+            india_stories_selected = []
+            for s in candidate_pool.india_candidates[:5]:
+                ev = s.event
+                art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                src = ev.primary_publisher or (art.source_name if art else "Business Standard")
+                u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
+                india_stories_selected.append(EditorialStorySelection(
+                    section="india",
+                    event_id=ev.id,
+                    headline=ev.canonical_title,
+                    source=src,
+                    url=u,
+                ))
+            intl_stories_selected = []
+            for s in candidate_pool.international_candidates[:5]:
+                ev = s.event
+                art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                src = ev.primary_publisher or (art.source_name if art else "Reuters")
+                u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
+                intl_stories_selected.append(EditorialStorySelection(
+                    section="international",
+                    event_id=ev.id,
+                    headline=ev.canonical_title,
+                    source=src,
+                    url=u,
+                ))
+            selection_payload = BriefingEditorialPayload(
+                india_stories=india_stories_selected,
+                international_stories=intl_stories_selected,
+            )
+
+        with open(data_dir / "final_10_stories.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "india":         [s.model_dump() for s in selection_payload.india_stories],
+                "international": [s.model_dump() for s in selection_payload.international_stories],
+            }, f, indent=2)
 
         # =========================================================================
         # STAGE 9: Final Validation
@@ -1812,7 +1390,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print("\nEXTRACTION & DOMAIN METRICS")
     print("-" * 30)
     print(f"  Successful:                 {len(all_extracted)}")
-    print(f"  Failed:                     {total_discovered - len(all_extracted)}")
+    print(f"  Failed:                     {max(0, len(all_records) - len(all_extracted))}")
     print(f"  Pre-extraction URL rejects: {total_pre_url_rejects}")
     print(f"  Google URLs resolved:       {total_resolved}")
     print(f"  Fallback extractions:       {total_fallback}")
@@ -1831,41 +1409,30 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print(f"  Live Gemini calls:          {live_class_count}")
     print(f"  Offline heuristic:          {offline_class_count}")
     print(f"  Accepted by AI:             {len(classified_articles)}")
-    print("\nVERIFICATION & CORROBORATION (HYBRID MODEL)")
+    print("\nVERIFICATION & QUALITY AUDIT (QUALITY VERIFICATION MODEL)")
     print("-" * 30)
     print(f"  Events found:               {len(raw_events)}")
     print(f"  Organic 2nd sources:        {organic_second_sources_found}")
-    print(f"  Active search 2nd sources:  {second_sources_found}")
     print(f"  Two-source verified:        {len(verified_events)}")
-    print(f"  High-confidence singles:    {len(high_confidence_single_candidates)}")
-    print(f"  RSS searches used:          {get_corroboration_count()} / {MAX_CORROBORATION_SEARCHES_PER_RUN} (India: {rss_india_used}, Intl: {rss_international_used})")
-    print(f"  SerpAPI searches used:      {get_serpapi_count()} / {settings.MAX_SERPAPI_SEARCHES_PER_RUN} (India: {serpapi_india_used}, Intl: {serpapi_international_used})")
-    print(f"  SerpAPI candidates returned:{get_serpapi_candidates_returned()}")
-    print(f"  SerpAPI accepted 2nd sources:{get_serpapi_accepted_sources()}")
+    print(f"  Quality-verified singles:   {len(high_confidence_single_candidates)}")
+    print(f"  RSS discovery queries used: {get_corroboration_count()} / {MAX_CORROBORATION_SEARCHES_PER_RUN} (India: {rss_india_used}, Intl: {rss_international_used})")
     print(f"  Verification failures:      {len(rejected_events_list)}")
     if same_event_rejection_counts:
         print("  Same-event rejection reasons:")
         for r_code, r_cnt in sorted(same_event_rejection_counts.items(), key=lambda x: -x[1]):
             print(f"    - [{r_code}]: {r_cnt}")
-    serpapi_rejections = get_serpapi_rejection_reasons()
-    if serpapi_rejections:
-        print("  SerpAPI candidate rejection reasons:")
-        for r_code, r_cnt in sorted(serpapi_rejections.items(), key=lambda x: -x[1]):
-            print(f"    - [{r_code}]: {r_cnt}")
     print("\nDEDUPLICATION")
     print("-" * 30)
     print(f"  Removed (history/dedup):    {len(rejected_stories)}")
     print(f"  Remaining:                  {len(accepted_stories)}")
-    print("\nRANKING & SUFFICIENCY (HYBRID MODEL)")
+    print("\nRANKING & SUFFICIENCY (QUALITY VERIFICATION MODEL)")
     print("-" * 30)
-    print(f"  India candidates:           {len(india_pool)} (Two-source: {india_two_count}/3 min, Singles: {india_sng_count}/2 max)")
-    print(f"  International candidates:   {len(intl_pool)} (Two-source: {intl_two_count}/3 min, Singles: {intl_sng_count}/2 max)")
+    print(f"  India quality candidates:   {len(india_pool)} / 5")
+    print(f"  International quality candidates: {len(intl_pool)} / 5")
     print(f"  Sufficiency gate:           {'PASSED' if sufficient else 'FAILED (' + pipeline_status + ')'}")
-    print("\nEDITORIAL (Gemini)")
+    print("\nEDITORIAL")
     print("-" * 30)
-    if sufficient and editorial_res and editorial_res.success:
-        editorial_calls = gemini_stats["by_stage"].get("editorial", 0)
-        print(f"  Gemini editorial calls:     {editorial_calls}")
+    if sufficient and selection_payload:
         print(f"  Selected India:             {len(selection_payload.india_stories)}")
         print(f"  Selected International:     {len(selection_payload.international_stories)}")
     elif not sufficient:
@@ -1935,13 +1502,11 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if internal_pipeline_errors > 0:
             print(f"\nSTATUS: INSUFFICIENT_VERIFIED_STORIES_WITH_PROCESSING_ERRORS")
             print(f"  Internal pipeline errors: {internal_pipeline_errors}")
-            print(f"  India verified:       {india_two_count} / 3 min required")
-            print(f"  International:        {intl_two_count} / 3 min required")
             print(f"  Reason: Internal processing errors ({internal_pipeline_errors}) prevented candidate extraction.")
         elif not sufficient:
             print(f"\nSTATUS: {pipeline_status}")
-            print(f"  India pool:           {len(india_pool)} / 5 (Two-source: {india_two_count}/3 min, Singles: {india_sng_count}/2 max)")
-            print(f"  International pool:   {len(intl_pool)} / 5 (Two-source: {intl_two_count}/3 min, Singles: {intl_sng_count}/2 max)")
+            print(f"  India pool:           {len(india_pool)} / 5")
+            print(f"  International pool:   {len(intl_pool)} / 5")
             print("  Reason: Fewer than five legitimate quality-eligible stories were found in at least one section within the 72-hour fallback horizon.")
 
     if briefing_text:

@@ -123,21 +123,34 @@ class EventQueryBuilder:
         # 2. Extract multi-word proper nouns and alphanumeric corporate names from title
         title = article.title or ""
 
+        # Check leading subject before quarterly results / action verbs
+        subject_match = re.match(
+            r"^([A-Z0-9&'\.\-]+(?:\s+[A-Z0-9&'\.\-]+){0,4})\s+(?:Q[1-4]|FY\d{2}|Quarterly Results|Annual Results|net profit|profit|revenue|shares?|stock|falls|jumps|surges|slumps|tumbles|gains|drops|posts|misses|beats|reports?|announces?|acquires?|buys|sells|raises?|files?|appoints?|resigns?|merges?|secures?|wins?|bags?|gets?|faces?|plans?|to acquire|to buy|to sell|to raise)\b",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if subject_match:
+            lead_sub = subject_match.group(1).strip(" :,;()-")
+            c = cls.clean_entity(lead_sub)
+            if c and c.lower() not in seen:
+                clean_entities.append(c)
+                seen.add(c.lower())
+
         # Pre-split title by major transaction verbs and prepositions to isolate corporate entity phrases
         split_pattern = r"(?:\s+(?:completes acquisition of|acquisition of|deal to buy|agrees to buy|to acquire|to buy|acquires|buys|sells|offloads|invests in|in|of|for|from|via|with|and|by)\s+)"
         segments = re.split(split_pattern, title, flags=re.IGNORECASE)
 
         for seg in segments:
             seg_clean = seg.strip(" :,;()-")
-            # Look for 1-4 capitalized or alphanumeric (e.g. 20Cube, 3M, 7-Eleven) word sequences in segment
-            for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)){0,3}\b", seg_clean):
+            # Look for 1-4 capitalized or alphanumeric word sequences in segment (supporting apostrophes & hyphens)
+            for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)){0,3}\b", seg_clean):
                 c = cls.clean_entity(matched_str)
                 if c and c.lower() not in seen:
                     clean_entities.append(c)
                     seen.add(c.lower())
 
         # Fallback multi-word regex across full title
-        for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&]+|[A-Z][a-zA-Z0-9&]*)){1,3}\b", title):
+        for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)){1,3}\b", title):
             c = cls.clean_entity(matched_str)
             if c and c.lower() not in seen:
                 clean_entities.append(c)
