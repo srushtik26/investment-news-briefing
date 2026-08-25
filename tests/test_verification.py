@@ -202,6 +202,76 @@ def test_package_exports_and_instantiates_two_source_verifier():
 class TestSameEventVerificationQualityRegression:
     """Regression tests ensuring strict same-underlying-event validation."""
 
+    @staticmethod
+    def _xpeng_article(title: str, source_name: str, url: str) -> Article:
+        return Article(
+            title=title,
+            url=url,
+            source_name=source_name,
+            published_at=datetime.now(timezone.utc),
+            content_text="The company discussed the release, delivery outlook, and robotics valuation in a detailed business update.",
+            category=NewsCategory.INTERNATIONAL,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+
+    def test_xpeng_release_headlines_are_same_underlying_event(self):
+        primary = self._xpeng_article(
+            "Xpeng shares sink as weak delivery forecast overshadows $6.3 billion robot unit valuation",
+            "CNBC",
+            "https://www.cnbc.com/xpeng-primary",
+        )
+        secondary = self._xpeng_article(
+            "XPeng (XPEV) shares fall 7% as outlook disappoints ... $6.3 billion robotics bet",
+            "TechStock2",
+            "https://example.com/xpeng-secondary",
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, score, reason = verifier.is_same_underlying_event(primary, secondary)
+
+        assert is_same is True, reason
+        assert score >= 0.80
+        assert "6.3billion" in verifier._extract_metric_numbers("$6.3B")
+        assert verifier._extract_metric_numbers("$6.3B") == verifier._extract_metric_numbers("$6.3 billion")
+
+    def test_xpeng_different_financing_event_is_not_same_event(self):
+        primary = self._xpeng_article(
+            "Xpeng shares sink as weak delivery forecast overshadows $6.3 billion robot unit valuation",
+            "CNBC",
+            "https://www.cnbc.com/xpeng-primary",
+        )
+        secondary = self._xpeng_article(
+            "Xpeng raises $500 million in new financing round",
+            "Reuters",
+            "https://www.reuters.com/xpeng-financing",
+        )
+
+        is_same, _, _ = TwoSourceVerifier().is_same_underlying_event(primary, secondary)
+
+        assert is_same is False
+
+    def test_meesho_block_deal_and_nvidia_groq_are_unrelated(self):
+        primary = Article(
+            title="Meesho Block Deals: Y Combinator offloads over 1% stake; 20 investors, including Nippon India, HDFC Life, Morgan Stanley, buy shares",
+            url="https://www.moneycontrol.com/news/business/markets/meesho-block-deals-y-combinator-offloads-over-1-stake-20-investors-including-nippon-india-hdfc-life-morgan-stanley-buy-shares-14014345.html",
+            source_name="Moneycontrol",
+        )
+        secondary = Article(
+            title="Nvidia says Groq racks will be online this year following $20 billion purchase",
+            url="https://www.cnbc.com/2026/08/24/nvidia-says-groq-racks-will-be-online-this-year-after-20-billion-deal.html",
+            source_name="CNBC",
+        )
+
+        verifier = TwoSourceVerifier()
+        is_same, _, reason = verifier.is_same_underlying_event(primary, secondary)
+        event = Event(canonical_title=primary.title, description=primary.title)
+        result = verifier.verify_event(event, [primary, secondary])
+
+        assert is_same is False, reason
+        assert result.verification_status != VerificationStatus.VERIFIED
+
     def test_lt_nxt_infra_vs_nxt_infra_earnings_rejected(self):
         """
         Regression Test: Exact live bug scenario.

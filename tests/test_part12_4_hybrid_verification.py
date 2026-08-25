@@ -243,6 +243,368 @@ def test_single_source_trusted_intl_publishers():
     assert score >= 80.0
 
 
+def test_international_high_confidence_single_survives_section_state():
+    event = _create_mock_event(
+        "intl_single",
+        "Alphabet acquires cybersecurity startup Wiz for $23 billion",
+        ["Alphabet", "Wiz"],
+        ["intl_article"],
+        category=NewsCategory.INTERNATIONAL,
+        tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        figures=["$23 billion"],
+    )
+    event.single_source_confidence_score = 90.0
+
+    from run_pipeline import get_section_quality_state
+
+    state = get_section_quality_state([], [event], NewsCategory.INTERNATIONAL)
+
+    assert state["single_source_count"] == 1
+    assert state["eligible_total"] == 1
+
+
+def test_expansion_style_international_single_is_promoted_after_failed_searches():
+    evaluator = SingleSourceEvaluator()
+    article = _create_mock_article(
+        "nvent_article",
+        "NVent Electric Bolsters Data-Center Offerings With Up to $2.3 Billion Acquisition",
+        "MarketWatch",
+        "https://www.marketwatch.com/story/nvent-electric-acquisition",
+        content_text="NVent Electric announced an acquisition to expand its data-center offerings. "
+        "The transaction is valued at up to $2.3 billion and is expected to strengthen "
+        "the company portfolio, product capabilities, and customer reach across major markets.",
+        age_hours=2.0,
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "nvent_event",
+        article.title,
+        ["NVent Electric"],
+        [article.id],
+        category=NewsCategory.INTERNATIONAL,
+        tier=VerificationTier.UNVERIFIED,
+        figures=["$2.3 billion"],
+    )
+
+    is_eligible, score, reason = evaluator.evaluate_event(event, article)
+    assert is_eligible is True
+
+    event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
+    event.verification_confidence = score
+    event.single_source_confidence_score = score
+    event.verification_reason = reason
+    from run_pipeline import get_section_quality_state
+    state = get_section_quality_state([], [event], NewsCategory.INTERNATIONAL)
+    assert state["single_source_count"] == 1
+
+
+def test_rejected_expansion_single_is_not_promoted():
+    evaluator = SingleSourceEvaluator()
+    article = _create_mock_article(
+        "rejected_article",
+        "Market commentary on stocks to buy",
+        "MarketWatch",
+        "https://www.marketwatch.com/story/commentary",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "rejected_event",
+        article.title,
+        ["Example Corp"],
+        [article.id],
+        category=NewsCategory.INTERNATIONAL,
+        tier=VerificationTier.UNVERIFIED,
+    )
+
+    is_eligible, _, _ = evaluator.evaluate_event(event, article)
+    assert is_eligible is False
+    assert event.verification_tier == VerificationTier.UNVERIFIED
+
+
+def test_international_final_mile_prioritizes_qualified_singles():
+    from run_pipeline import prioritize_intl_final_mile_candidates
+
+    qualified = []
+    for event_id, title, tier in [
+        ("xpeng", "Xpeng reports results with $6.3 billion valuation", VerificationTier.TWO_SOURCE_VERIFIED),
+        ("shein", "Shein targets $27 billion Hong Kong IPO", VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE),
+        ("nvent", "NVent Electric announces $2.3 billion acquisition", VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE),
+        ("bessent", "Bessent imposes $500 billion penalty on major company", VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE),
+        ("lakers", "Los Angeles Lakers worth every bit of $12.5 billion", VerificationTier.UNVERIFIED),
+        ("commentary", "Market commentary on stocks to buy", VerificationTier.UNVERIFIED),
+    ]:
+        if event_id == "xpeng":
+            continue
+        article = _create_mock_article(event_id, title, "MarketWatch", f"https://www.marketwatch.com/{event_id}", category=NewsCategory.INTERNATIONAL)
+        event = _create_mock_event(event_id, title, [event_id.title()], [article.id], NewsCategory.INTERNATIONAL, tier, ["$27 billion"])
+        qualified.append((event, article))
+
+    events = [event for event, _ in qualified]
+    articles = {article.id: article for _, article in qualified}
+    ordered = prioritize_intl_final_mile_candidates(events, articles, SingleSourceEvaluator())
+    ordered_ids = [event.id for _, event, _ in ordered]
+
+    qualified_ids = {"shein", "nvent", "bessent"}
+    assert set(ordered_ids[:3]) == qualified_ids
+    assert all(ordered_ids.index(event_id) < ordered_ids.index("lakers") for event_id in qualified_ids)
+    assert all(ordered_ids.index(event_id) < ordered_ids.index("commentary") for event_id in qualified_ids)
+
+
+def test_serpapi_reserves_two_attempts_for_international_upgrades():
+    from run_pipeline import get_general_serpapi_limit, get_intl_serpapi_reservation
+
+    intl_state = {"two_source_count": 1}
+    assert get_intl_serpapi_reservation(intl_state, 8) == 2
+    assert get_general_serpapi_limit(intl_state, 8) == 6
+
+
+def test_serpapi_reservation_releases_at_international_floor():
+    from run_pipeline import get_general_serpapi_limit, get_intl_serpapi_reservation
+
+    intl_state = {"two_source_count": 3}
+    assert get_intl_serpapi_reservation(intl_state, 8) == 0
+    assert get_general_serpapi_limit(intl_state, 8) == 8
+
+
+def test_solved_india_cannot_consume_internationally_reserved_attempts():
+    from run_pipeline import get_general_serpapi_limit
+
+    india_state = {"two_source_count": 3}
+    intl_state = {"two_source_count": 1}
+    assert india_state["two_source_count"] >= 3
+    assert get_general_serpapi_limit(intl_state, 8) == 6
+
+
+def test_deficient_india_retains_full_serpapi_limit_when_intl_is_solved():
+    from run_pipeline import get_general_serpapi_limit
+
+    india_state = {"two_source_count": 2}
+    intl_state = {"two_source_count": 3}
+    assert india_state["two_source_count"] < 3
+    assert get_general_serpapi_limit(intl_state, 8) == 8
+
+
+def test_serpapi_duplicate_attempt_key_is_stable_for_same_event():
+    from run_pipeline import get_serpapi_event_key
+
+    event = _create_mock_event(
+        "nvent_attempt",
+        "NVent Electric announces $2.3 billion acquisition",
+        ["NVent Electric"],
+        ["article"],
+        NewsCategory.INTERNATIONAL,
+        VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+    )
+    equivalent = event.model_copy(deep=True)
+
+    assert get_serpapi_event_key(event) == get_serpapi_event_key(equivalent)
+
+
+def test_reservation_releases_for_international_discovery_after_attempted_upgrade():
+    from run_pipeline import get_general_serpapi_limit, has_unattempted_intl_upgrade
+
+    article = _create_mock_article(
+        "attempted_article",
+        "NVent Electric announces $2.3 billion acquisition",
+        "MarketWatch",
+        "https://marketwatch.com/nvent",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "attempted_event",
+        article.title,
+        ["NVent Electric"],
+        [article.id],
+        NewsCategory.INTERNATIONAL,
+        VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        ["$2.3 billion"],
+    )
+    from run_pipeline import get_serpapi_event_key
+    attempted = {get_serpapi_event_key(event)}
+    assert has_unattempted_intl_upgrade([event], {article.id: article}, SingleSourceEvaluator(), attempted) is False
+    assert get_general_serpapi_limit({"two_source_count": 1}, 8, upgrade_available=False) == 8
+
+
+def test_international_final_mile_can_continue_with_empty_reserve_pool_and_budget():
+    from run_pipeline import should_stop_expansion
+
+    assert should_stop_expansion([], {"two_source_count": 1}, True, 6, 8, False) is False
+    assert should_stop_expansion([], {"two_source_count": 1}, True, 8, 8, False) is True
+
+
+def test_unattempted_qualified_upgrade_remains_before_discovery_release():
+    from run_pipeline import get_general_serpapi_limit, has_unattempted_intl_upgrade
+
+    article = _create_mock_article(
+        "qualified_article",
+        "Shein targets $27 billion Hong Kong IPO",
+        "Reuters",
+        "https://reuters.com/shein-ipo",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "qualified_event",
+        article.title,
+        ["Shein"],
+        [article.id],
+        NewsCategory.INTERNATIONAL,
+        VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        ["$27 billion"],
+    )
+    assert has_unattempted_intl_upgrade([event], {article.id: article}, SingleSourceEvaluator(), set()) is True
+    assert get_general_serpapi_limit({"two_source_count": 1}, 8, upgrade_available=True) == 6
+
+
+def test_qualified_international_single_upgrade_is_not_double_counted():
+    primary = _create_mock_article(
+        "upgrade_primary",
+        "Alphabet acquires cybersecurity startup Wiz for $23 billion",
+        "Reuters",
+        "https://reuters.com/alphabet-wiz",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    secondary = _create_mock_article(
+        "upgrade_secondary",
+        "Alphabet buys Wiz for $23 billion acquisition details",
+        "Bloomberg",
+        "https://bloomberg.com/alphabet-wiz",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    primary.content_text = "Reuters reported Alphabet's cybersecurity expansion and transaction terms. " + " ".join(f"primary_detail_{i}" for i in range(60))
+    secondary.content_text = "Bloomberg described Wiz's sale and the strategic technology rationale. " + " ".join(f"secondary_detail_{i}" for i in range(60))
+    event = _create_mock_event(
+        "upgrade_event",
+        primary.title,
+        ["Alphabet", "Wiz"],
+        [primary.id],
+        category=NewsCategory.INTERNATIONAL,
+        tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        figures=["$23 billion"],
+    )
+
+    result = TwoSourceVerifier().verify_event(event, [primary, secondary])
+
+    assert result.is_verified is True
+    assert event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED
+    from run_pipeline import get_section_quality_state
+    state = get_section_quality_state([event], [event], NewsCategory.INTERNATIONAL)
+    assert state["two_source_count"] == 1
+    assert state["single_source_count"] == 0
+
+
+def test_generic_gold_commentary_entity_is_removed_upstream():
+    from run_pipeline import populate_event_companies
+
+    article = _create_mock_article(
+        "gold_commentary",
+        "A massive trade just happened in gold. The options market is buzzing",
+        "CNBC",
+        "https://www.cnbc.com/gold-commentary",
+        category=NewsCategory.INTERNATIONAL,
+    )
+
+    companies = populate_event_companies(article, [])
+
+    assert companies == []
+    assert "The" not in companies
+
+
+def test_gold_commentary_does_not_qualify_without_named_company():
+    article = _create_mock_article(
+        "gold_commentary_eval",
+        "A massive trade just happened in gold. The options market is buzzing",
+        "CNBC",
+        "https://www.cnbc.com/gold-commentary-eval",
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "gold_commentary_event",
+        article.title,
+        [],
+        [article.id],
+        category=NewsCategory.INTERNATIONAL,
+        tier=VerificationTier.UNVERIFIED,
+        figures=["$2 billion"],
+    )
+
+    is_eligible, _, _ = SingleSourceEvaluator().evaluate_event(event, article)
+
+    assert is_eligible is False
+
+
+def test_expansion_entity_fallback_preserves_valid_company_names():
+    from run_pipeline import populate_event_companies
+
+    cases = [
+        ("NVent Electric Bolsters Data-Center Offerings With Up to $2.3 Billion Acquisition", "NVent Electric"),
+        ("Shein targets $27 billion Hong Kong IPO", "Shein"),
+        ("The Trade Desk announces quarterly results", "The Trade Desk"),
+        ("SoftBank sells shares in Lenskart", "SoftBank"),
+        ("Xpeng announces delivery forecast", "Xpeng"),
+    ]
+    for index, (title, expected) in enumerate(cases):
+        article = _create_mock_article(
+            f"entity_case_{index}",
+            title,
+            "Reuters",
+            f"https://www.reuters.com/entity-case-{index}",
+            category=NewsCategory.INTERNATIONAL,
+        )
+        companies = populate_event_companies(article, [])
+        assert expected in companies
+
+
+def test_expansion_entity_fallback_preserves_nvent_and_shein_entities():
+    from run_pipeline import populate_event_companies
+
+    nvent = EventQueryBuilder.extract_entities(
+        _create_mock_article(
+            "nvent_entity_article",
+            "NVent Electric Bolsters Data-Center Offerings With Up to $2.3 Billion Acquisition",
+            "MarketWatch",
+            "https://www.marketwatch.com/story/nvent-entity",
+        )
+    )
+    shein = EventQueryBuilder.extract_entities(
+        _create_mock_article(
+            "shein_entity_article",
+            "Shein targets $27 billion Hong Kong IPO",
+            "Reuters",
+            "https://www.reuters.com/business/shein-ipo",
+        )
+    )
+    nvent_clean = populate_event_companies(
+        _create_mock_article(
+            "nvent_entity_article",
+            "NVent Electric Bolsters Data-Center Offerings With Up to $2.3 Billion Acquisition",
+            "MarketWatch",
+            "https://www.marketwatch.com/story/nvent-entity",
+        ),
+        [],
+    )
+    shein_clean = populate_event_companies(
+        _create_mock_article(
+            "shein_entity_article",
+            "Shein targets $27 billion Hong Kong IPO",
+            "Reuters",
+            "https://www.reuters.com/business/shein-ipo",
+        ),
+        [],
+    )
+
+    assert nvent_clean == ["NVent Electric"]
+    assert any(entity.lower() == "shein" for entity in shein_clean)
+
+
+def test_numeric_and_generic_entity_candidates_are_rejected():
+    from app.verification.query_builder import GENERIC_ENTITY_BLACKLIST
+    from app.verification.single_source import is_valid_named_company_entity
+
+    assert is_valid_named_company_entity("20") is False
+    assert is_valid_named_company_entity("$2.3 billion") is False
+    assert "investors" in GENERIC_ENTITY_BLACKLIST
+
+
 def test_single_source_rejects_untrusted_publisher():
     """Test single source evaluator rejects blog / aggregator."""
     evaluator = SingleSourceEvaluator()

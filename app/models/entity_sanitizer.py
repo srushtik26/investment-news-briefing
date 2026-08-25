@@ -20,6 +20,12 @@ PUBLISHER_ENTITY_BLACKLIST: Set[str] = {
     "scconline", "pulse2", "forbes", "marketscreener", "hapag-lloyd",
 }
 
+GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
+    "the", "a", "an", "this", "that", "these", "those",
+    "market", "markets", "investors", "revenue", "profit", "gold",
+    "options", "shares", "stocks", "ceo", "company",
+}
+
 
 def sanitize_company_entities(companies: Optional[List[str]], publisher: Optional[str] = None) -> List[str]:
     """
@@ -41,6 +47,8 @@ def sanitize_company_entities(companies: Optional[List[str]], publisher: Optiona
             continue
         c_clean = c.strip()
         c_low = c_clean.lower()
+        if c_low in GENERIC_STANDALONE_ENTITY_BLACKLIST:
+            continue
         if c_low in PUBLISHER_ENTITY_BLACKLIST:
             continue
         if pub_norm and (c_low == pub_norm or c_low in pub_norm or pub_norm in c_low):

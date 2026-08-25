@@ -166,10 +166,21 @@ class TwoSourceVerifier:
         for num in re.findall(r"(?:₹|\$|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:crore|cr|billion|million|b|m)?", text, re.IGNORECASE):
             norm = num.lower().replace("₹", "").replace("$", "").replace("rs.", "").replace("rs", "").replace(",", "").strip()
             norm = re.sub(r"\s+", "", norm)
+            norm = re.sub(r"(?<=\d)million$", "million", norm)
+            norm = re.sub(r"(?<=\d)b$", "billion", norm)
+            norm = re.sub(r"(?<=\d)m$", "million", norm)
             if norm and any(c.isdigit() for c in norm) and norm not in ("1", "2", "3", "2024", "2025", "2026"):
                 facts.add(norm)
-        for raw in re.findall(r"\b\d+(?:\.\d+)?\b", text):
-            if len(raw) >= 2 and raw not in ("2024", "2025", "2026"):
+        metric_units = r"(?:crore|cr|billion|million|b|m|%)"
+        for raw_match in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
+            raw = raw_match.group(0)
+            before = text[max(0, raw_match.start() - 1):raw_match.start()]
+            after = text[raw_match.end():]
+            is_part_of_metric = (
+                before in ("$", "₹")
+                or re.match(rf"\s*{metric_units}\b", after, re.IGNORECASE)
+            )
+            if len(raw) >= 2 and raw not in ("2024", "2025", "2026") and not is_part_of_metric:
                 facts.add(raw)
         return facts
 
@@ -227,6 +238,9 @@ class TwoSourceVerifier:
         # Step 1: Detect Event Categories & Check Incompatibility
         cats1 = self.detect_event_categories(art1)
         cats2 = self.detect_event_categories(art2)
+        from app.verification.query_builder import EventQueryBuilder
+        action1 = EventQueryBuilder.detect_event_action(art1.title)
+        action2 = EventQueryBuilder.detect_event_action(art2.title)
 
         if cats1 and cats2:
             for c1 in cats1:
@@ -236,7 +250,7 @@ class TwoSourceVerifier:
                         return False, 0.0, f"EVENT_TYPE_MISMATCH: Incompatible event types ('{c1}' vs '{c2}')"
 
         # Step 2: Shared Company / Entity Presence using EventQueryBuilder
-        from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
+        from app.verification.query_builder import GENERIC_ENTITY_BLACKLIST
 
         entities1 = EventQueryBuilder.extract_entities(art1)
         entities2 = EventQueryBuilder.extract_entities(art2)
@@ -314,14 +328,33 @@ class TwoSourceVerifier:
         matched_clusters = sum(1 for cluster in COMPANY_CLUSTERS if overlap.intersection(cluster))
         has_counterpart_match = matched_clusters >= 2 or len(shared_entities) >= 2
 
-        has_metric_match = bool(shared_metrics)
         has_period_match = bool(q1 and q2 and q1 == q2 and ("EARNINGS" in cats1 and "EARNINGS" in cats2))
 
         all_cluster_words = set().union(*COMPANY_CLUSTERS)
         action_overlap = {w for w in overlap if w not in all_cluster_words and w not in stopwords and w not in GENERIC_ENTITY_BLACKLIST}
         has_strong_title_overlap = len(action_overlap) >= 2 or (title_similarity >= 0.35 and len(action_overlap) >= 1)
 
-        if has_metric_match or has_counterpart_match or has_period_match or has_strong_title_overlap:
+        has_metric_match = bool(shared_metrics) and bool(
+            shared_major or has_counterpart_match or has_period_match or has_strong_title_overlap
+        )
+        release_signal_pattern = r"\b(earnings|earning|results|revenue|profit|miss|guidance|outlook|forecast|delivery|deliveries)\b"
+        has_compatible_release_context = bool(
+            re.search(release_signal_pattern, t1)
+            and re.search(release_signal_pattern, t2)
+            and shared_metrics
+        )
+        has_compatible_action = bool(
+            (action1 and action2 and action1 == action2)
+            or (cats1 and cats2 and cats1.intersection(cats2))
+            or has_compatible_release_context
+        )
+        if has_compatible_action and (
+            has_metric_match
+            or has_counterpart_match
+            or has_period_match
+            or has_strong_title_overlap
+            or has_compatible_release_context
+        ):
             score = max(title_similarity, 0.95 if has_metric_match or has_counterpart_match else 0.80)
             details = []
             if shared_entities or shared_major:

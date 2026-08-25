@@ -135,3 +135,12 @@ class TestEventRegionClassifier:
         )
         cat = classifier.classify_event(event)
         assert cat == NewsCategory.INTERNATIONAL
+
+    def test_international_discovery_not_flipped_by_incidental_currency(self, classifier: EventRegionClassifier):
+        cat = classifier.classify(
+            title="Fund manager lists four of his best-value unloved stocks",
+            content="The global portfolio manager discussed valuation and market conditions.",
+            financial_figures=["₹500 crore"],
+            discovery_region=NewsCategory.INTERNATIONAL,
+        )
+        assert cat == NewsCategory.INTERNATIONAL

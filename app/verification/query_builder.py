@@ -67,6 +67,12 @@ class EventQueryBuilder:
         tok = candidate.strip().strip("'\".,;:()[]{}")
         if not tok or len(tok) < 2:
             return None
+        numeric_units = {"b", "m", "cr", "crore", "billion", "million", "percent", "pct"}
+        if all(
+            word.isdigit() or word.lower() in numeric_units
+            for word in tok.split()
+        ):
+            return None
 
         # Strip generic prefixes
         tok_low = tok.lower()

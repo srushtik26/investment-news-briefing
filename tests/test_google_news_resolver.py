@@ -33,6 +33,37 @@ class TestGoogleNewsURLResolver:
         assert res.resolved_url == url
         assert res.resolution_method == "passthrough"
 
+    def test_publisher_url_validator(self):
+        assert GoogleNewsURLResolver._is_valid_publisher_url(
+            "https://www.gstatic.com/gnews/logo/google_news_192.png"
+        ) is False
+        assert GoogleNewsURLResolver._is_valid_publisher_url(
+            "https://www.reuters.com/business/test-company-deal"
+        ) is True
+
+    @patch("googlenewsdecoder.gnewsdecoder")
+    @patch("httpx.Client.get")
+    def test_html_fallback_skips_gstatic_image(self, mock_get, mock_gnewsdecoder):
+        mock_gnewsdecoder.return_value = {
+            "status": True,
+            "decoded_url": "https://www.gstatic.com/gnews/logo/google_news_192.png",
+        }
+        mock_response = MagicMock()
+        mock_response.url = "https://news.google.com/rss/articles/CBMi123"
+        mock_response.text = (
+            '<a href="https://www.gstatic.com/gnews/logo/google_news_192.png">'
+            '<a href="https://www.reuters.com/business/test-company-deal">'
+        )
+        mock_get.return_value = mock_response
+
+        resolver = GoogleNewsURLResolver()
+        res = resolver.resolve("https://news.google.com/rss/articles/CBMi123")
+
+        assert res.success is True
+        assert res.resolved_url == "https://www.reuters.com/business/test-company-deal"
+        assert "gstatic.com" not in res.resolved_url
+        assert res.resolution_method == "html_link_regex"
+
     @patch("googlenewsdecoder.gnewsdecoder")
     def test_resolve_google_news_url_success(self, mock_gnewsdecoder):
         mock_gnewsdecoder.return_value = {

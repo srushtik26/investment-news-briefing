@@ -199,7 +199,7 @@ class EventRegionClassifier:
         # RULE E: Discovery Region Prior Protection (Weak body tokens must not flip discovery prior)
         if discovery_region == NewsCategory.INTERNATIONAL:
             # Strong proof required to flip from International to India
-            if "india" in title_lower or has_indian_currency_local:
+            if "india" in title_lower:
                 return NewsCategory.INDIA, "Indian currency / market reference overriding international discovery"
             return NewsCategory.INTERNATIONAL, "Preserved International discovery pool prior"
 
