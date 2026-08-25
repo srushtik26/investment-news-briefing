@@ -14,6 +14,7 @@ from app.discovery.mock_provider import MockDiscoveryProvider
 from app.discovery.models import DiscoveredArticle
 from app.discovery.queries import (
     INDIA_EVENT_CATEGORIES,
+    OFFICIAL_INDIA_SOURCES,
     INTERNATIONAL_EVENT_CATEGORIES,
     SearchQueryBuilder,
 )
@@ -62,7 +63,7 @@ class NewsDiscoveryService:
         )
 
         discovered: List[DiscoveredArticle] = []
-        sources = SearchQueryBuilder.get_sources_for_country("India")
+        sources = SearchQueryBuilder.get_sources_for_country("India") + OFFICIAL_INDIA_SOURCES
         site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources]) + ")"
 
         for cat_name, phrase_list in target_cats.items():

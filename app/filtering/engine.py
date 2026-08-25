@@ -44,6 +44,7 @@ class HardFilterEngine:
         self,
         article: Article,
         now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
     ) -> FilterResult:
         """
         Evaluate an individual article through all deterministic filter rules.
@@ -58,7 +59,10 @@ class HardFilterEngine:
         current_time = now_utc or datetime.now(timezone.utc)
 
         for rule in self.rules:
-            result = rule.evaluate(article, now_utc=current_time)
+            if isinstance(rule, DateFilterRule):
+                result = rule.evaluate(article, now_utc=current_time, max_age_hours=max_age_hours)
+            else:
+                result = rule.evaluate(article, now_utc=current_time)
             if not result.is_accepted:
                 logger.info(
                     "Article rejected [%s]: '%s' - Reason: %s",
@@ -79,14 +83,16 @@ class HardFilterEngine:
         self,
         article: Article,
         now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
     ) -> FilterResult:
         """Alias for filter_article to ensure consistent API contract."""
-        return self.filter_article(article, now_utc=now_utc)
+        return self.filter_article(article, now_utc=now_utc, max_age_hours=max_age_hours)
 
     def filter_candidates(
         self,
         articles: List[Article],
         now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
     ) -> Tuple[List[Article], List[FilterResult]]:
         """
         Filter a batch of candidate articles.
@@ -105,7 +111,7 @@ class HardFilterEngine:
         logger.info("Evaluating %d candidate articles through Hard Filter Engine...", len(articles))
 
         for article in articles:
-            result = self.filter_article(article, now_utc=current_time)
+            result = self.filter_article(article, now_utc=current_time, max_age_hours=max_age_hours)
             if result.is_accepted:
                 accepted.append(article)
             else:

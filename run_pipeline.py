@@ -22,7 +22,7 @@ import re
 import json
 import logging
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Set, Optional
 
@@ -94,6 +94,90 @@ def _score_discovery_candidate(title: str) -> float:
 def get_candidate_published_at(candidate: Any) -> Optional[datetime]:
     """Centralized helper to safely get published_at from a DiscoveredArticle."""
     return getattr(candidate, "published_at", None)
+
+
+def get_article_age_hours(article: Article, now_utc: Optional[datetime] = None) -> Optional[float]:
+    """Return the verified article age in hours, or None when no timestamp exists."""
+    if not article.published_at:
+        return None
+    current_time = now_utc or datetime.now(timezone.utc)
+    pub_time = article.published_at
+    if pub_time.tzinfo is None:
+        pub_time = pub_time.replace(tzinfo=timezone.utc)
+    return max(0.0, (current_time - pub_time).total_seconds() / 3600.0)
+
+
+def get_fallback_search_window(expansion_pass: int) -> str:
+    """Return the bounded fallback search window for an expansion pass."""
+    if expansion_pass <= 1:
+        return "when:1d"
+    if expansion_pass <= 3:
+        return "when:2d"
+    return "when:" + "3d"
+
+
+def evaluate_single_source_for_horizon(
+    event: Event,
+    article: Article,
+    evaluator: SingleSourceEvaluator,
+    horizon_hours: float,
+    now_utc: Optional[datetime] = None,
+) -> Tuple[bool, float, str]:
+    """Apply unchanged single-source rules while allowing an explicit fallback date horizon."""
+    age_hours = get_article_age_hours(article, now_utc=now_utc)
+    if age_hours is None or age_hours > horizon_hours:
+        return False, 0.0, f"REJECT: Stale publication date ({age_hours if age_hours is not None else 'unknown'}h > {horizon_hours:.0f}h)"
+    if age_hours <= 24.0:
+        return evaluator.evaluate_event(event, article, now_utc=now_utc)
+
+    pub_time = article.published_at
+    if pub_time.tzinfo is None:
+        pub_time = pub_time.replace(tzinfo=timezone.utc)
+    evaluation_time = pub_time + timedelta(hours=23, minutes=59, seconds=59)
+    return evaluator.evaluate_event(event, article, now_utc=evaluation_time)
+
+
+def ladder_quality_key(event: Event, article: Article) -> Tuple[int, int, float, float]:
+    """Sort by fallback horizon, verification tier, relevance score, and recency."""
+    age_hours = get_article_age_hours(article) or 999.0
+    if age_hours <= 24:
+        horizon_rank = 0
+    elif age_hours <= 36:
+        horizon_rank = 1
+    elif age_hours <= 48:
+        horizon_rank = 2
+    else:
+        horizon_rank = 3
+    tier_rank = 0 if event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else 1
+    return horizon_rank, tier_rank, -float(event.verification_confidence or 0.0), -age_hours
+
+
+def get_quality_level(
+    scored_events: List[Any],
+    two_source_count: int,
+    articles_lookup: Dict[str, Article],
+) -> str:
+    """Return the strongest quality level represented by a selected section."""
+    if len(scored_events) < 5:
+        return "DATA_UNAVAILABLE"
+    ages = []
+    for scored in scored_events:
+        event = scored.event
+        article = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
+        age = get_article_age_hours(article) if article else None
+        ages.append(age if age is not None else 999.0)
+    oldest = max(ages, default=0.0)
+    if oldest > 72.0:
+        return "DATA_UNAVAILABLE"
+    if oldest <= 24.0 and two_source_count >= 3:
+        return "STRICT_SUCCESS"
+    if oldest <= 24.0:
+        return "FALLBACK_SUCCESS_24H"
+    if oldest <= 36.0:
+        return "FALLBACK_SUCCESS_36H"
+    if oldest <= 48.0:
+        return "FALLBACK_SUCCESS_48H"
+    return "EMERGENCY_SUCCESS_72H"
 
 
 def populate_event_companies(article: Article, classified_companies: List[str]) -> List[str]:
@@ -268,19 +352,6 @@ def _extract_candidates(
             continue
         seen_urls.add(norm_url)
 
-        # Pre-extraction freshness check (if RSS published_at is available)
-        pub_at = get_candidate_published_at(cand)
-        if pub_at:
-            pub_time = pub_at
-            if pub_time.tzinfo is None:
-                pub_time = pub_time.replace(tzinfo=timezone.utc)
-            now_utc = datetime.now(timezone.utc)
-            age_hours = max(0.0, (now_utc - pub_time).total_seconds() / 3600.0)
-            max_freshness_hours = getattr(get_settings(), "STORY_FRESHNESS_HOURS", 24.0)
-            if age_hours > max_freshness_hours:
-                log_exec(f"[{idx}/{total}] FINAL_MILE_STALE_PRE_REJECT: '{cand.title[:50]}' ({age_hours:.1f}h old > {max_freshness_hours:.0f}h limit)")
-                continue
-
         log_exec(f"[{idx}/{total}] Extracting ({country}): '{cand.title[:50]}' ({cand.source})")
         if extractor.resolver.is_google_news_url(cand.url):
             google_count += 1
@@ -429,6 +500,15 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     log_exec("=" * 60)
     filter_engine = HardFilterEngine()
     accepted_articles, rejections = filter_engine.filter_candidates(all_extracted)
+    date_deferred_urls = {
+        rejection.article_url
+        for rejection in rejections
+        if rejection.rule_failed == "DATE"
+    }
+    date_deferred_articles = [
+        article for article in all_extracted
+        if article.url in date_deferred_urls and article.published_at and getattr(article, "date_verified", True)
+    ]
 
     india_accepted   = [a for a in accepted_articles if a.category == NewsCategory.INDIA]
     intl_accepted    = [a for a in accepted_articles if a.category == NewsCategory.INTERNATIONAL]
@@ -504,6 +584,19 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             err = res.error_message if res else "Unknown error"
             log_exec(f"  -> CLASSIFICATION FAILED: {err}")
 
+    fallback_classified_articles: List[Tuple[Article, Any]] = []
+    if date_deferred_articles:
+        log_exec(f"[FALLBACK_36H_START] Retained {len(date_deferred_articles)} date-deferred extracted candidates")
+    for art in date_deferred_articles:
+        try:
+            res = classifier.classify(art)
+        except Exception as exc:
+            log_exec(f"  -> FALLBACK CLASSIFICATION FAILED: {exc}")
+            continue
+        if res and res.success and res.classification and res.classification.is_hard_business_event and res.classification.is_investment_relevant:
+            fallback_classified_articles.append((art, res.classification))
+    log_exec(f"  Date-deferred fallback candidates: {len(fallback_classified_articles)}")
+
     log_exec(f"Stage 4 Summary:")
     log_exec(f"  Passed AI filters: {len(classified_articles)}")
     log_exec(f"  Live Gemini calls: {live_class_count}")
@@ -522,6 +615,20 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
     class_map = {pair[0].id: pair[1] for pair in classified_articles}
     articles_lookup: Dict[str, Article] = {art.id: art for art in articles_to_cluster}
+    fallback_events: List[Event] = []
+    for art, classification in fallback_classified_articles:
+        event = Event(
+            canonical_title=art.title,
+            article_ids=[art.id],
+            event_category=art.category or NewsCategory.INTERNATIONAL,
+            description=art.content_text[:300] if art.content_text else "",
+            companies_involved=classification.company_names,
+            financial_figures=classification.financial_numbers,
+            percentages=classification.percentages,
+        )
+        fallback_events.append(event)
+        class_map[art.id] = classification
+        articles_lookup[art.id] = art
 
     # Enrich events with company/financial data from classifications
     for event in raw_events:
@@ -969,6 +1076,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     "site:cnbc.com OR site:apnews.com OR site:bbc.com",
                     "site:marketwatch.com OR site:fortune.com OR site:theguardian.com",
                     "site:bloomberg.com OR site:reuters.com OR site:finance.yahoo.com",
+                    "site:sec.gov OR site:federalreserve.gov OR site:businesswire.com OR site:globenewswire.com",
                 ]
                 INTL_EVENT_TEMPLATES = [
                     "company acquisition merger deal when:1d",
@@ -987,7 +1095,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                             if not serpapi_corroborator.has_api_key or get_serpapi_count() >= general_serpapi_limit:
                                 log_exec("  [INTL_FINAL_MILE] Search budget exhausted — stopping final-mile discovery queries.")
                                 break
-                        query_str = f"{tmpl} {s_group}"
+                        query_str = f"{tmpl.replace('when:1d', get_fallback_search_window(expansion_pass))} {s_group}"
                         q_norm = query_str.lower().strip()
                         if q_norm in executed_final_mile_queries:
                             continue
@@ -1042,6 +1150,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     "site:business-standard.com OR site:livemint.com OR site:moneycontrol.com",
                     "site:businesstoday.in OR site:financialexpress.com OR site:thehindubusinessline.com",
                     "site:economictimes.indiatimes.com OR site:ndtvprofit.com OR site:thehindu.com",
+                    "site:bseindia.com OR site:nseindia.com OR site:sebi.gov.in OR site:rbi.org.in",
                 ]
                 INDIA_EVENT_TEMPLATES = [
                     "quarterly results net profit revenue crore when:1d",
@@ -1067,7 +1176,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                             if not serpapi_corroborator.has_api_key or get_serpapi_count() >= general_serpapi_limit:
                                 log_exec("  [FINAL_MILE_DISCOVERY] Search budget exhausted — stopping final-mile discovery queries.")
                                 break
-                        query_str = f"{tmpl} {s_group}"
+                        query_str = f"{tmpl.replace('when:1d', get_fallback_search_window(expansion_pass))} {s_group}"
                         q_norm = query_str.lower().strip()
                         if q_norm in executed_final_mile_queries:
                             continue
@@ -1334,6 +1443,39 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             f"Intl (2-source={len(intl_two_source)}, single={len(intl_single_src)})"
         )
 
+    for event in fallback_events:
+        primary_article = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
+        if not primary_article:
+            continue
+        event.event_category = reg_clf.classify_event(event, [primary_article])
+        selected_horizon = None
+        selected_score = 0.0
+        selected_reason = ""
+        for horizon in (36.0, 48.0, 72.0):
+            is_eligible, score, reason = evaluate_single_source_for_horizon(
+                event,
+                primary_article,
+                single_source_evaluator,
+                horizon,
+            )
+            if is_eligible:
+                selected_horizon = horizon
+                selected_score = score
+                selected_reason = reason
+                break
+        if selected_horizon is not None:
+            event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
+            event.verification_confidence = selected_score
+            event.single_source_confidence_score = selected_score
+            event.primary_publisher = primary_article.source_name
+            event.primary_url = primary_article.url
+            event.verification_reason = selected_reason
+            event.metadata = getattr(event, "metadata", {}) or {}
+            event.metadata["fallback_horizon_hours"] = selected_horizon
+            event.metadata["quality_level"] = f"FALLBACK_SUCCESS_{int(selected_horizon)}H"
+            high_confidence_single_candidates.append(event)
+            log_exec(f"[FALLBACK_{int(selected_horizon)}H_ADDED] {event.canonical_title[:50]}")
+
     # Reclassify and update categories
     for e in verified_events:
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
@@ -1409,47 +1551,76 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         except Exception:
             pass
 
-    # Separate India and International accepted events
-    india_acc_events = [e for e in accepted_events if e.event_category == NewsCategory.INDIA]
-    intl_acc_events  = [e for e in accepted_events if e.event_category == NewsCategory.INTERNATIONAL]
+    # Rank all eligible events, then apply the quality ladder without capping singles at two.
+    candidate_pool = ranker.rank_events(
+        events=accepted_events,
+        top_n=max(10, len(accepted_events)),
+    )
 
-    # Partition two-source vs single-source per section
-    india_two_acc = [e for e in india_acc_events if e.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED]
-    india_sng_acc = [e for e in india_acc_events if e not in india_two_acc and e.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE]
+    def _ladder_order(scored_event):
+        event = scored_event.event
+        article = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
+        age_hours = get_article_age_hours(article) if article else None
+        age_hours = age_hours if age_hours is not None else 999.0
+        if age_hours <= 24:
+            horizon_rank = 0
+        elif age_hours <= 36:
+            horizon_rank = 1
+        elif age_hours <= 48:
+            horizon_rank = 2
+        else:
+            horizon_rank = 3
+        tier_rank = 0 if event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else 1
+        return (horizon_rank, tier_rank, -scored_event.investment_score, -float(event.verification_confidence or 0.0), age_hours)
 
-    intl_two_acc  = [e for e in intl_acc_events if e.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED]
-    intl_sng_acc  = [e for e in intl_acc_events if e not in intl_two_acc and e.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE]
-
-    # Build section candidate pools according to Hybrid policy (min 3 two-source, max 2 single-source)
-    # 1. Take all available two-source verified events (up to 5)
-    # 2. If two-source < 5, fill missing slots with top single-source (up to max 2)
-    selected_india_events = list(india_two_acc[:5])
-    needed_india_singles = max(0, min(2, 5 - len(selected_india_events)))
-    selected_india_events.extend(india_sng_acc[:needed_india_singles])
-
-    selected_intl_events = list(intl_two_acc[:5])
-    needed_intl_singles = max(0, min(2, 5 - len(selected_intl_events)))
-    selected_intl_events.extend(intl_sng_acc[:needed_intl_singles])
-
-    # Rank both sections
-    candidate_pool = ranker.rank_events(events=selected_india_events + selected_intl_events, top_n=10)
-    india_pool  = candidate_pool.india_candidates
-    intl_pool   = candidate_pool.international_candidates
+    india_ranked = sorted(
+        [scored for scored in candidate_pool.india_candidates],
+        key=_ladder_order,
+    )
+    intl_ranked = sorted(
+        [scored for scored in candidate_pool.international_candidates],
+        key=_ladder_order,
+    )
+    for rank, scored in enumerate(india_ranked, 1):
+        scored.rank = rank
+    for rank, scored in enumerate(intl_ranked, 1):
+        scored.rank = rank
+    candidate_pool.india_candidates = india_ranked[:5]
+    candidate_pool.international_candidates = intl_ranked[:5]
+    india_pool = candidate_pool.india_candidates
+    intl_pool = candidate_pool.international_candidates
 
     india_two_count = len([s for s in india_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     india_sng_count = len([s for s in india_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
     intl_two_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     intl_sng_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
+    india_quality_level = get_quality_level(india_pool, india_two_count, articles_lookup)
+    intl_quality_level = get_quality_level(intl_pool, intl_two_count, articles_lookup)
+    quality_levels = [india_quality_level, intl_quality_level]
+    if "DATA_UNAVAILABLE" in quality_levels:
+        pipeline_status = "DATA_UNAVAILABLE"
+    elif "EMERGENCY_SUCCESS_72H" in quality_levels:
+        pipeline_status = "EMERGENCY_SUCCESS_72H"
+    elif "FALLBACK_SUCCESS_48H" in quality_levels:
+        pipeline_status = "FALLBACK_SUCCESS_48H"
+    elif "FALLBACK_SUCCESS_36H" in quality_levels:
+        pipeline_status = "FALLBACK_SUCCESS_36H"
+    elif "FALLBACK_SUCCESS_24H" in quality_levels:
+        pipeline_status = "FALLBACK_SUCCESS_24H"
+    else:
+        pipeline_status = "STRICT_SUCCESS"
 
     log_exec(f"Stage 7 Summary:")
     log_exec(f"  India pool:         {len(india_pool)} (Two-source: {india_two_count}, Single-source: {india_sng_count})")
     log_exec(f"  International pool: {len(intl_pool)} (Two-source: {intl_two_count}, Single-source: {intl_sng_count})")
+    log_exec(f"[GUARANTEED_MODE] Strict 24h result: India={india_two_count + india_sng_count}, Intl={intl_two_count + intl_sng_count}")
+    log_exec(f"  India QualityLevel={india_quality_level}; International QualityLevel={intl_quality_level}")
 
     # =========================================================================
     # PIPELINE SUFFICIENCY GATE (HYBRID RULES)
     # =========================================================================
-    india_sufficient = (len(india_pool) >= 5 and india_two_count >= 3 and india_sng_count <= 2)
-    intl_sufficient  = (len(intl_pool) >= 5 and intl_two_count >= 3 and intl_sng_count <= 2)
+    india_sufficient = len(india_pool) >= 5
+    intl_sufficient  = len(intl_pool) >= 5
     sufficient = (india_sufficient and intl_sufficient)
 
     # Print Candidate Audit Manifest
@@ -1482,19 +1653,19 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         log_exec("  Stage 8 Editorial:        SKIPPED")
         log_exec("  Stage 9 Final Validation: SKIPPED")
         log_exec("  Stage 10 Formatter:       SKIPPED")
-        log_exec("  Pipeline Status:          INSUFFICIENT_QUALITY_STORIES")
+        log_exec(f"  Pipeline Status:          {pipeline_status}")
         log_exec("=" * 60)
 
         # Stage 8 SKIPPED
         log_exec("=" * 60)
-        log_exec("STAGE 8: Gemini Editorial — SKIPPED (Sufficiency gate failed)")
+        log_exec("STAGE 8: Gemini Editorial — SKIPPED (No 5+5 eligible stories)")
         log_exec("=" * 60)
         log_exec(f"  -> STAGE 8 SKIPPED: Insufficient stories (India={len(india_pool)}, Intl={len(intl_pool)}).")
         selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
 
         # Stage 9 SKIPPED
         log_exec("=" * 60)
-        log_exec("STAGE 9: Final Validation — SKIPPED (Sufficiency gate failed)")
+        log_exec("STAGE 9: Final Validation — SKIPPED (No 5+5 eligible stories)")
         log_exec("=" * 60)
         log_exec("  -> STAGE 9 SKIPPED: Zero candidate briefing payload. Validation skipped cleanly.")
         validation_report = None
@@ -1553,6 +1724,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             articles_lookup=articles_lookup,
             target_date=date.today(),
             strict_5_per_section=True,
+            quality_ladder_mode=True,
         )
         log_exec(f"Stage 9 Summary:")
         log_exec(f"  Status:        {validation_report.status.value}")
@@ -1688,7 +1860,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print("-" * 30)
     print(f"  India candidates:           {len(india_pool)} (Two-source: {india_two_count}/3 min, Singles: {india_sng_count}/2 max)")
     print(f"  International candidates:   {len(intl_pool)} (Two-source: {intl_two_count}/3 min, Singles: {intl_sng_count}/2 max)")
-    print(f"  Sufficiency gate:           {'PASSED' if sufficient else 'FAILED (INSUFFICIENT_QUALITY_STORIES)'}")
+    print(f"  Sufficiency gate:           {'PASSED' if sufficient else 'FAILED (' + pipeline_status + ')'}")
     print("\nEDITORIAL (Gemini)")
     print("-" * 30)
     if sufficient and editorial_res and editorial_res.success:
@@ -1697,7 +1869,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         print(f"  Selected India:             {len(selection_payload.india_stories)}")
         print(f"  Selected International:     {len(selection_payload.international_stories)}")
     elif not sufficient:
-        print("  Status:                     SKIPPED (INSUFFICIENT_QUALITY_STORIES)")
+        print(f"  Status:                     SKIPPED ({pipeline_status})")
     else:
         err = editorial_res.error_message if editorial_res else "EDITORIAL_VALIDATION_FAILED"
         print(f"  Status:                     FAILED ({err})")
@@ -1711,7 +1883,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if not validation_report.is_valid:
             print(f"  Failure reason:             {validation_report.failure_reason}")
     elif not sufficient:
-        print("  Status:                     SKIPPED (INSUFFICIENT_QUALITY_STORIES)")
+        print(f"  Status:                     SKIPPED ({pipeline_status})")
     else:
         print("  Status:                     FAILED (EDITORIAL_VALIDATION_FAILED)")
     print("\nGEMINI API USAGE")
@@ -1767,10 +1939,10 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             print(f"  International:        {intl_two_count} / 3 min required")
             print(f"  Reason: Internal processing errors ({internal_pipeline_errors}) prevented candidate extraction.")
         elif not sufficient:
-            print(f"\nSTATUS: INSUFFICIENT_QUALITY_STORIES")
+            print(f"\nSTATUS: {pipeline_status}")
             print(f"  India pool:           {len(india_pool)} / 5 (Two-source: {india_two_count}/3 min, Singles: {india_sng_count}/2 max)")
             print(f"  International pool:   {len(intl_pool)} / 5 (Two-source: {intl_two_count}/3 min, Singles: {intl_sng_count}/2 max)")
-            print("  Reason: Insufficient quality stories found to meet the hybrid verification requirements (min 3 two-source, max 2 single-source per section).")
+            print("  Reason: Fewer than five legitimate quality-eligible stories were found in at least one section within the 72-hour fallback horizon.")
 
     if briefing_text:
         print("\n--- [FINAL BRIEFING] ---")
@@ -1782,7 +1954,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if internal_pipeline_errors > 0:
             print(f"Reason: INSUFFICIENT_VERIFIED_STORIES_WITH_PROCESSING_ERRORS — {internal_pipeline_errors} internal error(s) occurred during candidate processing.")
         elif not sufficient:
-            print("Reason: INSUFFICIENT_QUALITY_STORIES — Fewer than 5+5 quality-eligible hybrid stories were found while maintaining minimum 3 two-source stories per section.")
+            print(f"Reason: {pipeline_status} — Fewer than 5 legitimate quality-eligible stories were found in at least one section within the 72-hour fallback horizon.")
         elif validation_report and validation_report.failure_reason:
             print(f"Reason: {validation_report.failure_reason}")
 

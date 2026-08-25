@@ -173,6 +173,19 @@ ACCESSIBLE_INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
     TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Fortune", domain="fortune.com", country="International"),
+    TargetSource(name="SEC EDGAR", domain="sec.gov", country="International"),
+    TargetSource(name="Federal Reserve", domain="federalreserve.gov", country="International"),
+    TargetSource(name="ECB", domain="ecb.europa.eu", country="International"),
+    TargetSource(name="Business Wire", domain="businesswire.com", country="International"),
+    TargetSource(name="GlobeNewswire", domain="globenewswire.com", country="International"),
+    TargetSource(name="PR Newswire", domain="prnewswire.com", country="International"),
+]
+
+OFFICIAL_INDIA_SOURCES: List[TargetSource] = [
+    TargetSource(name="BSE Corporate Announcements", domain="bseindia.com", country="India"),
+    TargetSource(name="NSE Corporate Announcements", domain="nseindia.com", country="India"),
+    TargetSource(name="SEBI", domain="sebi.gov.in", country="India"),
+    TargetSource(name="RBI", domain="rbi.org.in", country="India"),
 ]
 
 SECONDARY_SIGNALLING_SOURCES: List[TargetSource] = [

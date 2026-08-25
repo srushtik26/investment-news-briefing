@@ -11,6 +11,7 @@ from app.discovery.models import DiscoveredArticle
 from app.discovery.queries import (
     INDIA_EVENT_CATEGORIES,
     INDIA_SOURCES,
+    OFFICIAL_INDIA_SOURCES,
     INTERNATIONAL_EVENT_CATEGORIES,
     INTERNATIONAL_SOURCES,
     SearchQueryBuilder,
@@ -25,6 +26,7 @@ __all__ = [
     "GoogleNewsRSSDiscoveryProvider",
     "INDIA_EVENT_CATEGORIES",
     "INDIA_SOURCES",
+    "OFFICIAL_INDIA_SOURCES",
     "INTERNATIONAL_EVENT_CATEGORIES",
     "INTERNATIONAL_SOURCES",
     "MockDiscoveryProvider",

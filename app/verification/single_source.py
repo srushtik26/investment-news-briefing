@@ -86,6 +86,13 @@ TRUSTED_INTL_PUBLISHERS: Set[str] = {
     "globenewswire",
     "business wire",
     "dow jones",
+    "sec edgar",
+    "federal reserve",
+    "ecb",
+    "bank of england",
+    "business wire",
+    "globenewswire",
+    "pr newswire",
 }
 
 # Allowed hard-event types

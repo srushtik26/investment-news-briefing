@@ -28,7 +28,12 @@ class BaseFilterRule(ABC):
         pass
 
     @abstractmethod
-    def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
+    def evaluate(
+        self,
+        article: Article,
+        now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
+    ) -> FilterResult:
         """Evaluate article against this rule."""
         pass
 
@@ -67,7 +72,12 @@ class DateFilterRule(BaseFilterRule):
                 return score, label
         return 0.0, "stale_24h_plus"
 
-    def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
+    def evaluate(
+        self,
+        article: Article,
+        now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
+    ) -> FilterResult:
         current_time = now_utc or datetime.now(timezone.utc)
         if current_time.tzinfo is None:
             current_time = current_time.replace(tzinfo=timezone.utc)
@@ -101,7 +111,7 @@ class DateFilterRule(BaseFilterRule):
             )
 
         # 3. Determine allowable lookback window (Strictly 24 hours)
-        allowed_hours = self.max_age_hours
+        allowed_hours = max_age_hours if max_age_hours is not None else self.max_age_hours
 
         age_seconds = (current_time - pub_time).total_seconds()
         age_hours = max(0.0, age_seconds / 3600.0)
@@ -166,6 +176,10 @@ class SourceFilterRule(BaseFilterRule):
         "businesstoday",
         "ndtv profit",
         "ndtvprofit",
+        "bse corporate announcements",
+        "nse corporate announcements",
+        "sebi",
+        "rbi",
         # International Sources
         "cnbc",
         "ap news",
@@ -184,6 +198,13 @@ class SourceFilterRule(BaseFilterRule):
         "wall street journal",
         "the wall street journal",
         "wsj",
+        "sec edgar",
+        "federal reserve",
+        "ecb",
+        "bank of england",
+        "business wire",
+        "globenewswire",
+        "pr newswire",
     }
 
     ALLOWED_DOMAINS: Set[str] = {
@@ -204,6 +225,17 @@ class SourceFilterRule(BaseFilterRule):
         "bloomberg.com",
         "ft.com",
         "wsj.com",
+        "bseindia.com",
+        "nseindia.com",
+        "sebi.gov.in",
+        "rbi.org.in",
+        "sec.gov",
+        "federalreserve.gov",
+        "ecb.europa.eu",
+        "bankofengland.co.uk",
+        "businesswire.com",
+        "globenewswire.com",
+        "prnewswire.com",
     }
 
     @property
@@ -348,8 +380,32 @@ class StoryTypeFilterRule(BaseFilterRule):
             r"\b(results today|earnings today|upcoming earnings|companies announcing results|earnings calendar|q[1-4] preview|results preview|what to expect from q[1-4])\b",
         ),
         (
+            "profile_feature",
+            r"\bwho is\b|\b(biography|profile feature|career profile)\b",
+        ),
+        (
+            "earnings_preview",
+            r"\b(earnings preview|preview.*earnings|what to expect|watch ahead|faces? (?:a )?big test.*earnings|analysts? expect.*earnings)\b",
+        ),
+        (
+            "speculative_transaction",
+            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:acquire|buy|purchase|merge|take over)\b",
+        ),
+        (
             "ipo_intraday",
             r"\b(day [123] subscription|subscribed \d+(\.\d+)?x on day|ipo subscription status|ipo bidding status|ipo day [123] update)\b",
+        ),
+        (
+            "profile_feature",
+            r"\bwho is\b|\b(biography|profile feature|career profile)\b",
+        ),
+        (
+            "earnings_preview",
+            r"\b(earnings preview|preview.*earnings|what to expect|watch ahead|faces? (?:a )?big test.*earnings|analysts? expect.*earnings)\b",
+        ),
+        (
+            "speculative_transaction",
+            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:acquire|buy|purchase|merge|take over)\b",
         ),
     ]
 

@@ -384,6 +384,92 @@ def test_deficient_india_retains_full_serpapi_limit_when_intl_is_solved():
     assert get_general_serpapi_limit(intl_state, 8) == 8
 
 
+def test_quality_ladder_strict_and_trusted_single_levels():
+    from types import SimpleNamespace
+    from run_pipeline import get_quality_level
+
+    def scored_event(event):
+        return SimpleNamespace(event=event)
+
+    strict_events = []
+    articles = {}
+    for index in range(5):
+        article = _create_mock_article(
+            f"strict_{index}",
+            f"India Corp {index} acquires rival for $10 billion",
+            "Reuters",
+            f"https://reuters.com/strict-{index}",
+        )
+        event = _create_mock_event(
+            f"strict_event_{index}", article.title, [f"India Corp {index}"], [article.id],
+            NewsCategory.INDIA, VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        strict_events.append(scored_event(event))
+        articles[article.id] = article
+    assert get_quality_level(strict_events, 5, articles) == "STRICT_SUCCESS"
+
+    single_events = []
+    single_articles = {}
+    for index in range(5):
+        article = _create_mock_article(
+            f"single_{index}",
+            f"Global Corp {index} acquires rival for $10 billion",
+            "Reuters",
+            f"https://reuters.com/single-{index}",
+            category=NewsCategory.INTERNATIONAL,
+        )
+        event = _create_mock_event(
+            f"single_event_{index}", article.title, [f"Global Corp {index}"], [article.id],
+            NewsCategory.INTERNATIONAL, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        single_events.append(scored_event(event))
+        single_articles[article.id] = article
+    assert get_quality_level(single_events, 0, single_articles) == "FALLBACK_SUCCESS_24H"
+
+
+def test_quality_ladder_horizon_levels_are_bounded():
+    from types import SimpleNamespace
+    from run_pipeline import get_quality_level
+
+    article = _create_mock_article(
+        "fallback_36", "Global Corp acquires rival for $10 billion", "Reuters",
+        "https://reuters.com/fallback-36", age_hours=30.0,
+        category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "fallback_event", article.title, ["Global Corp"], [article.id],
+        NewsCategory.INTERNATIONAL, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        ["$10 billion"],
+    )
+    scored = [SimpleNamespace(event=event)] * 5
+    articles = {article.id: article}
+    assert get_quality_level(scored, 0, articles) == "FALLBACK_SUCCESS_36H"
+
+    article.published_at = datetime.now(timezone.utc) - timedelta(hours=43)
+    assert get_quality_level(scored, 0, articles) == "FALLBACK_SUCCESS_48H"
+    article.published_at = datetime.now(timezone.utc) - timedelta(hours=60)
+    assert get_quality_level(scored, 0, articles) == "EMERGENCY_SUCCESS_72H"
+    article.published_at = datetime.now(timezone.utc) - timedelta(hours=73)
+    assert get_quality_level(scored, 0, articles) == "DATA_UNAVAILABLE"
+
+
+def test_quality_ladder_garbage_is_rejected_at_all_horizons():
+    from run_pipeline import evaluate_single_source_for_horizon
+
+    article = _create_mock_article(
+        "gold_garbage", "A massive trade just happened in gold. The options market is buzzing",
+        "CNBC", "https://www.cnbc.com/gold-garbage", category=NewsCategory.INTERNATIONAL,
+    )
+    event = _create_mock_event(
+        "gold_garbage_event", article.title, [], [article.id],
+        NewsCategory.INTERNATIONAL, VerificationTier.UNVERIFIED, ["$2 billion"],
+    )
+    evaluator = SingleSourceEvaluator()
+    for horizon in (24.0, 36.0, 48.0, 72.0):
+        eligible, _, _ = evaluate_single_source_for_horizon(event, article, evaluator, horizon)
+        assert eligible is False
+
+
 def test_serpapi_duplicate_attempt_key_is_stable_for_same_event():
     from run_pipeline import get_serpapi_event_key
 

@@ -201,6 +201,28 @@ class TestStoryTypeFilterRule:
             for noise in (noise_category, "noise", "prohibited", "commentary")
         )
 
+    @pytest.mark.parametrize("title", [
+        "Who is Dali Rajic, OpenAI's new chief revenue officer?",
+        "Nvidia's dependence on hyperscalers faces a big test in earnings report",
+        "Federal Bank shares fall 4% as lender likely to acquire a rival",
+    ])
+    def test_profile_preview_and_speculative_transactions_rejected(self, base_article: Article, title: str):
+        base_article.title = title
+        base_article.content_text = "Detailed article content describing market developments and company commentary."
+
+        result = StoryTypeFilterRule().evaluate(base_article)
+
+        assert result.is_accepted is False
+        assert result.rule_failed == "STORY_TYPE"
+
+    def test_fallback_date_horizon_is_explicit_without_changing_default(self, base_article: Article):
+        eval_time = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+        base_article.published_at = eval_time - timedelta(hours=30)
+        rule = DateFilterRule()
+
+        assert rule.evaluate(base_article, now_utc=eval_time).is_accepted is False
+        assert rule.evaluate(base_article, now_utc=eval_time, max_age_hours=36).is_accepted is True
+
     @pytest.mark.parametrize("event_title, event_text", [
         (
             "HDFC Bank Q1 Net Profit Surges 18% to ₹16,175 Crore on Strong Net Interest Income",
