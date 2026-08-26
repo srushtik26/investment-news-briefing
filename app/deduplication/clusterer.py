@@ -75,6 +75,7 @@ class EventClusterer:
                 content=primary_art.content_text,
                 financial_figures=sorted(list(all_facts))[:5],
                 companies=clean_comps,
+                discovery_region=primary_art.category,
             )
 
             event = Event(
@@ -85,6 +86,7 @@ class EventClusterer:
                 event_category=event_cat,
                 article_ids=article_ids,
                 detected_at=datetime.now(timezone.utc),
+                metadata={"discovery_region": primary_art.category} if primary_art.category else {},
             )
             events.append(event)
 

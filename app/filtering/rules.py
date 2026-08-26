@@ -280,6 +280,7 @@ class URLFilterRule(BaseFilterRule):
         r"^/?$",                                                              # Root homepage
         r"^/(index|home|default)\.(html|htm|php|asp)/?$",                     # Homepage files
         r"^/(index|home|default)/?$",                                         # Homepage subpath
+        r"^/(markets?|investing|business|economy|money|news|world)/?$",       # Section landing pages
         r"/(topics?|tags?|theme|hubs?)/",                                     # Topic/tag hubs
         r"/(category|categories|section|sections|all-news)/",                 # Category landing pages
         r"/(agency|agencies|author|authors|profile)/",                        # Agency/author feeds
@@ -309,8 +310,17 @@ class URLFilterRule(BaseFilterRule):
         if not parsed.scheme or not parsed.netloc:
             return False, f"Invalid URL structure: '{url}'"
 
+        netloc = parsed.netloc.lower()
         path = parsed.path.lower()
         query = parsed.query.lower()
+
+        # Specific host validation: MarketWatch
+        if "marketwatch.com" in netloc:
+            clean_path = path.rstrip("/")
+            if clean_path in ("", "/markets", "/investing", "/investing/news", "/personal-finance", "/economy-politics", "/watchlist", "/tools", "/column", "/latest-news"):
+                return False, "NON_ARTICLE_URL: MarketWatch category/index/hub page is a non-article pattern"
+            if not path.startswith("/story/"):
+                return False, "NON_ARTICLE_URL: MarketWatch non-article pattern — URL must be a direct article path (/story/...)"
 
         # 1. Check Path Patterns
         for pat in cls.REJECT_PATH_PATTERNS:
@@ -354,7 +364,7 @@ class StoryTypeFilterRule(BaseFilterRule):
     Accepts hard business events (earnings with numbers, M&A, QIPs, fundraises,
     regulatory actions, policy, leadership changes, macro data, quantified geopolitics)
     and strictly rejects market commentary, analyst upgrades/downgrades, price targets,
-    results calendars, and opinion columns.
+    results calendars, speculative price-moves, and opinion columns.
     """
 
     # NOISE REJECTION PATTERNS
@@ -370,6 +380,14 @@ class StoryTypeFilterRule(BaseFilterRule):
         (
             "price_target",
             r"\b(target price|price target|sees target|ups target to|cuts target to|target price of|target price rs|share target price|target of rs|target of \$)\b",
+        ),
+        (
+            "speculative_price_rally",
+            r"\b(soars?|surges?|jumps?|plunges?|rallies|rally|climbs?|slides?|slumps?)\s+.*?\b(amid|on|following|hopes? of|speculation of|expectation of|rumou?rs? of)\b.*?\b(crypto|bitcoin|etf approval|approval hopes?|fed rate cut hopes?|rate cut hopes?)\b",
+        ),
+        (
+            "speculative_hope",
+            r"\b(hopes? of|speculation of|bets on)\b.*?\b(etf approval|approval|rate cut)\b",
         ),
         (
             "market_summary",

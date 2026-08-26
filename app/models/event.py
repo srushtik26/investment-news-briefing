@@ -59,6 +59,10 @@ class Event(BaseModel):
         default_factory=list,
         description="IDs of all articles referencing this event",
     )
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Arbitrary metadata dictionary including discovery region",
+    )
     detected_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp when event was first identified",

@@ -157,6 +157,10 @@ COMMENTARY_OPINION_PATTERNS = [
     r"\btarget price\b",
     r"\bbrokerage call\b",
     r"\bshare price today\b",
+    r"\b(soars?|surges?|jumps?|plunges?|rallies|rally|climbs?|slides?|slumps?)\b.*?\b(hopes? of|speculation of|amid crypto rally|bets on|expectation of)\b",
+    r"\bhopes? of (?:an? )?etf approval\b",
+    r"\bhopes? of (?:an? )?approval\b",
+    r"\bsoars to .*? (?:high|low) amid crypto rally\b",
 ]
 
 
@@ -219,7 +223,8 @@ def is_multi_event_roundup(title: str) -> bool:
         if re.search(pat, t_low):
             return True
     # Detect comma-separated / multi-company combined headlines e.g. "Treasury buyback, Walmart earnings, Boise..."
-    parts = [p.strip() for p in re.split(r"[,;]\s*|\s*\|\s*", title) if len(p.strip()) > 5]
+    # Note: (?<!\d),(?!\d) ensures numeric thousands separators (e.g. 1,417 or 2,888) are not split
+    parts = [p.strip() for p in re.split(r"(?<!\d),(?!\d)\s*|[;\|]\s*", title) if len(p.strip()) > 5]
     if len(parts) >= 3 and any("earnings" in p.lower() or "results" in p.lower() or "deal" in p.lower() for p in parts):
         return True
     return False
@@ -337,7 +342,7 @@ class SingleSourceEvaluator:
 
         # C. Recognized hard event type (+20)
         has_hard_action = bool(re.search(
-            r"\b(acquires?|acquisition|buys|bought|sold|sale|stake|merger|net profit|earnings|financial results|results|revenue|ebitda|q[1-4]|ipo|drhp|funding|financing|raises|guidance|buyback|repurchase|dividend|investment|penalty|fine|order|capex|contract|joint venture|appointed|resigns|antitrust)\b",
+            r"\b(acquires?|acquisition|to buy|to acquire|acquisition of|buys|bought|sold|sale|sells|sell|to sell|offload|pares|stake|merger|takeover|buyout|block deal|stake sale|stake purchase|divests|calls off|terminates|net profit|earnings|financial results|results|revenue|ebitda|q[1-4]|ipo|drhp|funding|financing|raises|guidance|buyback|repurchase|dividend|investment|invests?|to invest|commits|penalty|fine|order|capex|contract|joint venture|appointed|resigns|antitrust|launches?|launch)\b",
             title.lower() + " " + body[:300].lower()
         ))
         if has_hard_action:
@@ -355,8 +360,8 @@ class SingleSourceEvaluator:
             score += 15.0
             reasons.append("concrete_facts(+15)")
         else:
-            # Leadership change or regulatory action may pass if explicit
-            if not re.search(r"\b(appointed|resigns|named ceo|named md|penalty|order|probe)\b", title.lower()):
+            # Leadership change, regulatory action, or explicit M&A / strategic actions may pass if explicit
+            if not re.search(r"\b(appointed|resigns|named ceo|named md|penalty|order|probe|to buy|to acquire|acquisition of|acquires|acquired|merger|buyout|calls off|terminates|block deal|stake sale)\b", title.lower()):
                 return False, 0.0, "REJECT: Missing concrete quantified facts or key metrics"
 
         # E. Verified publication timestamp (+10, or -20 if unverified)

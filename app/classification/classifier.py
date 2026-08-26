@@ -136,16 +136,26 @@ class AIArticleClassifier:
         nums = [n.strip() for n in nums if n.strip()][:5]
         pcts = re.findall(r"\b\d+(?:\.\d+)?%", combined)[:5]
 
-        # 2. Extract company entities
+        # 2. Extract company entities (Static whitelist + dynamic extraction)
+        from app.verification.query_builder import EventQueryBuilder
+        from app.models.entity_sanitizer import sanitize_company_entities
+        
+        dynamic_entities = EventQueryBuilder.extract_entities(article)
+        clean_dynamic = sanitize_company_entities(dynamic_entities, publisher=article.source_name)
+
         KNOWN_COMPANIES = [
             "Reliance", "Tata Motors", "Tata Steel", "TCS", "HDFC Bank", "ICICI Bank",
             "State Bank of India", "SBI", "Larsen & Toubro", "L&T", "Nxt-Infra", "Infosys",
             "Adani Ports", "Adani Enterprises", "Bharti Airtel", "Bajaj Finance", "Maruti Suzuki",
             "Nvidia", "Apple", "Microsoft", "Amazon", "Alphabet", "Google", "Meta",
             "Goldman Sachs", "Rio Tinto", "Arcadium Lithium", "LEO Pharma", "Stripe", "OpenRouter",
-            "Ola Electric", "Tech Mahindra", "Wipro", "Zomato", "Swiggy", "Paytm", "Shiprocket"
+            "Ola Electric", "Tech Mahindra", "Wipro", "Zomato", "Swiggy", "Paytm", "Shiprocket",
+            "Welspun", "Welspun Corp", "Inorbit", "Inorbit Malls", "Prozone", "Prozone Malls",
+            "Honasa", "Honasa Consumer", "Mamaearth", "Infineon", "C2i", "C2i Semiconductors",
+            "Kedaara", "Kedaara Capital", "Tynor", "Tynor Orthotics", "Lenskart", "Airtel Payments Bank",
+            "Ardee", "Ardee Industries"
         ]
-        identified_companies = []
+        identified_companies = list(clean_dynamic)
         for comp in KNOWN_COMPANIES:
             if re.search(rf"\b{re.escape(comp)}\b", combined, re.IGNORECASE):
                 if comp not in identified_companies:
@@ -157,11 +167,22 @@ class AIArticleClassifier:
         is_inv_rel = False
 
         # Clear M&A / Takeovers / Asset Sales / Stake Transactions (Check first to avoid misclassifying sales as earnings)
-        if re.search(r"\b(to buy|buys|bought|sold|sale|sells|acquires?|acquisition|merger|takeover|buyout|demerger|spin-off|all-cash deal|stake sale|stake purchase|block deal)\b", combined_lower):
-            if len(identified_companies) >= 1 or nums:
-                event_type = ArticleEventType.MA
-                is_hard_event = True
-                is_inv_rel = True
+        ma_pattern = (
+            r"\b(to buy|to acquire|acquisition of|acquires?|acquired|buys|bought|sold|sale|sells|"
+            r"merger|takeover|buyout|purchase of|stake purchase|stake sale|block deal|divests|"
+            r"sells stake|calls off (?:proposed )?acquisition|terminates acquisition|calls off deal|"
+            r"terminates deal|calls off|demerger|spin-off|all-cash deal)\b"
+        )
+        if re.search(ma_pattern, combined_lower):
+            event_type = ArticleEventType.MA
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Fundraising / Strategic Investment / QIP / IPO
+        elif re.search(r"\b(to invest|invests|investment of|commits|funding of|raises funding|funding round|qip|rights issue|capital raise|files for ipo|files drhp|ipo listing|shares list at|secures funding|fundraise)\b", combined_lower):
+            event_type = ArticleEventType.FUNDRAISING
+            is_hard_event = True
+            is_inv_rel = True
 
         # Clear Earnings (Requires concrete earnings terminology)
         elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings beat|earnings miss|quarterly results|annual results|financial results)\b", combined_lower):
@@ -169,12 +190,6 @@ class AIArticleClassifier:
                 event_type = ArticleEventType.EARNINGS
                 is_hard_event = True
                 is_inv_rel = True
-
-        # Clear Fundraising / QIP / IPO
-        elif re.search(r"\b(raises funding|funding round|qip|rights issue|capital raise|files for ipo|files drhp|ipo listing|shares list at)\b", combined_lower):
-            event_type = ArticleEventType.FUNDRAISING
-            is_hard_event = True
-            is_inv_rel = True
 
         # Clear Regulatory Action
         elif re.search(r"\b(rbi|sebi|cci|sec|antitrust|doj)\b.*\b(penalty|fine|order|ban|charges|probe|investigation)\b|\b(monetary penalty|regulatory penalty|tribunal order)\b", combined_lower):
@@ -480,17 +495,22 @@ class AIArticleClassifier:
             combined,
         ))
         is_ma_trans = bool(re.search(
-            r"\b(sold|sale|sells|demerger|merger|acquire|acquisition|to buy|buys|bought|takeover|buyout|spin-off)\b",
+            r"\b(sold|sale|sells|demerger|merger|acquire|acquisition|to buy|buys|bought|takeover|buyout|spin-off|"
+            r"to acquire|acquisition of|acquires|acquired|purchase of|divests|calls off|terminates acquisition|all-cash deal)\b",
+            combined,
+        ))
+        is_invest_trans = bool(re.search(
+            r"\b(to invest|invests|investment of|commits|funding of|raises funding|funding round|qip|rights issue|capital raise|files for ipo|files drhp|ipo listing|shares list at|secures funding|fundraise)\b",
             combined,
         ))
 
         event_type = "OTHER"
         if is_stake_trans or is_ma_trans:
             event_type = "M&A"
+        elif is_invest_trans:
+            event_type = "FUNDRAISING"
         elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings|quarterly results|annual results)\b", combined):
             event_type = "EARNINGS"
-        elif "qip" in combined or "raise" in combined or "funding" in combined or "rights issue" in combined:
-            event_type = "FUNDRAISING"
         elif "rbi" in combined or "sebi" in combined or "penalty" in combined or "cci" in combined or "order" in combined:
             event_type = "REGULATORY"
         elif "inflation" in combined or "gdp" in combined or "cpi" in combined:
@@ -500,8 +520,8 @@ class AIArticleClassifier:
         elif "plant" in combined or "capex" in combined or "expansion" in combined:
             event_type = "M&A"
 
-        is_hard = event_type not in ("OPINION", "MARKET", "ANALYST", "OTHER") or (is_stake_trans and bool(nums or pcts or companies))
-        is_invest_rel = event_type in ("EARNINGS", "M&A", "FUNDRAISING", "REGULATORY", "MACRO", "LEADERSHIP") or is_stake_trans
+        is_hard = event_type not in ("OPINION", "MARKET", "ANALYST", "OTHER") or is_stake_trans or is_ma_trans or is_invest_trans
+        is_invest_rel = event_type in ("EARNINGS", "M&A", "FUNDRAISING", "REGULATORY", "MACRO", "LEADERSHIP") or is_stake_trans or is_ma_trans or is_invest_trans
 
         payload = {
             "event_type": event_type,

@@ -168,12 +168,21 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             # CHECK 5: URL points to a specific article
             # -------------------------------------------------------------
-            if primary_art and not self.url_rule.evaluate(primary_art).is_accepted:
+            is_valid_story_url, url_reason = self.url_rule.is_valid_url(story.url)
+            if not is_valid_story_url:
                 check_results.append(ValidationCheckResult(
                     check_id=5,
                     check_name="URL points to a specific article",
                     passed=False,
-                    failure_reason=f"URL points to a directory/hub rather than a specific article: '{story.url}'",
+                    failure_reason=f"URL points to a directory/hub rather than a specific article: '{story.url}' ({url_reason})",
+                    failed_story_id=story.event_id,
+                ))
+            elif primary_art and not self.url_rule.evaluate(primary_art).is_accepted:
+                check_results.append(ValidationCheckResult(
+                    check_id=5,
+                    check_name="URL points to a specific article",
+                    passed=False,
+                    failure_reason=f"Primary article URL points to a directory/hub rather than a specific article: '{primary_art.url}'",
                     failed_story_id=story.event_id,
                 ))
 

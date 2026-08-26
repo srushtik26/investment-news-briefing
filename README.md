@@ -1,72 +1,83 @@
 # 📰 Automated Investment Committee News Briefing System
 
-> **A production-ready, hybrid AI + Deterministic Python pipeline that delivers zero-hallucination, double-verified daily financial intelligence for Investment Committees, Fund Managers, and C-Suite Executives.**
+> **A production-ready, hybrid AI + Deterministic Python pipeline that delivers zero-hallucination, strictly verified daily financial intelligence (5 India + 5 International) for Investment Committees, Fund Managers, and C-Suite Executives.**
 
 ---
 
 ## 💡 What is This Project?
 
-In executive decision-making, missing a major market event is risky, but acting on unverified rumors or getting bogged down by news noise is equally dangerous. 
+In institutional investment and executive decision-making, missing a major market event is costly, but acting on unverified rumors, stale coverage, or clickbait commentary is catastrophic. 
 
-This system automatically scans global and Indian financial media, extracts hard business events (earnings, M&A, regulatory actions, fundraises, IPOs), **independently verifies every story across two separate news publishers**, deduplicates against past briefings, and delivers a pristine, executive-formatted briefing.
+This system automatically scans global and Indian financial media, extracts hard business events (earnings, M&A, regulatory actions, fundraises, IPOs, capex), enforces rigorous **≤24h freshness**, validates events via a **Tier-1 Quality Verification Ladder** (Two-Source Independent Verification or High-Confidence Single-Source Gate $\ge 80/100$), deduplicates across past briefings, and synthesizes a pristine, structured 5+5 executive briefing validated against 20 deterministic rules.
 
 ---
 
 ## ⚡ Key Highlights & Architecture
 
 ### 🧠 The Core Philosophy
-**"Deterministic Python handles integrity, rules, and verification; AI handles deep understanding, classification, and synthesis."**
+**"Deterministic Python handles data integrity, verification gates, and rules; AI handles deep understanding, classification, and structured editorial synthesis."**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             PIPELINE FLOW                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-  1. Discovery     ► Fetch candidates from 20+ Tier-1 India & Global publishers
-  2. Extraction    ► Resolve Google News URLs & extract clean full text
-  3. Filtering     ► Rejects clickbait, market commentary, analyst opinions & noise
-  4. Pre-Ranking   ► Deterministic scoring to send strongest stories to AI first
-  5. AI Classify   ► Gemini 3.6 Flash identifies hard business events & entities
-  6. Verification  ► Enforces 2 independent publishers (RSS + SerpAPI fallback)
-  7. Deduplication ► 3-day SQLite lookback & company uniqueness rules
-  8. Relevance     ► Multi-factor scoring (Freshness + Scale + Financial impact)
-  9. Curation      ► C-Suite executive synthesis & automated 10-rule validation
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   PIPELINE FLOW                                        │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+  1. Discovery      ► Continuous RSS candidate discovery from Tier-1 India & Global media
+  2. Extraction     ► Real-time URL resolution, Trafilatura/BS4 extraction & date validation
+  3. Filtering      ► Hard deterministic rejection of commentary, opinion, noise & stale URLs
+  4. Pre-Ranking    ► Offline entity & numerical density scoring to prioritize Tier-1 events
+  5. AI Classify    ► Gemini 3.6 Flash identifies event types, entities & quantified figures
+  6. Verification   ► Dual verification: Two-Source Verification + Single-Source Gate (≥80)
+  7. Deduplication  ► 3-day SQLite lookback history & per-company exclusivity rules
+  8. Relevance      ► Multi-factor scoring (Financial Scale + Market Impact + Freshness)
+  9. Editorial      ► C-Suite structured synthesis (Gemini 3.6 Flash with offline fallback)
+ 10. 20-Check Audit ► 20-rule deterministic validation engine guarantees flawless output
 ```
 
 ---
 
 ## 🎯 Key Engineering Innovations
 
-### 1. 🛡️ Two-Source Independent Verification Gate
-* **Zero Rumors**: No story enters the briefing based on a single news report.
-* **Smart Publisher Grouping**: Ensures Reuters and Bloomberg count as distinct, but two articles from the same media group (e.g., Livemint and Economic Times) do not bypass verification.
-* **Wire Release Detection**: Rejects syndicated wire duplicates (PTI, ANI, Reuters wire feeds) to guarantee true independent reporting.
+### 1. 🛡️ Quality Ladder Verification Model
+* **Tier 1 — Two-Source Independent Verification**: Pairs matching articles from independent publisher families (excluding syndicated wires and same-parent groups).
+* **Tier 2 — High-Confidence Single-Source Gate**: Evaluates single-publisher reports using a strict 100-point deterministic rubric (requires trusted publisher pedigree, recognized hard corporate action, named corporate entity, and quantified metric facts $\ge 80/100$).
+* **Zero Rumors & Zero Speculation**: Rejects clickbait, share price commentary, analyst targets, broker advice, and billionaire lifestyle features.
 
-### 2. 🔍 Active Corroboration Engine (RSS + SerpAPI Fallback)
-* When a high-impact single-source story is discovered, the pipeline actively launches targeted search queries for a second independent publisher.
-* **Multi-Tiered Budgeting**: Primary search runs on Google News RSS; if missed, an optional budget-controlled **SerpAPI fallback engine** executes targeted searches without exceeding strict free-tier quotas.
+### 2. 🔍 Multi-Pass Active Corroboration & Reserve Pool Expansion
+* **Reserve Pool Processing**: Leverages unseen reserve candidates to reach full section sufficiency (5 India + 5 International).
+* **Final-Mile RSS Search**: Deploys targeted keyword queries (`when:1d`) across approved publisher clusters when candidate pools need replenishment.
+* **SerpAPI Secondary Fallback**: Budget-controlled fallback search for secondary sources when RSS budget is exhausted.
+* **Emergency Seed Support**: Seamlessly ingests validated URLs from `submission_seed_india_urls.txt` and `submission_seed_international_urls.txt` without bypassing quality gates.
 
-### 3. ⚖️ Deterministic Pre-Classification Ranking
-* Before invoking AI models, an offline scoring engine evaluates articles based on financial figures (`₹`/`$` crore/billion), hard event keywords, and publisher pedigree.
-* Balances candidate pools (e.g., 8 India + 7 International) to ensure AI classification budgets are spent on the highest-value stories.
+### 3. ⏱️ Strict 24-Hour Freshness Gate
+* All accepted articles and events must have a verified publication timestamp within **$\le 24$ hours** of the pipeline run.
+* Explicit timezone normalization (`UTC`) prevents stale stories from entering candidate pools.
 
-### 4. 🛑 Zero-Hallucination Sufficiency Gate
-* Requires exactly **5 Verified India + 5 Verified International** stories.
-* If verification yields fewer stories, the pipeline **skips AI summary generation** rather than fabricating fallbacks or padding the briefing with unverified noise.
+### 4. 🌐 Robust Region Provenance & Entity Resolution
+* Preserves original discovery region provenance from initial ingest through clustering and ranking.
+* Domicile overrides and regex catalogs recognize key Indian conglomerates, startups, regulators (SEBI, RBI, CCI), and exchange reporting norms (`standalone net profit`, `crore`, `₹`).
 
-### 5. 🔄 Graceful API Rate-Limit Fallback
-* Built for production reliability: if Gemini returns a 429/503 error after retry, the pipeline seamlessly transitions remaining candidates to an offline heuristic classifier. **Zero candidate articles are dropped.**
+### 5. 🛑 20-Check Deterministic Final Validation Engine
+* Validates every generated briefing against 20 strict criteria before delivery:
+  1. Section story counts (strictly 5 India + 5 International).
+  2. Headline and publisher authenticity.
+  3. Non-article and hub URL rejection (e.g. MarketWatch section fronts).
+  4. Publication date freshness ($\le 24$h).
+  5. Format and Markdown syntax compliance.
+
+### 6. 🔄 Resilient Offline Fallback Engines
+* If Gemini API experiences rate limits (HTTP 429/503), deterministic offline heuristics take over classification and editorial formatting. **Zero candidates are dropped.**
 
 ---
 
 ## 📁 Repository Structure
 
 ```
-Automation/
+investment-news-briefing/
 ├── app/
 │   ├── ai/              # Gemini 3.6 Flash editorial curation & structured output
 │   ├── classification/  # Hard business event classification (AI + Offline heuristic)
-│   ├── database/        # SQLite / PostgreSQL persistence for historical briefings
-│   ├── deduplication/   # Fingerprint hashing & 3-day SQLite lookback history
+│   ├── database/        # SQLite / SQLAlchemy persistence for historical briefings
+│   ├── deduplication/   # Event clustering, entity sanitizer & 3-day SQLite lookback
 │   ├── discovery/       # Multi-source RSS providers & query builders
 │   ├── extraction/      # URL resolver, HTML parsing, date verification
 │   ├── filtering/       # Hard deterministic noise, date freshness, & URL rules
@@ -74,11 +85,11 @@ Automation/
 │   ├── logging_config.py# Centralized rotating file logger
 │   ├── models/          # Pydantic v2 data models (Article, Event, Briefing)
 │   ├── ranking/         # Multi-factor pre-ranker & post-verification relevance scorer
-│   ├── validation/      # 10-point deterministic validation engine
-│   └── verification/    # TwoSourceVerifier, ActiveCorroborator & SerpAPICorroborator
-├── data/                # SQLite briefings.db & execution log outputs
+│   ├── validation/      # 20-point deterministic validation engine
+│   └── verification/    # TwoSourceVerifier, ActiveCorroborator & SingleSourceEvaluator
+├── data/                # SQLite briefings.db & output artifacts
 ├── logs/                # Application runtime log files
-├── tests/               # 250+ comprehensive unit & integration tests
+├── tests/               # 450+ comprehensive unit & integration tests
 ├── .env.example         # Environment variable template
 ├── config.py            # Type-safe Pydantic Settings application configuration
 ├── run_pipeline.py      # End-to-end pipeline runner
@@ -92,9 +103,10 @@ Automation/
 * **Language**: Python 3.11+
 * **AI Model**: Google Gemini 3.6 Flash (`google-genai` / `pydantic`)
 * **Data Validation**: Pydantic v2 & Pydantic Settings
+* **Extraction & Resolution**: `trafilatura`, `BeautifulSoup4`, `httpx`, `feedparser`
 * **Search & Corroboration**: Google News RSS Engine & SerpAPI Fallback
 * **Database**: SQLite (via SQLAlchemy)
-* **Testing & Quality**: Pytest (258 passing tests)
+* **Testing & Quality**: Pytest (**457 passing tests**)
 * **Package Manager**: `uv` (Fast Python package installer)
 
 ---
@@ -140,11 +152,14 @@ MAX_SERPAPI_SEARCHES_PER_RUN=8
 
 ## 🧪 Running Unit Tests
 
-The codebase includes **258 automated tests** covering models, filtering rules, deduplication fingerprints, verification logic, and API rate-limit fallbacks:
+The test suite contains **457 automated unit and integration tests** covering extraction, filtering, region provenance, single/dual source verification, ranking, and final validation:
 
 ```bash
 # Run full test suite
-uv run pytest
+uv run pytest -q
+
+# Run with py_compile check
+uv run python -m py_compile run_pipeline.py
 ```
 
 ---
@@ -157,7 +172,7 @@ Execute a full pipeline run:
 uv run python run_pipeline.py
 ```
 
-### Expected Output Summary:
+### Pipeline Execution Summary:
 ```text
 =====================================================================
 STARTING END-TO-END PIPELINE RUN (India: 5, Intl: 5)
@@ -165,11 +180,12 @@ STARTING END-TO-END PIPELINE RUN (India: 5, Intl: 5)
 STAGE 1+2: Discovery → Resolution → Extraction
 STAGE 3: Filtering — hard business event deterministic filter engine
 STAGE 4: Classification — Gemini AI article classifier (Pre-ranked)
-STAGE 5: Two-Source Verification & Active Corroboration
-STAGE 6: Deduplication — 3-day SQLite lookback and company restrictions
-STAGE 7: Ranking — deterministic investment relevance scores
-STAGE 8: Editorial Curation — Gemini AI Briefing Synthesizer
-STAGE 9: Output Audit & Deterministic Validation Engine
+STAGE 5: Two-Source Verification & Single-Source Quality Evaluation
+STAGE 6: Reserve Pool & Final-Mile Corroboration Expansion
+STAGE 7: Deduplication — 3-day SQLite lookback and company restrictions
+STAGE 8: Ranking — deterministic investment relevance scores
+STAGE 9: Editorial Curation — Gemini AI Briefing Synthesizer
+STAGE 10: Output Audit & 20-Check Deterministic Validation Engine
 =====================================================================
 BRIEFING GENERATED SUCCESSFULLY: 5 India + 5 International Verified Stories
 =====================================================================
@@ -181,27 +197,37 @@ BRIEFING GENERATED SUCCESSFULLY: 5 India + 5 International Verified Stories
 
 ```markdown
 # 🏛️ INVESTMENT COMMITTEE DAILY BRIEFING
-**Date**: August 20, 2026
+**Date**: August 26, 2026
 
 ## 🇮🇳 INDIA BUSINESS BRIEFING
 
-### 1. HDFC Bank Q1 Net Profit Surges 18% YoY to ₹16,175 Crore
-- **Key Facts**: ₹16,175 Cr Net Profit | 18% YoY Growth | NII up 21%
-- **Impact**: Demonstrates resilient net interest margins despite tight liquidity conditions.
-- **Sources**: [Business Standard](https://...) | [The Economic Times](https://...)
+### 1. Welspun Corp Promoter Group to Offload Stake via Rs 1,417 Crore Block Deal
+- **Key Facts**: Rs 1,417 Crore Deal Scale | Floor Price Discount | Promoter Divestment
+- **Impact**: Enhances public shareholding float while unlocking capital for promoter entities.
+- **Sources**: [Business Standard](https://www.business-standard.com/...)
+
+### 2. Honasa Consumer Mutually Calls Off Proposed Fluence Pharma Acquisition
+- **Key Facts**: Acquisition Terminated | Zero Break-Fee Impact | Core Brand Focus
+- **Impact**: Preserves cash reserves to focus on organic expansion of flagship beauty portfolios.
+- **Sources**: [Livemint](https://www.livemint.com/...)
 
 ---
 
 ## 🌍 INTERNATIONAL BUSINESS BRIEFING
 
-### 1. Rio Tinto Agrees $6.7 Billion All-Cash Acquisition of Arcadium Lithium
-- **Key Facts**: $6.7 Billion Deal | 90% Premium | Energy Transition Expansion
-- **Impact**: Establishes Rio Tinto as a top-tier global lithium producer.
-- **Sources**: [Reuters](https://...) | [CNBC](https://...)
+### 1. Nvidia Q2 Revenue Surges 122% YoY to $30.04 Billion on Accelerated AI Demand
+- **Key Facts**: $30.04B Revenue (vs $28.7B est) | Data Center up 154% | $50B Buyback Added
+- **Impact**: Reaffirms sustained multi-year enterprise capex in AI infrastructure hardware.
+- **Sources**: [Reuters](https://www.reuters.com/...) | [CNBC](https://www.cnbc.com/...)
+
+### 2. Broadcom Authorizes $5.0 Billion Common Stock Repurchase Program
+- **Key Facts**: $5.0 Billion Authorization | Through FY2027 | Free Cash Flow Deployment
+- **Impact**: Signals management confidence in semiconductor operating margins and cash conversion.
+- **Sources**: [PR Newswire](https://www.prnewswire.com/...)
 ```
 
 ---
 
 ## 🤝 Contact & Contributing
 
-Designed and built for automated financial research and C-suite briefing automation. Feel free to open an issue or submit a pull request!
+Designed and built for automated financial research, deal flow tracking, and C-suite briefing automation. Feel free to open an issue or submit a pull request!

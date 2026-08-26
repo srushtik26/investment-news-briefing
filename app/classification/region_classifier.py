@@ -22,6 +22,7 @@ class EventRegionClassifier:
     """
 
     # Indian Regulators, Government Bodies, Indices & Policy Keywords
+    # Indian Regulators, Government Bodies, Indices & Policy Keywords
     INDIAN_REGULATORY_AND_POLICY: List[str] = [
         r"\b(rbi|reserve bank of india)\b",
         r"\b(sebi|securities and exchange board of india)\b",
@@ -31,6 +32,7 @@ class EventRegionClassifier:
         r"\b(dgca|trai|irdai|ed|enforcement directorate|cbdt|cbic|nclt|drhp)\b",
         r"\b(government of india|centre|central government|cabinet approves?|pli scheme)\b",
         r"\b(india gdp|indian economy|retail inflation in india|monsoon)\b",
+        r"\b(standalone net profit|standalone profit|standalone revenue|standalone results)\b",
     ]
 
     # Indian Currencies & Financial Scale Units
@@ -66,10 +68,11 @@ class EventRegionClassifier:
         
         # Pharma & Healthcare
         r"\b(sun pharma|dr reddy|dr\. reddy|cipla|lupin|aurobindo|divi's|zydus|mankind pharma|biocon|apollo hospitals)\b",
-        r"\b(manipal|manipal health|manipal hospitals|max healthcare|fortis|narayana hrudayalaya|medanta)\b",
+        r"\b(manipal|manipal health|manipal hospitals|max healthcare|fortis|narayana hrudayalaya|medanta|tynor|tynor orthotics|fluence pharma)\b",
         
-        # Consumer, Retail & Digital Startups
-        r"\b(zomato|swiggy|paytm|phonepe|zepto|blinkit|shiprocket|nykaa|ola|ola electric|oyo|byju's|delhivery|meesho|mamaearth|lenskart|cred|urban company)\b",
+        # Consumer, Retail & Digital Startups & Retail/Malls & Manufacturing
+        r"\b(zomato|swiggy|paytm|phonepe|zepto|blinkit|shiprocket|nykaa|ola|ola electric|oyo|byju's|delhivery|meesho|mamaearth|honasa|honasa consumer|lenskart|cred|urban company)\b",
+        r"\b(welspun|welspun corp|inorbit|inorbit malls|prozone|prozone malls|kedaara|kedaara capital|c2i|c2i semiconductors|airtel payments bank|ardee|ardee industries|ardee infrastructure)\b",
         
         # Explicit Indian name indicators
         r"\b\w+\s+(?:of\s+india|india\s+ltd|india\s+limited)\b",
@@ -124,8 +127,9 @@ class EventRegionClassifier:
         Precedence:
         1. Indian / Global Regulators & Policies
         2. Target / Subject entity domicile (Indian entity vs International entity)
-        3. Localized Title / Facts Currency ($ vs ₹) with Discovery Prior safety
-        4. Discovery Region Prior
+        3. Explicit country in headline (e.g. India's C2i Semiconductors)
+        4. Indian Currency / Units in title / facts (crore/₹/lakh)
+        5. Discovery Region Prior (only as weak fallback)
         """
         title_lower = (title or "").lower()
         companies_text = " ".join(companies or []).lower()
@@ -177,13 +181,23 @@ class EventRegionClassifier:
                 return NewsCategory.INDIA, f"Indian entity '{matched_name}' transacting with international entity '{intl_entity_matches[0]}'"
             return NewsCategory.INDIA, f"Indian entity match: '{matched_name}'"
 
-        # RULE B: International entity with dollar or international discovery prior
+        # RULE B: Explicit Indian geography in title
+        if re.search(r"\b(india|indian|india's)\b", title_lower):
+            if not (intl_entity_matches and has_dollar_local and not has_indian_currency_local):
+                return NewsCategory.INDIA, "Explicit Indian geography in headline"
+
+        # RULE C: Strong Currency Signals in Title/Headline
+        title_has_inr = any(re.search(pat, title_lower) for pat in self.INDIAN_CURRENCY_AND_UNITS)
+        if title_has_inr:
+            return NewsCategory.INDIA, "Indian currency in title / event headline (crore/₹/lakh)"
+
+        # RULE D: International entity with dollar or international discovery prior
         if intl_entity_matches:
             matched_intl = intl_entity_matches[0]
             if not has_indian_currency_local or has_dollar_local or discovery_region == NewsCategory.INTERNATIONAL:
                 return NewsCategory.INTERNATIONAL, f"International entity '{matched_intl}' with global context"
 
-        # RULE C: Financial Sponsor transactions
+        # RULE E: Financial Sponsor transactions
         if sponsor_matches:
             # Foreign sponsor buying/selling Indian asset (e.g. General Atlantic + KFin, Fairfax + IDBI, Bain + JBM)
             if has_indian_currency_local or "india" in title_lower:
@@ -191,22 +205,11 @@ class EventRegionClassifier:
             if discovery_region == NewsCategory.INTERNATIONAL or has_dollar_local:
                 return NewsCategory.INTERNATIONAL, f"Financial sponsor '{sponsor_matches[0]}' in international transaction context"
 
-        # RULE D: Strong Currency Signals in Title/Headline
-        title_has_inr = any(re.search(pat, title_lower) for pat in self.INDIAN_CURRENCY_AND_UNITS)
-        if title_has_inr:
-            return NewsCategory.INDIA, "Indian currency in title / event headline (crore/₹/lakh)"
-
-        # RULE E: Discovery Region Prior Protection (Weak body tokens must not flip discovery prior)
+        # RULE F: Discovery Region Prior Protection (Weak body tokens must not flip discovery prior)
         if discovery_region == NewsCategory.INTERNATIONAL:
-            # Strong proof required to flip from International to India
-            if "india" in title_lower:
-                return NewsCategory.INDIA, "Indian currency / market reference overriding international discovery"
             return NewsCategory.INTERNATIONAL, "Preserved International discovery pool prior"
 
         if discovery_region == NewsCategory.INDIA:
-            # Strong proof required to flip from India to International
-            if has_dollar_local and not has_indian_currency_local and intl_entity_matches:
-                return NewsCategory.INTERNATIONAL, "International entity and dollar currency overriding Indian discovery"
             return NewsCategory.INDIA, "Preserved Indian discovery pool prior"
 
         # Default fallback
@@ -248,11 +251,17 @@ class EventRegionClassifier:
     def classify_event(self, event: Event, articles: Optional[List[Article]] = None) -> NewsCategory:
         """Classify an Event instance with observability logging."""
         combined_content = event.description or ""
-        disc_region = event.event_category
+        disc_region = None
         if articles:
             combined_content += " " + " ".join((a.content_text or "")[:200] for a in articles)
-            if not disc_region and articles[0].category:
-                disc_region = articles[0].category
+            for a in articles:
+                if a.category and a.category != NewsCategory.UNKNOWN:
+                    disc_region = a.category
+                    break
+        if not disc_region and event.metadata and "discovery_region" in event.metadata:
+            disc_region = event.metadata["discovery_region"]
+        if not disc_region:
+            disc_region = event.event_category
 
         region, reason = self.classify_with_reason(
             title=event.canonical_title,

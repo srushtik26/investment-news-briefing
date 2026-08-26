@@ -826,7 +826,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     event.verification_reason = rsn
                     if event not in high_confidence_single_candidates:
                         high_confidence_single_candidates.append(event)
-                        prefix = "[INTL_RESCUE_QUALIFIED]" if event.event_category == NewsCategory.INTERNATIONAL else "[INDIA_QUALIFIED]"
+                        prefix = "[INTL_RESCUE_QUALIFIED]" if event.event_category == NewsCategory.INTERNATIONAL else "[INDIA_RESCUE_QUALIFIED]"
                         log_exec(f"    {prefix} {event.canonical_title[:55]} | {rsn}")
             return event
 
@@ -869,6 +869,10 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if step_india > 0:
             for c in unseen_india[:step_india]:
                 process_candidate_item(c, "india")
+                current_in_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
+                if len(current_in_qual) >= 5:
+                    log_exec(f"[INDIA_TARGET_MET] India quality stories reached {len(current_in_qual)}/5 from reserve pool.")
+                    break
         if step_intl > 0:
             for c in unseen_intl[:step_intl]:
                 process_candidate_item(c, "international")
@@ -955,12 +959,15 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     "(site:economictimes.indiatimes.com OR site:ndtvprofit.com)",
                 ]
                 INDIA_EVENT_TEMPLATES = [
-                    '"quarterly results net profit revenue" crore when:1d',
-                    '"acquires acquisition deal buyout stake" when:1d',
-                    '"block deal stake sale" crore when:1d',
-                    '"raises funds equity funding" crore when:1d',
-                    '"RBI penalty order bank" NBFC when:1d',
-                    '"IPO DRHP filed India" when:1d',
+                    'quarterly results net profit revenue crore when:1d',
+                    'acquires acquisition deal buyout stake when:1d',
+                    'block deal stake sale crore when:1d',
+                    'raises funds equity funding crore when:1d',
+                    'RBI penalty order bank NBFC when:1d',
+                    'IPO DRHP filed India when:1d',
+                    'to buy acquisition stake crore when:1d',
+                    'promoter stake sale block deal when:1d',
+                    'investment funding crore when:1d',
                 ]
                 stop_india_discovery = False
                 for s_group in INDIA_SOURCE_GROUPS:
@@ -1038,14 +1045,45 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 except Exception as e:
                     log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
 
-    # Emergency Manual Seed Fallback (Fix 9) — ONLY if International < 5 after automated discovery
+    # Emergency Manual Seed Fallback — India & International
+    # 1. India Manual Seeds (submission_seed_india_urls.txt)
+    india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
+    if len(india_qual_events) < 5:
+        seed_in_path = Path("submission_seed_india_urls.txt")
+        if seed_in_path.exists():
+            log_exec(f"[MANUAL_SEED_DISCOVERY] India quality={len(india_qual_events)}/5. Reading emergency URLs from {seed_in_path}...")
+            try:
+                with open(seed_in_path, "r", encoding="utf-8") as f:
+                    seed_urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+                for s_url in seed_urls:
+                    current_in_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
+                    if len(current_in_qual) >= 5:
+                        log_exec(f"[MANUAL_SEED_TARGET_MET] India reached 5/5 quality candidates via manual seeds.")
+                        break
+                    from app.discovery.models import DiscoveredArticle
+                    s_cand = DiscoveredArticle(
+                        title="",
+                        url=s_url,
+                        source="",
+                        country="India",
+                        search_query="manual_seed_india",
+                    )
+                    ev = process_candidate_item(s_cand, "india")
+                    if ev and (ev in high_confidence_single_candidates or ev in verified_events):
+                        log_exec(f"[MANUAL_SEED_QUALIFIED] {ev.canonical_title[:55]}")
+            except Exception as e:
+                log_exec(f"[MANUAL_SEED_ERROR] Failed to process India seed file: {e}")
+
+    # 2. International Manual Seeds (submission_seed_international_urls.txt or submission_seed_urls.txt)
     intl_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
     if len(intl_qual_events) < 5:
-        seed_path = Path("submission_seed_urls.txt")
-        if seed_path.exists():
-            log_exec(f"[MANUAL_SEED_DISCOVERY] International quality={len(intl_qual_events)}/5. Reading emergency URLs from {seed_path}...")
+        seed_intl_path = Path("submission_seed_international_urls.txt")
+        if not seed_intl_path.exists():
+            seed_intl_path = Path("submission_seed_urls.txt")
+        if seed_intl_path.exists():
+            log_exec(f"[MANUAL_SEED_DISCOVERY] International quality={len(intl_qual_events)}/5. Reading emergency URLs from {seed_intl_path}...")
             try:
-                with open(seed_path, "r", encoding="utf-8") as f:
+                with open(seed_intl_path, "r", encoding="utf-8") as f:
                     seed_urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
                 for s_url in seed_urls:
                     current_intl_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
@@ -1058,13 +1096,13 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                         url=s_url,
                         source="",
                         country="US",
-                        search_query="manual_seed",
+                        search_query="manual_seed_intl",
                     )
                     ev = process_candidate_item(s_cand, "international")
                     if ev and (ev in high_confidence_single_candidates or ev in verified_events):
                         log_exec(f"[MANUAL_SEED_QUALIFIED] {ev.canonical_title[:55]}")
             except Exception as e:
-                log_exec(f"[MANUAL_SEED_ERROR] Failed to process seed file: {e}")
+                log_exec(f"[MANUAL_SEED_ERROR] Failed to process International seed file: {e}")
 
     # Reclassify and update categories
     for e in verified_events:
