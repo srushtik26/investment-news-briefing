@@ -235,7 +235,7 @@ def is_commentary_or_rumour(title: str, text: Optional[str] = None) -> bool:
 
 
 def is_trusted_publisher(source_name: Optional[str], region: NewsCategory = NewsCategory.INDIA) -> bool:
-    """Check if publisher is in the approved high-confidence registry."""
+    """Check if publisher is in the approved high-confidence registry or an official corporate release/wire."""
     if not source_name:
         return False
     norm = source_name.strip().lower()
@@ -244,6 +244,9 @@ def is_trusted_publisher(source_name: Optional[str], region: NewsCategory = News
     if any(tp in norm or norm in tp for tp in TRUSTED_INDIA_PUBLISHERS):
         return True
     if any(tp in norm or norm in tp for tp in TRUSTED_INTL_PUBLISHERS):
+        return True
+    # Official corporate release / wire / IR recognition
+    if any(wire in norm for wire in ("prnewswire", "globenewswire", "businesswire", "pr newswire", "globe newswire", "business wire", "investor relations", "press release")):
         return True
     return False
 
@@ -334,7 +337,7 @@ class SingleSourceEvaluator:
 
         # C. Recognized hard event type (+20)
         has_hard_action = bool(re.search(
-            r"\b(acquires?|acquisition|buys|bought|sold|sale|stake|merger|net profit|earnings|revenue|ebitda|q[1-4]|ipo|drhp|funding|raises|penalty|fine|order|capex|contract|joint venture|appointed|resigns)\b",
+            r"\b(acquires?|acquisition|buys|bought|sold|sale|stake|merger|net profit|earnings|financial results|results|revenue|ebitda|q[1-4]|ipo|drhp|funding|financing|raises|guidance|buyback|repurchase|dividend|investment|penalty|fine|order|capex|contract|joint venture|appointed|resigns|antitrust)\b",
             title.lower() + " " + body[:300].lower()
         ))
         if has_hard_action:

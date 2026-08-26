@@ -19,6 +19,7 @@ PUBLISHER_ENTITY_BLACKLIST: Set[str] = {
     "asian news international", "ap news", "associated press", "the guardian", "guardian",
     "scconline", "pulse2", "forbes", "marketscreener", "hapag-lloyd",
     "bsindia", "@bsindia", "moneycontrol.com", "economictimes", "financialexpress",
+    "pr newswire", "prnewswire", "globenewswire", "globe newswire", "business wire", "businesswire",
 }
 
 GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
@@ -69,6 +70,12 @@ def normalize_publisher_name(source_name: Optional[str]) -> str:
         return "Reuters"
     if norm_low in ("cnbc", "cnbc tv18", "cnbctv18", "cnbc.com"):
         return "CNBC"
+    if norm_low in ("pr newswire", "prnewswire", "prnewswire.com"):
+        return "PR Newswire"
+    if norm_low in ("globenewswire", "globe newswire", "globenewswire.com"):
+        return "GlobeNewswire"
+    if norm_low in ("business wire", "businesswire", "businesswire.com"):
+        return "Business Wire"
     if norm_low in ("sec", "sec edgar", "sec.gov"):
         return "SEC"
     if norm_low in ("federal reserve", "fed", "federalreserve.gov"):
