@@ -115,8 +115,13 @@ class GeminiEditorialEngine:
             len(ranked_pool.international_candidates),
         )
 
+        all_candidate_scored = (
+            (getattr(ranked_pool, "domestic_candidates", []) or [])
+            + ranked_pool.india_candidates
+            + ranked_pool.international_candidates
+        )
         # FIX 5: DO NOT CALL EDITORIAL GEMINI WITH ZERO STORIES
-        if len(ranked_pool.india_candidates) == 0 and len(ranked_pool.international_candidates) == 0:
+        if len(all_candidate_scored) == 0:
             logger.warning("Zero candidate events in pool. Skipping Gemini Editorial call to preserve API quota.")
             return EditorialResult(
                 success=False,
@@ -125,11 +130,11 @@ class GeminiEditorialEngine:
                 raw_response=None,
             )
 
-        # Build candidate validation manifests
+        # Build candidate validation manifests across all sections (Domestic, India, International)
         valid_events_map: Dict[str, ScoredEvent] = {}
         valid_urls_map: Dict[str, str] = {}  # url -> event_id
 
-        for scored in ranked_pool.india_candidates + ranked_pool.international_candidates:
+        for scored in all_candidate_scored:
             e = scored.event
             valid_events_map[e.id] = scored
             for art_id in e.article_ids:
@@ -284,7 +289,7 @@ class GeminiEditorialEngine:
         valid_urls: Dict[str, str],
     ) -> None:
         """Enforce strict programmatic checks on Gemini output."""
-        all_stories = payload.india_stories + payload.international_stories
+        all_stories = (getattr(payload, "domestic_stories", []) or []) + payload.india_stories + payload.international_stories
         if not all_stories:
             raise ValueError("Editorial selection returned 0 stories")
 
@@ -375,6 +380,21 @@ class GeminiEditorialEngine:
         """Deterministic heuristic fallback when offline or API limit reached."""
         from app.models.entity_sanitizer import sanitize_company_entities
 
+        domestic_selected: List[Dict[str, str]] = []
+        for scored in (getattr(ranked_pool, "domestic_candidates", []) or [])[:5]:
+            e = scored.event
+            art = articles_map.get(e.article_ids[0]) if e.article_ids else None
+            source_name = art.source_name if art else "Business Standard"
+            url = art.url if art else f"https://example.com/domestic-{e.id}"
+
+            domestic_selected.append({
+                "section": "domestic",
+                "event_id": e.id,
+                "headline": e.canonical_title,
+                "source": source_name,
+                "url": url,
+            })
+
         india_selected: List[Dict[str, str]] = []
         seen_india_comps: Set[str] = set()
 
@@ -447,6 +467,7 @@ class GeminiEditorialEngine:
             })
 
         return json.dumps({
+            "domestic_stories": domestic_selected[:5],
             "india_stories": india_selected[:5],
             "international_stories": intl_selected[:5],
         })

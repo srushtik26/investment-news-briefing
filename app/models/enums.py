@@ -8,6 +8,7 @@ from enum import Enum
 class NewsCategory(str, Enum):
     """Category classification for business news articles and stories."""
 
+    DOMESTIC = "domestic"
     INDIA = "india"
     INTERNATIONAL = "international"
     UNKNOWN = "unknown"

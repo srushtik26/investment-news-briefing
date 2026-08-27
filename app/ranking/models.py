@@ -113,6 +113,10 @@ class RankedCandidatePool(BaseModel):
         extra="allow",
     )
 
+    domestic_candidates: List[ScoredEvent] = Field(
+        default_factory=list,
+        description="Top ranked Domestic India macro/policy event candidates (8–10 items)",
+    )
     india_candidates: List[ScoredEvent] = Field(
         default_factory=list,
         description="Top ranked India business event candidates (8–10 items)",

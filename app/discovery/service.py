@@ -122,19 +122,66 @@ class NewsDiscoveryService:
         logger.info("Discovered %d unique candidate articles for International", len(unique_results))
         return unique_results
 
+    def discover_domestic_news(
+        self,
+        categories: Optional[List[str]] = None,
+        max_candidates: int = 20,
+        max_per_query: int = 5,
+    ) -> List[DiscoveredArticle]:
+        """
+        Discover candidate news articles for the Domestic India macro/policy section.
+        """
+        from app.discovery.queries import DOMESTIC_EVENT_CATEGORIES, DOMESTIC_SOURCES
+        all_categories = DOMESTIC_EVENT_CATEGORIES
+        target_cats = (
+            {k: v for k, v in all_categories.items() if k in categories}
+            if categories
+            else all_categories
+        )
+
+        discovered: List[DiscoveredArticle] = []
+        site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in DOMESTIC_SOURCES]) + ")"
+
+        for cat_name, phrase_list in target_cats.items():
+            for phrase in phrase_list:
+                query = f"{phrase}{site_clause}"
+                results = self.provider.discover(
+                    query=query,
+                    country="India",
+                    max_results=max_per_query,
+                    category_tag=cat_name,
+                )
+                for r in results:
+                    r.category_tag = "domestic"
+                discovered.extend(results)
+
+                if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
+                    break
+
+        unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
+        logger.info("Discovered %d unique candidate articles for Domestic India", len(unique_results))
+        return unique_results
+
     def discover_all(
         self,
-        max_india: int = 20,
-        max_international: int = 20,
+        max_india: int = 40,
+        max_international: int = 40,
+        max_domestic: int = 40,
     ) -> Dict[str, List[DiscoveredArticle]]:
         """
-        Run discovery across both India and International categories.
+        Run discovery across Domestic, India Business, and International categories.
         """
-        logger.info("Running full news discovery for Investment Committee briefing...")
+        logger.info("Running full news discovery for Investment Committee briefing (Domestic + India + Intl)...")
+        domestic_candidates = self.discover_domestic_news(max_candidates=max_domestic) if max_domestic > 0 else []
         india_candidates = self.discover_india_news(max_candidates=max_india)
         intl_candidates = self.discover_international_news(max_candidates=max_international)
 
-        return {
+        result: Dict[str, List[DiscoveredArticle]] = {
             "india": india_candidates,
             "international": intl_candidates,
         }
+        if max_domestic > 0:
+            result["domestic"] = domestic_candidates
+
+        return result
+

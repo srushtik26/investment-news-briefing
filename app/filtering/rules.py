@@ -407,23 +407,11 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "speculative_transaction",
-            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:acquire|buy|purchase|merge|take over)\b",
+            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:consider\s+)?(?:acquire|acquiring|buy|buying|purchase|purchasing|merge|merging|take\s*over)\b|\b(considering\s+(?:acquiring|acquisition|buying|buyout|takeover))\b",
         ),
         (
             "ipo_intraday",
             r"\b(day [123] subscription|subscribed \d+(\.\d+)?x on day|ipo subscription status|ipo bidding status|ipo day [123] update)\b",
-        ),
-        (
-            "profile_feature",
-            r"\bwho is\b|\b(biography|profile feature|career profile)\b",
-        ),
-        (
-            "earnings_preview",
-            r"\b(earnings preview|preview.*earnings|what to expect|watch ahead|faces? (?:a )?big test.*earnings|analysts? expect.*earnings)\b",
-        ),
-        (
-            "speculative_transaction",
-            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:acquire|buy|purchase|merge|take over)\b",
         ),
     ]
 
@@ -550,3 +538,118 @@ class StoryTypeFilterRule(BaseFilterRule):
             article_title=article.title,
             matched_patterns=matched_acceptances,
         )
+
+
+class DomesticSourceFilterRule(BaseFilterRule):
+    """
+    Source validation for Domestic (General Trending India News) articles.
+
+    Validates against the trusted general national news publisher whitelist.
+    Does NOT share the business financial publisher whitelist — domestic
+    sources include general news outlets (The Hindu, NDTV, HT, India Today, TOI, etc.)
+    that are NOT in the business SourceFilterRule.
+
+    Accepts any of the DOMESTIC_ALLOWED_DOMAINS or DOMESTIC_ALLOWED_SOURCE_NAMES.
+    """
+
+    DOMESTIC_ALLOWED_SOURCE_NAMES: Set[str] = {
+        # General national news
+        "the hindu",
+        "hindu",
+        "indian express",
+        "the indian express",
+        "hindustan times",
+        "ndtv",
+        "india today",
+        "times of india",
+        "toi",
+        # Also accept business outlets that publish general news
+        "economic times",
+        "the economic times",
+        "economictimes",
+        "business standard",
+        "business-standard",
+        "livemint",
+        "mint",
+        "financial express",
+        "the financial express",
+        "the hindu businessline",
+        "hindu businessline",
+        "businessline",
+        # Government / Official
+        "pib",
+        "press information bureau",
+        "pmo india",
+        "isro",
+        "supreme court of india",
+        # Wire services
+        "bbc",
+        "bbc news",
+        "ani",
+        "pti",
+        "reuters",
+        "ap news",
+        "associated press",
+        # Regional but major outlets
+        "moneycontrol",
+        "ndtv profit",
+    }
+
+    DOMESTIC_ALLOWED_DOMAINS: Set[str] = {
+        "thehindu.com",
+        "indianexpress.com",
+        "hindustantimes.com",
+        "ndtv.com",
+        "indiatoday.in",
+        "timesofindia.indiatimes.com",
+        "economictimes.indiatimes.com",
+        "business-standard.com",
+        "livemint.com",
+        "thehindubusinessline.com",
+        "financialexpress.com",
+        "bbc.com",
+        "bbc.co.uk",
+        "pib.gov.in",
+        "sci.gov.in",
+        "isro.gov.in",
+        "pmo.gov.in",
+        # Also allow government ministry sites
+        "mohfw.gov.in",
+        "moesgov.in",
+        "imd.gov.in",
+        "mha.gov.in",
+        # Wire services
+        "reuters.com",
+        "apnews.com",
+    }
+
+    @property
+    def rule_name(self) -> str:
+        return "DOMESTIC_SOURCE"
+
+    def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
+        source_name = (article.source_name or "").strip().lower()
+        netloc = urlparse(article.url).netloc.lower()
+
+        name_valid = any(allowed in source_name for allowed in self.DOMESTIC_ALLOWED_SOURCE_NAMES)
+        domain_valid = any(d in netloc for d in self.DOMESTIC_ALLOWED_DOMAINS)
+
+        if not name_valid and not domain_valid:
+            return FilterResult(
+                is_accepted=False,
+                article_url=article.url,
+                article_title=article.title,
+                rule_failed=self.rule_name,
+                rejection_reason=(
+                    f"Domestic source '{article.source_name}' ({netloc}) is not in the trusted "
+                    f"domestic publisher registry (thehindu.com, indianexpress.com, "
+                    f"hindustantimes.com, ndtv.com, indiatoday.in, timesofindia.indiatimes.com, etc.)"
+                ),
+            )
+
+        return FilterResult(
+            is_accepted=True,
+            article_url=article.url,
+            article_title=article.title,
+        )
+

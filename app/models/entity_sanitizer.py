@@ -6,6 +6,7 @@ preventing publisher names (e.g. 'Business Standard', 'The Economic Times')
 from ever being classified or deduplicated as company names.
 """
 
+import re
 from typing import List, Optional, Set
 from app.deduplication.fingerprint import normalize_entity_name
 
@@ -94,10 +95,66 @@ def normalize_publisher_name(source_name: Optional[str]) -> str:
     return norm
 
 
+DATE_AND_METRIC_PATTERNS = [
+    # Full dates: '26 Aug 2026', '26 August 2026', 'August 26 2026', '2026-08-26', '26/08/2026'
+    r"^\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4}$",
+    r"^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*|\s+)\d{2,4}$",
+    r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$",
+    r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$",
+    # Reporting periods & standalone metrics: 'FY26', 'Q3', 'FY 2026', 'Q1 FY26'
+    r"^(?:fy\s*\d{2,4}|q[1-4](?:\s*fy\s*\d{2,4})?)$",
+    # Pure numbers, decimals, percentages or currencies: '1.06', '₹84.5 crore', '$100 million', '25%'
+    r"^(?:₹|\$|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:%|crore|cr|billion|million|lakh|pct)?$",
+    # Standalone financial words
+    r"^(?:net profit|revenue|quarterly profit|standalone profit|profit|net loss|ebitda|operating income|sales|pat|pbt)$",
+]
+
+TRAILING_METRIC_SUFFIXES = [
+    r"\s+fy\s*\d{2,4}(?:\s+net(?:\s+profit)?)?$",
+    r"\s+q[1-4](?:\s+fy\s*\d{2,4})?(?:\s+net(?:\s+profit)?)?$",
+    r"\s+net(?:\s+profit)?$",
+    r"\s+q[1-4]$",
+    r"\s+fy\s*\d{2,4}$",
+]
+
+
+def clean_company_name(name: str) -> Optional[str]:
+    """Clean company candidate by stripping trailing metrics or rejecting invalid strings."""
+    if not name or not isinstance(name, str):
+        return None
+    c_clean = name.strip().strip("'\".,;:()[]{}")
+    c_low = c_clean.lower()
+    
+    if len(c_clean) < 2:
+        return None
+
+    # Check date and metric rejection patterns
+    for pat in DATE_AND_METRIC_PATTERNS:
+        if re.match(pat, c_low, re.IGNORECASE):
+            return None
+
+    # Strip trailing periods/metrics (e.g. 'boAt FY26 net' -> 'boAt')
+    for suff in TRAILING_METRIC_SUFFIXES:
+        c_clean = re.sub(suff, "", c_clean, flags=re.IGNORECASE).strip()
+        c_low = c_clean.lower()
+
+    if len(c_clean) < 2:
+        return None
+
+    # Re-check patterns after stripping
+    for pat in DATE_AND_METRIC_PATTERNS:
+        if re.match(pat, c_low, re.IGNORECASE):
+            return None
+
+    return c_clean
+
+
 def sanitize_company_entities(companies: Optional[List[str]], publisher: Optional[str] = None) -> List[str]:
     """
     Sanitize company entities:
     - Removes publishers and media organizations from the company list.
+    - Removes dates, metrics, reporting periods, pure numbers, and financial keywords.
+    - Cleans trailing metric fragments (e.g. 'boAt FY26 net' -> 'boAt').
     - If an extracted entity matches the article's publisher, removes it.
     - Normalizes corporate aliases.
     - Returns only legitimate business/corporate entities (empty list if none exist).
@@ -110,9 +167,9 @@ def sanitize_company_entities(companies: Optional[List[str]], publisher: Optiona
     pub_norm = (publisher or "").lower().strip()
 
     for c in companies:
-        if not c or not isinstance(c, str):
+        c_clean = clean_company_name(c)
+        if not c_clean:
             continue
-        c_clean = c.strip()
         c_low = c_clean.lower()
         if c_low in GENERIC_STANDALONE_ENTITY_BLACKLIST:
             continue

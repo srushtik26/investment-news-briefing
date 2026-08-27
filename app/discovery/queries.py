@@ -28,6 +28,22 @@ INDIA_SOURCES: List[TargetSource] = [
     TargetSource(name="NDTV Profit", domain="ndtvprofit.com", country="India"),
 ]
 
+DOMESTIC_SOURCES: List[TargetSource] = [
+    TargetSource(name="The Hindu", domain="thehindu.com", country="India"),
+    TargetSource(name="The Indian Express", domain="indianexpress.com", country="India"),
+    TargetSource(name="Hindustan Times", domain="hindustantimes.com", country="India"),
+    TargetSource(name="NDTV", domain="ndtv.com", country="India"),
+    TargetSource(name="India Today", domain="indiatoday.in", country="India"),
+    TargetSource(name="Times of India", domain="timesofindia.indiatimes.com", country="India"),
+    TargetSource(name="The Economic Times", domain="economictimes.indiatimes.com", country="India"),
+    TargetSource(name="Business Standard", domain="business-standard.com", country="India"),
+    TargetSource(name="Livemint", domain="livemint.com", country="India"),
+    TargetSource(name="The Hindu BusinessLine", domain="thehindubusinessline.com", country="India"),
+    TargetSource(name="Financial Express", domain="financialexpress.com", country="India"),
+    TargetSource(name="BBC News", domain="bbc.com", country="India"),
+    TargetSource(name="PIB", domain="pib.gov.in", country="India"),
+]
+
 INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="CNBC", domain="cnbc.com", country="International"),
     TargetSource(name="AP News", domain="apnews.com", country="International"),
@@ -40,6 +56,41 @@ INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="Financial Times", domain="ft.com", country="International"),
     TargetSource(name="Wall Street Journal", domain="wsj.com", country="International"),
 ]
+
+DOMESTIC_EVENT_CATEGORIES: Dict[str, List[str]] = {
+    "breaking_national": [
+        "India breaking news when:1d",
+        "India latest national news when:1d",
+    ],
+    "politics_and_government": [
+        "India government latest decision when:1d",
+        "India Parliament government policy when:1d",
+    ],
+    "courts_and_law": [
+        "India Supreme Court latest when:1d",
+        "Supreme Court of India ruling verdict when:1d",
+    ],
+    "infrastructure_transport": [
+        "India major infrastructure project when:1d",
+        "Cabinet approves railway highway project when:1d",
+    ],
+    "defence_security": [
+        "India defence security latest when:1d",
+        "Indian Army Navy Air Force DRDO when:1d",
+    ],
+    "science_space_tech": [
+        "India technology ISRO science latest when:1d",
+        "ISRO mission satellite launch India when:1d",
+    ],
+    "weather_disaster_environment": [
+        "India weather disaster latest when:1d",
+        "cyclone flood monsoon IMD alert India when:1d",
+    ],
+    "health_education": [
+        "India education health latest when:1d",
+        "national education policy health ministry India when:1d",
+    ],
+}
 
 
 # Targeted Hard Business Event Categories (India)

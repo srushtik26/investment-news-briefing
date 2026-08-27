@@ -19,6 +19,15 @@ class ArticleEventType(str, Enum):
     FUNDRAISING = "FUNDRAISING"
     IPO = "IPO"
     REGULATORY = "REGULATORY"
+    REGULATION = "REGULATION"
+    MONETARY_POLICY = "MONETARY_POLICY"
+    MACRO_DATA = "MACRO_DATA"
+    FISCAL_POLICY = "FISCAL_POLICY"
+    TAX_POLICY = "TAX_POLICY"
+    GOVERNMENT_INVESTMENT = "GOVERNMENT_INVESTMENT"
+    TRADE_POLICY = "TRADE_POLICY"
+    BANKING_POLICY = "BANKING_POLICY"
+    INFRASTRUCTURE_POLICY = "INFRASTRUCTURE_POLICY"
     COURT = "COURT"
     LEADERSHIP = "LEADERSHIP"
     POLICY = "POLICY"
@@ -37,6 +46,20 @@ class ArticleEventType(str, Enum):
             val_upper = value.upper().strip()
             if val_upper in ("M&A", "MA", "M_AND_A", "MERGERS_AND_ACQUISITIONS", "MERGER", "ACQUISITION"):
                 return cls.MA
+            if val_upper in ("REGULATION", "REGULATORY_ACTION"):
+                return cls.REGULATION
+            if val_upper in ("MONETARY", "RATE_DECISION", "RBI_POLICY"):
+                return cls.MONETARY_POLICY
+            if val_upper in ("MACRO", "MACRO_DATA", "INFLATION", "GDP", "IIP"):
+                return cls.MACRO_DATA
+            if val_upper in ("TAX", "GST", "TAXATION"):
+                return cls.TAX_POLICY
+            if val_upper in ("INFRASTRUCTURE", "INFRA"):
+                return cls.INFRASTRUCTURE_POLICY
+            if val_upper in ("TRADE", "TARIFF", "EXPORT_IMPORT"):
+                return cls.TRADE_POLICY
+            if val_upper in ("BANKING", "LIQUIDITY", "NBFC"):
+                return cls.BANKING_POLICY
             for member in cls:
                 if member.value.upper() == val_upper or member.name == val_upper:
                     return member

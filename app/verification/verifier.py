@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from app.logging_config import get_logger
 from app.models.article import Article
+from app.models.enums import NewsCategory
 from app.models.event import Event
 from app.verification.models import EventSourceVerification, VerificationStatus
 
@@ -199,13 +200,17 @@ class TwoSourceVerifier:
                     return "q4"
         return None
 
-    def is_same_underlying_event(self, art1: Article, art2: Article) -> Tuple[bool, float, str]:
+    def is_same_underlying_event(self, art1: Article, art2: Article, now_utc: Optional[datetime] = None) -> Tuple[bool, float, str]:
         """
         Determine if two articles refer to the exact same corporate/economic event.
         Enforces:
         1. Shared primary entity/company
         2. Compatible event type (incompatibility rejects immediately)
         3. At least one additional event-specific signal (counterpart, shared numbers, period, strong overlap).
+
+        Args:
+            now_utc: Optional immutable reference time for freshness checks. Defaults to
+                     datetime.now(timezone.utc) when None (preserves backwards compatibility).
         """
         t1 = art1.title.lower()
         t2 = art2.title.lower()
@@ -224,16 +229,18 @@ class TwoSourceVerifier:
         from config import get_settings
         settings = get_settings()
         max_freshness_hours = getattr(settings, "STORY_FRESHNESS_HOURS", 24.0)
-        now_utc = datetime.now(timezone.utc)
+        # Use provided immutable reference time; fall back to datetime.now() only if not supplied.
+        current_utc = now_utc if now_utc is not None else datetime.now(timezone.utc)
         for art, label in ((art1, "Primary"), (art2, "Secondary")):
             if art.published_at:
                 pub_time = art.published_at
                 if pub_time.tzinfo is None:
                     pub_time = pub_time.replace(tzinfo=timezone.utc)
-                age_hours = max(0.0, (now_utc - pub_time).total_seconds() / 3600.0)
+                age_hours = max(0.0, (current_utc - pub_time).total_seconds() / 3600.0)
                 if age_hours > max_freshness_hours:
                     err_code = "STALE_PRIMARY_SOURCE" if label == "Primary" else "STALE_SECOND_SOURCE"
                     return False, 0.0, f"{err_code}: {label} article published {age_hours:.1f}h ago exceeds allowable {max_freshness_hours:.0f}h freshness window"
+
 
         # Step 1: Detect Event Categories & Check Incompatibility
         cats1 = self.detect_event_categories(art1)
@@ -285,6 +292,34 @@ class TwoSourceVerifier:
             "piramal", "yapan", "blackstone", "walmart", "target", "goldman"
         }
         shared_major = {w for w in overlap if w in major_entities}
+
+        # For DOMESTIC (General National India News / Courts / Governance):
+        is_domestic_case = (
+            getattr(art1, "category", None) == NewsCategory.DOMESTIC
+            or getattr(art2, "category", None) == NewsCategory.DOMESTIC
+            or any(
+                re.search(r"\b(supreme court|high court|cji|delhi police|union cabinet|isro|parliament|lok sabha|rajya sabha|sc bench|hc bench)\b", t)
+                for t in (t1, t2)
+            )
+        )
+        if is_domestic_case:
+            GENERIC_DOMESTIC_WORDS = {
+                "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from", "as",
+                "over", "under", "after", "before", "amid", "says", "said", "reports", "reported", "shows", "shown",
+                "supreme", "court", "high", "government", "police", "probe", "order", "orders",
+                "india", "state", "states", "minister", "bench", "chief", "justice", "sc", "hc",
+                "cji", "ruling", "plea", "verdict", "quashes", "stays", "case", "matter", "law",
+                "legal", "public", "delhi", "centre", "central", "probes", "probed", "investigation",
+                "hearing", "notice", "notices", "pleas", "judiciary", "judges", "directs"
+            }
+            w1_topic = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3}
+            w2_topic = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3}
+            topic_overlap = w1_topic.intersection(w2_topic)
+            if len(topic_overlap) < 2:
+                return False, 0.0, f"DOMESTIC_TOPIC_MISMATCH: Insufficient specific subject/topic overlap for domestic events ({list(topic_overlap)})"
+            
+            score = max(title_similarity, 0.85)
+            return True, score, f"DOMESTIC_EVENT_MATCH: Shared specific topics ({list(topic_overlap)})"
 
         has_shared_entity = bool(shared_entities or shared_major)
         if not has_shared_entity:
@@ -371,6 +406,7 @@ class TwoSourceVerifier:
         self,
         event: Event,
         articles: List[Article],
+        now_utc: Optional[datetime] = None,
     ) -> EventSourceVerification:
         """
         Verify an event using its linked candidate articles.
@@ -378,6 +414,7 @@ class TwoSourceVerifier:
         Args:
             event: Event model instance.
             articles: List of Article models linked to this event.
+            now_utc: Optional immutable reference timestamp for freshness verification.
 
         Returns:
             EventSourceVerification detailing independence and verification outcome.
@@ -403,8 +440,15 @@ class TwoSourceVerifier:
         art1 = articles[0]
         art2 = articles[1]
 
+        # Propagate DOMESTIC event category to articles if event is domestic
+        if getattr(event, "event_category", None) == NewsCategory.DOMESTIC:
+            if not getattr(art1, "category", None) or art1.category == NewsCategory.UNKNOWN:
+                art1.category = NewsCategory.DOMESTIC
+            if not getattr(art2, "category", None) or art2.category == NewsCategory.UNKNOWN:
+                art2.category = NewsCategory.DOMESTIC
+
         # 2. Check if both articles refer to the same event
-        is_same_event, event_score, event_msg = self.is_same_underlying_event(art1, art2)
+        is_same_event, event_score, event_msg = self.is_same_underlying_event(art1, art2, now_utc=now_utc)
         if not is_same_event:
             return EventSourceVerification(
                 event_id=event.id,

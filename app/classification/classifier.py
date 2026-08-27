@@ -191,9 +191,33 @@ class AIArticleClassifier:
                 is_hard_event = True
                 is_inv_rel = True
 
-        # Clear Regulatory Action
-        elif re.search(r"\b(rbi|sebi|cci|sec|antitrust|doj)\b.*\b(penalty|fine|order|ban|charges|probe|investigation)\b|\b(monetary penalty|regulatory penalty|tribunal order)\b", combined_lower):
-            event_type = ArticleEventType.REGULATORY
+        # Clear Monetary Policy & Central Bank Decisions
+        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|rbi holds rates|rbi cuts rate|rbi hikes rate|liquidity framework|crr|slr)\b", combined_lower):
+            event_type = ArticleEventType.MONETARY_POLICY
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Macro Data
+        elif re.search(r"\b(gdp growth|gdp expands|gdp data|cpi inflation|retail inflation|wpi inflation|inflation rate|iip data|industrial production|factory output|trade deficit)\b", combined_lower):
+            event_type = ArticleEventType.MACRO_DATA
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Regulatory & Market Rules (SEBI / RBI / Competition Commission)
+        elif re.search(r"\b(sebi|rbi|cci|sec|antitrust|doj)\b.*\b(mandates|tightens|eases|norms|rules|framework|guidelines|circular|penalty|fine|order|ban|charges|probe|investigation)\b|\b(monetary penalty|regulatory penalty|tribunal order|bank liquidity rules|nbfc regulation)\b", combined_lower):
+            event_type = ArticleEventType.REGULATION
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Tax & Fiscal Policy / GST
+        elif re.search(r"\b(gst council|gst rate|gst collection|tax slab|tax reform|customs duty|import duty|export duty|tariff policy)\b", combined_lower):
+            event_type = ArticleEventType.TAX_POLICY
+            is_hard_event = True
+            is_inv_rel = True
+
+        # Clear Government Investment / PLI / Infrastructure Approvals
+        elif re.search(r"\b(union cabinet approves?|cabinet clears?|cabinet nod|cabinet approves economic|centre approves|government approves|pli scheme|production linked incentive|semiconductor incentive|national infrastructure)\b", combined_lower):
+            event_type = ArticleEventType.GOVERNMENT_INVESTMENT
             is_hard_event = True
             is_inv_rel = True
 
@@ -202,13 +226,6 @@ class AIArticleClassifier:
             event_type = ArticleEventType.LEADERSHIP
             is_hard_event = True
             is_inv_rel = True
-
-        # Clear Macro Data
-        elif re.search(r"\b(gdp growth|cpi inflation|retail inflation|iip data|trade deficit|interest rate steady|rate cut|rate hike)\b", combined_lower):
-            if pcts or nums:
-                event_type = ArticleEventType.MACRO
-                is_hard_event = True
-                is_inv_rel = True
 
         # Clear Corporate Actions / Dividend / Buyback
         elif re.search(r"\b(dividend|special dividend|interim dividend|share buyback|stock buyback|buyback)\b", combined_lower):
@@ -511,17 +528,23 @@ class AIArticleClassifier:
             event_type = "FUNDRAISING"
         elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings|quarterly results|annual results)\b", combined):
             event_type = "EARNINGS"
+        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|liquidity framework)\b", combined):
+            event_type = "MONETARY_POLICY"
+        elif re.search(r"\b(inflation|gdp|cpi|wpi|iip|industrial production|trade deficit)\b", combined):
+            event_type = "MACRO_DATA"
+        elif re.search(r"\b(gst council|gst rate|customs duty|import duty|export duty|tariff policy)\b", combined):
+            event_type = "TAX_POLICY"
+        elif re.search(r"\b(union cabinet approves?|cabinet clears?|pli scheme|semiconductor incentive|infrastructure)\b", combined):
+            event_type = "GOVERNMENT_INVESTMENT"
         elif "rbi" in combined or "sebi" in combined or "penalty" in combined or "cci" in combined or "order" in combined:
-            event_type = "REGULATORY"
-        elif "inflation" in combined or "gdp" in combined or "cpi" in combined:
-            event_type = "MACRO"
+            event_type = "REGULATION"
         elif "appoint" in combined or "cfo" in combined or "ceo" in combined or "resigns" in combined:
             event_type = "LEADERSHIP"
         elif "plant" in combined or "capex" in combined or "expansion" in combined:
             event_type = "M&A"
 
         is_hard = event_type not in ("OPINION", "MARKET", "ANALYST", "OTHER") or is_stake_trans or is_ma_trans or is_invest_trans
-        is_invest_rel = event_type in ("EARNINGS", "M&A", "FUNDRAISING", "REGULATORY", "MACRO", "LEADERSHIP") or is_stake_trans or is_ma_trans or is_invest_trans
+        is_invest_rel = is_hard
 
         payload = {
             "event_type": event_type,

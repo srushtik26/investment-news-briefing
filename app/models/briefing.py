@@ -107,6 +107,10 @@ class Briefing(BaseModel):
         default="Daily Investment Committee Business Briefing",
         description="Title of the briefing issue",
     )
+    domestic_stories: List[BriefingStory] = Field(
+        default_factory=list,
+        description="Curated Domestic India macro/policy stories",
+    )
     india_stories: List[BriefingStory] = Field(
         default_factory=list,
         description="Curated India business stories",
@@ -138,9 +142,10 @@ class Briefing(BaseModel):
     def sync_total_count(cls, data: dict) -> dict:
         """Compute total stories count automatically before validation."""
         if isinstance(data, dict):
+            domestic = data.get("domestic_stories") or []
             india = data.get("india_stories") or []
             intl = data.get("international_stories") or []
-            data["total_stories_count"] = len(india) + len(intl)
+            data["total_stories_count"] = len(domestic) + len(india) + len(intl)
         return data
 
     @property

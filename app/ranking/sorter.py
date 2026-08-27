@@ -41,6 +41,7 @@ class CandidatePoolRanker:
         """
         logger.info("Ranking %d verified events into candidate pools (top %d per section)...", len(events), top_n)
 
+        domestic_scored: List[ScoredEvent] = []
         india_scored: List[ScoredEvent] = []
         intl_scored: List[ScoredEvent] = []
 
@@ -53,9 +54,11 @@ class CandidatePoolRanker:
                 is_multi_source_verified=source_count >= 2,
             )
 
-            # Separate into India and International
+            # Separate into Domestic, India, and International
             cat = event.event_category
-            if cat == NewsCategory.INDIA:
+            if cat == NewsCategory.DOMESTIC:
+                domestic_scored.append(scored)
+            elif cat == NewsCategory.INDIA:
                 india_scored.append(scored)
             else:
                 intl_scored.append(scored)
@@ -68,21 +71,27 @@ class CandidatePoolRanker:
             return (is_two_source, s.investment_score)
 
         # Sort descending: two-source verified first, then by investment_score
+        domestic_sorted = sorted(domestic_scored, key=_ranking_key, reverse=True)
         india_sorted = sorted(india_scored, key=_ranking_key, reverse=True)
         intl_sorted = sorted(intl_scored, key=_ranking_key, reverse=True)
 
         # Assign ranks
+        for idx, scored in enumerate(domestic_sorted, 1):
+            scored.rank = idx
         for idx, scored in enumerate(india_sorted, 1):
             scored.rank = idx
         for idx, scored in enumerate(intl_sorted, 1):
             scored.rank = idx
 
         # Select top 8–10 candidates for each section (without selecting final 5 yet)
+        top_domestic = domestic_sorted[:top_n]
         top_india = india_sorted[:top_n]
         top_intl = intl_sorted[:top_n]
 
         logger.info(
-            "Ranking complete: Kept top %d India candidates (out of %d) and top %d International candidates (out of %d)",
+            "Ranking complete: Kept top %d Domestic (out of %d), top %d India (out of %d), and top %d International (out of %d)",
+            len(top_domestic),
+            len(domestic_scored),
             len(top_india),
             len(india_scored),
             len(top_intl),
@@ -90,6 +99,7 @@ class CandidatePoolRanker:
         )
 
         return RankedCandidatePool(
+            domestic_candidates=top_domestic,
             india_candidates=top_india,
             international_candidates=top_intl,
             total_evaluated=len(events),

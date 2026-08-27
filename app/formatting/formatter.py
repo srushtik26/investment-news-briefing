@@ -88,11 +88,18 @@ class FormattedBriefing:
         briefing_date: date,
         india_count: int,
         international_count: int,
+        domestic_count: int = 0,
     ) -> None:
         self.text: str = text
         self.briefing_date: date = briefing_date
+        self.domestic_count: int = domestic_count
         self.india_count: int = india_count
         self.international_count: int = international_count
+        self.story_count: int = domestic_count + india_count + international_count
+
+    @property
+    def total_count(self) -> int:
+        return self.domestic_count + self.india_count + self.international_count
 
     def __str__(self) -> str:  # pragma: no cover
         return self.text
@@ -138,16 +145,21 @@ class BriefingFormatter:
         Raises
         ------
         ValueError
-            If story counts are outside the required 5/5 range.
+            If story counts are outside the required 5/5/5 range.
         MalformedHeadlineError
             If any headline contains structural markdown artefacts.
         """
         if briefing_date is None:
             briefing_date = datetime.now(tz=timezone.utc).date()
 
+        domestic_stories = list(getattr(payload, "domestic_stories", []) or [])
         india_stories = list(payload.india_stories)
         intl_stories = list(payload.international_stories)
 
+        if domestic_stories and len(domestic_stories) != 5:
+            raise ValueError(
+                f"Formatter requires exactly 5 Domestic stories; received {len(domestic_stories)}."
+            )
         if len(india_stories) != 5:
             raise ValueError(
                 f"Formatter requires exactly 5 India stories; received {len(india_stories)}."
@@ -163,6 +175,13 @@ class BriefingFormatter:
         lines.append("*INVESTMENT COMMITTEE BRIEFING*")
         lines.append(f"*{self._format_date(briefing_date)}*")
         lines.append("")
+
+        # ── Domestic section (if present) ───────────────────────────────────
+        if domestic_stories:
+            lines.append("*TOP 5 DOMESTIC HEADLINES*")
+            lines.append("")
+            for story in domestic_stories:
+                lines.extend(self._render_story(story))
 
         # ── India section ───────────────────────────────────────────────────
         lines.append("*TOP 5 INDIA BUSINESS HEADLINES*")
@@ -180,7 +199,8 @@ class BriefingFormatter:
         text = "\n".join(line.rstrip() for line in lines).rstrip()
 
         logger.info(
-            "Briefing formatted: %d India + %d International stories for %s.",
+            "Briefing formatted: %d Domestic + %d India + %d International stories for %s.",
+            len(domestic_stories),
             len(india_stories),
             len(intl_stories),
             briefing_date.isoformat(),
@@ -189,6 +209,7 @@ class BriefingFormatter:
         return FormattedBriefing(
             text=text,
             briefing_date=briefing_date,
+            domestic_count=len(domestic_stories),
             india_count=len(india_stories),
             international_count=len(intl_stories),
         )

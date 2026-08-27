@@ -45,8 +45,10 @@ class EditorialStorySelection(BaseModel):
     @field_validator("section")
     @classmethod
     def normalize_section(cls, v: str) -> str:
-        """Ensure section is lowercase 'india' or 'international'."""
+        """Ensure section is lowercase 'domestic', 'india' or 'international'."""
         cleaned = v.strip().lower()
+        if "domestic" in cleaned:
+            return "domestic"
         if "india" in cleaned:
             return "india"
         if "intl" in cleaned or "international" in cleaned:
@@ -70,7 +72,7 @@ class EditorialStorySelection(BaseModel):
 
 class BriefingEditorialPayload(BaseModel):
     """
-    Complete editorial selection covering both India and International sections.
+    Complete editorial selection covering Domestic India, India Business, and International sections.
     """
 
     model_config = ConfigDict(
@@ -79,6 +81,10 @@ class BriefingEditorialPayload(BaseModel):
         extra="allow",
     )
 
+    domestic_stories: List[EditorialStorySelection] = Field(
+        default_factory=list,
+        description="Final selected Domestic India macro/policy stories (target: 5)",
+    )
     india_stories: List[EditorialStorySelection] = Field(
         default_factory=list,
         description="Final selected India business stories (target: 5)",

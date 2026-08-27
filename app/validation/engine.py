@@ -69,6 +69,7 @@ class FinalValidationEngine:
         target_date: Optional[date] = None,
         strict_5_per_section: bool = True,
         quality_ladder_mode: bool = False,
+        run_reference_time: Optional[datetime] = None,
     ) -> BriefingValidationReport:
         """
         Execute all 20 gatekeeping checks deterministically.
@@ -80,19 +81,36 @@ class FinalValidationEngine:
             candidate_urls: Set of all verified candidate URLs passed into the editorial pipeline.
             target_date: Target briefing generation date.
             strict_5_per_section: If True, requires exactly 5 India and 5 International stories.
+            run_reference_time: Immutable UTC timestamp captured at pipeline start.
+                                Used for ALL freshness checks to prevent clock-drift between stages.
 
         Returns:
             BriefingValidationReport with status PASSED or FAILED.
         """
         logger.info("Executing 20-check deterministic final validation on briefing payload...")
         check_results: List[ValidationCheckResult] = []
-        all_stories = payload.india_stories + payload.international_stories
+        all_stories = (getattr(payload, "domestic_stories", []) or []) + payload.india_stories + payload.international_stories
         eval_date = target_date or date.today()
 
         # Build Candidate URL whitelist
         allowed_urls = candidate_urls or set()
         if not allowed_urls:
             allowed_urls = {art.url for art in articles_lookup.values()}
+
+        # -------------------------------------------------------------
+        # CHECK 0 / DOMESTIC: Exactly 5 Domestic stories (when present/strict)
+        # -------------------------------------------------------------
+        domestic_stories = getattr(payload, "domestic_stories", []) or []
+        domestic_count = len(domestic_stories)
+        if strict_5_per_section and domestic_stories:
+            if domestic_count != 5:
+                res = ValidationCheckResult(
+                    check_id=1,
+                    check_name="Exactly 5 Domestic stories",
+                    passed=False,
+                    failure_reason=f"Expected exactly 5 Domestic stories, found {domestic_count}",
+                )
+                check_results.append(res)
 
         # -------------------------------------------------------------
         # CHECK 1: Exactly 5 India stories
@@ -133,6 +151,20 @@ class FinalValidationEngine:
                 failure_reason=None if intl_count > 0 else "International section is empty",
             )
         check_results.append(res)
+
+        # -------------------------------------------------------------
+        # EVENT DEDUPLICATION: No event appears multiple times
+        # -------------------------------------------------------------
+        all_event_ids = [s.event_id for s in all_stories]
+        if len(all_event_ids) != len(set(all_event_ids)):
+            from collections import Counter
+            dups = [eid for eid, count in Counter(all_event_ids).items() if count > 1]
+            check_results.append(ValidationCheckResult(
+                check_id=10,
+                check_name="No duplicate events selected",
+                passed=False,
+                failure_reason=f"Duplicate event IDs selected: {dups}",
+            ))
 
         # Helper to run story-level checks
         for story in all_stories:
@@ -215,7 +247,13 @@ class FinalValidationEngine:
             event_horizon = 24.0
             if quality_ladder_mode and event and getattr(event, "metadata", None):
                 event_horizon = float(event.metadata.get("fallback_horizon_hours", 24.0))
-            if primary_art and not self.date_rule.evaluate(primary_art, max_age_hours=event_horizon).is_accepted:
+            # Use the immutable run_reference_time if provided to prevent clock-drift.
+            # This ensures a 36h article that was valid at pipeline start is not
+            # retroactively rejected by a later datetime.now() call.
+            freshness_now_utc = run_reference_time  # may be None → date_rule uses datetime.now()
+            if primary_art and not self.date_rule.evaluate(
+                primary_art, now_utc=freshness_now_utc, max_age_hours=event_horizon
+            ).is_accepted:
                 check_results.append(ValidationCheckResult(
                     check_id=7,
                     check_name="Article is within allowed date window",
@@ -225,30 +263,43 @@ class FinalValidationEngine:
                 ))
 
             # -------------------------------------------------------------
-            # CHECK 8: Two-source verified or high-confidence single-source
+            # CHECK 8: Two-source verified or high-confidence single-source (or domestic trending)
             # -------------------------------------------------------------
             if event:
                 from app.models.enums import VerificationTier
-                from app.verification.single_source import SingleSourceEvaluator
-                is_two_source = (event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED)
-                if not is_two_source:
-                    evaluator = SingleSourceEvaluator()
-                    if primary_art and quality_ladder_mode and event_horizon > 24 and primary_art.published_at:
-                        pub_time = primary_art.published_at
-                        if pub_time.tzinfo is None:
-                            pub_time = pub_time.replace(tzinfo=timezone.utc)
-                        eval_now = pub_time + timedelta(hours=23, minutes=59, seconds=59)
-                        is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art, now_utc=eval_now)
-                    else:
-                        is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art) if primary_art else (False, 0.0, "Missing primary article")
-                    if not is_eligible or event.verification_tier != VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
+                if story.section == "domestic" or event.event_category == NewsCategory.DOMESTIC:
+                    from app.verification.domestic_trending import DomesticTrendingEvaluator
+                    dom_eval = DomesticTrendingEvaluator()
+                    is_eligible, conf, reason = dom_eval.evaluate(event, primary_art)
+                    if not is_eligible:
                         check_results.append(ValidationCheckResult(
                             check_id=8,
                             check_name="At least two independent sources or high-confidence single source",
                             passed=False,
-                            failure_reason=f"Event '{event.canonical_title}' lacks TWO_SOURCE_VERIFIED tier and fails high-confidence single criteria: {reason}",
+                            failure_reason=f"Domestic event '{event.canonical_title}' failed domestic quality/trending criteria: {reason}",
                             failed_story_id=story.event_id,
                         ))
+                else:
+                    from app.verification.single_source import SingleSourceEvaluator
+                    is_two_source = (event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED)
+                    if not is_two_source:
+                        evaluator = SingleSourceEvaluator()
+                        if primary_art and quality_ladder_mode and event_horizon > 24 and primary_art.published_at:
+                            pub_time = primary_art.published_at
+                            if pub_time.tzinfo is None:
+                                pub_time = pub_time.replace(tzinfo=timezone.utc)
+                            eval_now = pub_time + timedelta(hours=23, minutes=59, seconds=59)
+                            is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art, now_utc=eval_now)
+                        else:
+                            is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art) if primary_art else (False, 0.0, "Missing primary article")
+                        if not is_eligible or event.verification_tier != VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
+                            check_results.append(ValidationCheckResult(
+                                check_id=8,
+                                check_name="At least two independent sources or high-confidence single source",
+                                passed=False,
+                                failure_reason=f"Event '{event.canonical_title}' lacks TWO_SOURCE_VERIFIED tier and fails high-confidence single criteria: {reason}",
+                                failed_story_id=story.event_id,
+                            ))
 
             # -------------------------------------------------------------
             # CHECK 9: No event appeared in previous 3 days
@@ -313,33 +364,46 @@ class FinalValidationEngine:
             # CHECKS 14 to 18: Noise & Filter Rules
             # -------------------------------------------------------------
             if primary_art:
-                filter_res = self.story_type_rule.evaluate(primary_art)
-                if not filter_res.is_accepted:
-                    reason = filter_res.rejection_reason or "Prohibited story type"
-                    check_id = 14
-                    if "analyst" in reason:
+                if story.section == "domestic":
+                    from app.verification.domestic_trending import DomesticTrendingEvaluator
+                    dom_eval = DomesticTrendingEvaluator()
+                    is_noise, noise_rsn = dom_eval.is_domestic_noise(primary_art.title, primary_art.content_text)
+                    if is_noise:
+                        check_results.append(ValidationCheckResult(
+                            check_id=14,
+                            check_name="Prohibited story pattern: DOMESTIC_NOISE",
+                            passed=False,
+                            failure_reason=noise_rsn or "Prohibited domestic noise story",
+                            failed_story_id=story.event_id,
+                        ))
+                else:
+                    filter_res = self.story_type_rule.evaluate(primary_art)
+                    if not filter_res.is_accepted:
+                        reason = filter_res.rejection_reason or "Prohibited story type"
                         check_id = 14
-                    elif "market" in reason:
-                        check_id = 15
-                    elif "ipo" in reason:
-                        check_id = 16
-                    elif "calendar" in reason:
-                        check_id = 17
-                    elif "upcoming" in reason or "opinion" in reason:
-                        check_id = 18
+                        if "analyst" in reason:
+                            check_id = 14
+                        elif "market" in reason:
+                            check_id = 15
+                        elif "ipo" in reason:
+                            check_id = 16
+                        elif "calendar" in reason:
+                            check_id = 17
+                        elif "upcoming" in reason or "opinion" in reason:
+                            check_id = 18
 
-                    check_results.append(ValidationCheckResult(
-                        check_id=check_id,
-                        check_name=f"Prohibited story pattern: {filter_res.rule_failed or 'STORY_TYPE'}",
-                        passed=False,
-                        failure_reason=reason,
-                        failed_story_id=story.event_id,
-                    ))
+                        check_results.append(ValidationCheckResult(
+                            check_id=check_id,
+                            check_name=f"Prohibited story pattern: {filter_res.rule_failed or 'STORY_TYPE'}",
+                            passed=False,
+                            failure_reason=reason,
+                            failed_story_id=story.event_id,
+                        ))
 
             # -------------------------------------------------------------
             # CHECK 19: Geopolitical story quantified impact
             # -------------------------------------------------------------
-            if any(geo in story.headline.lower() for geo in ("war", "sanctions", "geopolitical", "tariffs", "ceasefire")):
+            if story.section != "domestic" and any(geo in story.headline.lower() for geo in ("war", "sanctions", "geopolitical", "tariffs", "ceasefire")):
                 has_numbers = any(c.isdigit() for c in story.headline)
                 if not has_numbers:
                     check_results.append(ValidationCheckResult(

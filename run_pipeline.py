@@ -34,7 +34,7 @@ from app.logging_config import setup_logging, get_logger
 from app.models import Article, Event, NewsCategory
 from app.discovery import NewsDiscoveryService, GoogleNewsRSSDiscoveryProvider
 from app.extraction import ArticleExtractor
-from app.filtering import HardFilterEngine
+from app.filtering.engine import HardFilterEngine, DomesticHardFilterEngine
 from app.classification import AIArticleClassifier, GeminiRateLimitError
 from app.verification import (
     TwoSourceVerifier,
@@ -57,11 +57,19 @@ from app.filtering.rules import URLFilterRule
 from app.models.entity_sanitizer import sanitize_company_entities
 from app.ranking import CandidatePoolRanker, ArticlePreRanker, calculate_corroboration_priority
 from app.ranking.scorer import InvestmentRelevanceScorer
-from app.ai import GeminiEditorialEngine, BriefingEditorialPayload, GeminiUsageLogger, RATE_LIMITED_PREFIX, EditorialResult
+from app.ai import (
+    GeminiEditorialEngine,
+    BriefingEditorialPayload,
+    GeminiUsageLogger,
+    RATE_LIMITED_PREFIX,
+    EditorialResult,
+    EditorialStorySelection,
+)
 from app.validation import FinalValidationEngine, ValidationStatus
 from app.formatting.formatter import BriefingFormatter
 from app.classification.region_classifier import EventRegionClassifier
 from app.models.enums import VerificationTier
+from app.verification.domestic_trending import DomesticTrendingEvaluator
 from app.verification.single_source import SingleSourceEvaluator, is_multi_event_roundup
 from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
 
@@ -137,15 +145,22 @@ def get_quality_level(
     scored_events: List[Any],
     two_source_count: int,
     articles_lookup: Dict[str, Article],
+    now_utc: Optional[datetime] = None,
 ) -> str:
-    """Return the strongest quality level represented by a selected section."""
+    """Return the strongest quality level represented by a selected section.
+
+    Args:
+        now_utc: Immutable reference time from pipeline start. When provided, all
+                 age comparisons use this timestamp to prevent clock-drift between
+                 stages (e.g. a 36h story evaluated slightly later becoming 36.5h).
+    """
     if len(scored_events) < 5:
         return "DATA_UNAVAILABLE"
     ages = []
     for scored in scored_events:
         event = scored.event
         article = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
-        age = get_article_age_hours(article) if article else None
+        age = get_article_age_hours(article, now_utc=now_utc) if article else None
         ages.append(age if age is not None else 999.0)
     oldest = max(ages, default=0.0)
     if oldest > 72.0:
@@ -391,13 +406,23 @@ def _extract_candidates(
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(max_india: Optional[int] = None, max_international: Optional[int] = None) -> int:
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def run_pipeline(
+    max_india: Optional[int] = None,
+    max_international: Optional[int] = None,
+    max_domestic: Optional[int] = None,
+) -> int:
     setup_logging()
     settings = get_settings()
     if max_india is None:
         max_india = settings.MAX_DISCOVERY_INDIA
     if max_international is None:
         max_international = settings.MAX_DISCOVERY_INTL
+    if max_domestic is None:
+        max_domestic = getattr(settings, "MAX_DISCOVERY_DOMESTIC", 40)
 
     data_dir = Path("./data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -412,8 +437,13 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         logger.info(msg)
 
     log_exec("=====================================================================")
-    log_exec(f"STARTING END-TO-END PIPELINE RUN (India: {max_india}, Intl: {max_international})")
+    log_exec(f"STARTING END-TO-END PIPELINE RUN (Domestic: {max_domestic}, India: {max_india}, Intl: {max_international})")
     log_exec("=====================================================================")
+
+    # Immutable reference clock: captured ONCE at pipeline entry and used for ALL
+    # business-rule freshness evaluations to prevent clock-drift between stages.
+    run_reference_time: datetime = datetime.now(timezone.utc)
+    log_exec(f"Run reference time (UTC): {run_reference_time.isoformat()}")
 
     GeminiUsageLogger.reset()
     reset_corroboration_counter()
@@ -425,6 +455,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     discovery_service = NewsDiscoveryService(provider=GoogleNewsRSSDiscoveryProvider())
     extractor = ArticleExtractor()
     reg_clf = EventRegionClassifier()
+    domestic_evaluator = DomesticTrendingEvaluator()
 
     # =========================================================================
     # STAGE 1 + 2: Discovery Reserve Pool & Extraction
@@ -441,26 +472,34 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     expansion_new_candidates = 0
     internal_pipeline_errors = 0
 
-    log_exec(f"Fetching discovery reserve pools (up to {max_india} India, {max_international} International)...")
-    initial_discovery = discovery_service.discover_all(max_india=max_india, max_international=max_international)
-    india_reserve_pool = initial_discovery.get("india", [])
-    intl_reserve_pool  = initial_discovery.get("international", [])
+    log_exec(f"Fetching discovery reserve pools (up to {max_domestic} Domestic, {max_india} India, {max_international} International)...")
+    initial_discovery = discovery_service.discover_all(
+        max_india=max_india,
+        max_international=max_international,
+        max_domestic=max_domestic,
+    )
+    domestic_reserve_pool = initial_discovery.get("domestic", [])
+    india_reserve_pool    = initial_discovery.get("india", [])
+    intl_reserve_pool     = initial_discovery.get("international", [])
 
-    discovered_total = len(india_reserve_pool) + len(intl_reserve_pool)
-    log_exec(f"Discovery Reserve Pool loaded: {len(india_reserve_pool)} India + {len(intl_reserve_pool)} International (Total: {discovered_total})")
+    discovered_total = len(domestic_reserve_pool) + len(india_reserve_pool) + len(intl_reserve_pool)
+    log_exec(f"Discovery Reserve Pool loaded: {len(domestic_reserve_pool)} Domestic + {len(india_reserve_pool)} India Business + {len(intl_reserve_pool)} International (Total: {discovered_total})")
 
     # Pass 1: Extract top candidates from reserve pool (e.g. up to 20 each)
-    initial_india = min(len(india_reserve_pool), DISCOVERY_STEPS[0])
-    initial_intl  = min(len(intl_reserve_pool), DISCOVERY_STEPS[0])
+    initial_dom      = min(len(domestic_reserve_pool), DISCOVERY_STEPS[0])
+    initial_india    = min(len(india_reserve_pool), DISCOVERY_STEPS[0])
+    initial_intl     = min(len(intl_reserve_pool), DISCOVERY_STEPS[0])
 
     pass1_candidates = (
+        [(c, "domestic") for c in domestic_reserve_pool[:initial_dom]] +
         [(c, "india") for c in india_reserve_pool[:initial_india]] +
         [(c, "international") for c in intl_reserve_pool[:initial_intl]]
     )
-    processed_india = initial_india
-    processed_intl  = initial_intl
+    processed_dom      = initial_dom
+    processed_india    = initial_india
+    processed_intl     = initial_intl
 
-    log_exec(f"[Pass 1] Processing {initial_india} India + {initial_intl} International candidates from reserve...")
+    log_exec(f"[Pass 1] Processing {initial_dom} Domestic + {initial_india} India + {initial_intl} International candidates from reserve...")
     batch_arts, batch_recs, gc, ro, fo, pur, dup = _extract_candidates(
         pass1_candidates, extractor, seen_urls, log_exec
     )
@@ -469,20 +508,33 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     total_google += gc; total_resolved += ro; total_fallback += fo; total_pre_url_rejects += pur
     duplicate_seen_candidates += dup
     processed_pass1 = len(batch_arts)
-    reserve_remaining = (len(india_reserve_pool) - processed_india) + (len(intl_reserve_pool) - processed_intl)
+    reserve_remaining = (
+        (len(domestic_reserve_pool) - processed_dom) +
+        (len(india_reserve_pool) - processed_india) +
+        (len(intl_reserve_pool) - processed_intl)
+    )
 
     log_exec(f"Pass 1 extracted: {len(batch_arts)} articles (Reserve remaining: {reserve_remaining})")
-
-    log_exec(f"Pass 1: {len(batch_arts)} articles extracted from {initial_india + initial_intl} candidates.")
+    log_exec(f"Pass 1: {len(batch_arts)} articles extracted from {initial_dom + initial_india + initial_intl} candidates.")
 
     # =========================================================================
     # STAGE 3: Hard Filtering
     # =========================================================================
     log_exec("=" * 60)
-    log_exec("STAGE 3: Filtering — hard business event deterministic filter engine")
+    log_exec("STAGE 3: Filtering — deterministic filter engine (Domestic + Business)")
     log_exec("=" * 60)
-    filter_engine = HardFilterEngine()
-    accepted_articles, rejections = filter_engine.filter_candidates(all_extracted)
+    business_filter_engine = HardFilterEngine()
+    domestic_filter_engine = DomesticHardFilterEngine()
+
+    domestic_raw = [a for a in all_extracted if a.category == NewsCategory.DOMESTIC]
+    business_raw = [a for a in all_extracted if a.category != NewsCategory.DOMESTIC]
+
+    dom_accepted, dom_rejections = domestic_filter_engine.filter_candidates(domestic_raw)
+    biz_accepted, biz_rejections = business_filter_engine.filter_candidates(business_raw)
+
+    accepted_articles = dom_accepted + biz_accepted
+    rejections = dom_rejections + biz_rejections
+
     date_deferred_urls = {
         rejection.article_url
         for rejection in rejections
@@ -493,11 +545,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if article.url in date_deferred_urls and article.published_at and getattr(article, "date_verified", True)
     ]
 
-    india_accepted   = [a for a in accepted_articles if a.category == NewsCategory.INDIA]
-    intl_accepted    = [a for a in accepted_articles if a.category == NewsCategory.INTERNATIONAL]
+    dom_accepted_list = [a for a in accepted_articles if a.category == NewsCategory.DOMESTIC]
+    india_accepted    = [a for a in accepted_articles if a.category == NewsCategory.INDIA]
+    intl_accepted     = [a for a in accepted_articles if a.category == NewsCategory.INTERNATIONAL]
 
     log_exec(f"Stage 3 Summary:")
-    log_exec(f"  Accepted:  {len(accepted_articles)} ({len(india_accepted)} India, {len(intl_accepted)} Intl)")
+    log_exec(f"  Accepted:  {len(accepted_articles)} ({len(dom_accepted_list)} Domestic, {len(india_accepted)} India, {len(intl_accepted)} Intl)")
     log_exec(f"  Rejected:  {len(rejections)}")
 
     # Log per-rejection detail
@@ -557,7 +610,9 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
         if res and res.success and res.classification:
             c = res.classification
-            if c.is_hard_business_event and c.is_investment_relevant:
+            # Domestic articles do not require corporate hard event; business articles do
+            is_dom_candidate = (art.category == NewsCategory.DOMESTIC)
+            if is_dom_candidate or (c.is_hard_business_event and c.is_investment_relevant):
                 classified_articles.append((art, c))
                 mode_str = "Live Gemini" if res.attempts > 0 else "Offline Heuristic"
                 log_exec(f"  -> ACCEPTED ({mode_str}): {c.event_type.value} | Companies: {c.company_names}")
@@ -576,8 +631,9 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         except Exception as exc:
             log_exec(f"  -> FALLBACK CLASSIFICATION FAILED: {exc}")
             continue
-        if res and res.success and res.classification and res.classification.is_hard_business_event and res.classification.is_investment_relevant:
-            fallback_classified_articles.append((art, res.classification))
+        if res and res.success and res.classification:
+            if art.category == NewsCategory.DOMESTIC or (res.classification.is_hard_business_event and res.classification.is_investment_relevant):
+                fallback_classified_articles.append((art, res.classification))
     log_exec(f"  Date-deferred fallback candidates: {len(fallback_classified_articles)}")
 
     log_exec(f"Stage 4 Summary:")
@@ -586,10 +642,10 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     log_exec(f"  Offline heuristic: {offline_class_count}")
 
     # =========================================================================
-    # STAGE 5: Two-Source Verification + Active Corroboration
+    # STAGE 5: Verification — Two-Source + Quality Evaluator (Domestic + Business)
     # =========================================================================
     log_exec("=" * 60)
-    log_exec("STAGE 5: Verification — two-source check + active corroboration")
+    log_exec("STAGE 5: Verification — two-source check + active corroboration + quality single")
     log_exec("=" * 60)
     clusterer = EventClusterer()
 
@@ -649,7 +705,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
     for event in raw_events:
         event_articles = [articles_lookup[aid] for aid in event.article_ids if aid in articles_lookup]
-        verif_res = verifier.verify_event(event, event_articles)
+        verif_res = verifier.verify_event(event, event_articles, now_utc=run_reference_time)
 
         if verif_res.is_verified:
             verified_events.append(event)
@@ -670,7 +726,11 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     })
                     continue
 
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
+                if event.event_category == NewsCategory.DOMESTIC:
+                    is_elig, conf, rsn = domestic_evaluator.evaluate(event, primary_art)
+                else:
+                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, primary_art)
+
                 if is_elig:
                     event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
                     event.verification_confidence = conf
@@ -679,14 +739,14 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     event.primary_url = primary_art.url
                     event.verification_reason = rsn
                     high_confidence_single_candidates.append(event)
-                    log_exec(f"  -> QUALIFIED QUALITY_VERIFIED SINGLE SOURCE: {event.canonical_title[:45]} | {rsn}")
+                    log_exec(f"  -> QUALIFIED QUALITY_VERIFIED SINGLE SOURCE [{event.event_category.value.upper()}]: {event.canonical_title[:45]} | {rsn}")
                 else:
                     rejected_events_list.append({
                         "event_title": event.canonical_title,
                         "sources": [primary_art.source_name],
-                        "reason": f"Single-source reject: {rsn}",
+                        "reason": f"Quality reject: {rsn}",
                     })
-                    log_exec(f"  -> REJECTED: {event.canonical_title} — {rsn}")
+                    log_exec(f"  -> REJECTED [{event.event_category.value.upper()}]: {event.canonical_title} — {rsn}")
             else:
                 rejected_events_list.append({
                     "event_title": event.canonical_title,
@@ -707,7 +767,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         json.dump(rejected_events_list, f, indent=2, default=str)
 
     # =========================================================================
-    # DISCOVERY EXPANSION (if insufficient quality events)
+    # DISCOVERY EXPANSION (if insufficient quality events in any section)
     # =========================================================================
     for e in verified_events:
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
@@ -715,6 +775,24 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     for e in high_confidence_single_candidates:
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
         e.event_category = reg_clf.classify_event(e, e_arts)
+
+    def get_unique_candidate_events() -> List[Event]:
+        """Return distinct canonical events preserving verification tier precedence."""
+        seen_ids: Set[str] = set()
+        unique: List[Event] = []
+        for ev in verified_events:
+            if ev.id not in seen_ids:
+                seen_ids.add(ev.id)
+                unique.append(ev)
+        for ev in high_confidence_single_candidates:
+            if ev.id not in seen_ids:
+                seen_ids.add(ev.id)
+                unique.append(ev)
+        return unique
+
+    def count_unique_section_events(category: NewsCategory) -> int:
+        """Count unique eligible events belonging to a section category."""
+        return sum(1 for e in get_unique_candidate_events() if e.event_category == category)
 
     def process_candidate_item(cand: Any, cand_section: str) -> Optional[Event]:
         nonlocal organic_second_sources_found
@@ -743,7 +821,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 url=cand.url,
                 source_name=canonical_source,
                 candidate_title=cand.title,
-                candidate_category="India" if cand_section == "india" else "International",
+                candidate_category=cand_section.title(),
                 candidate_pub_date=rss_pub,
             )
             rec = {
@@ -770,15 +848,24 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         all_extracted.append(art)
         articles_lookup[art.id] = art
 
-        filt_res = filter_engine.filter_article(art)
+        if cand_section == "domestic":
+            filt_res = domestic_filter_engine.filter_article(art)
+        else:
+            filt_res = business_filter_engine.filter_article(art)
+
         if not filt_res.is_accepted:
             return None
 
         class_res = classifier.classify(art)
-        if not class_res.success or not class_res.classification or not class_res.classification.is_hard_business_event:
+        if not class_res.success or not class_res.classification:
             return None
 
-        art_event_cat = NewsCategory.INDIA if cand_section == "india" else NewsCategory.INTERNATIONAL
+        if cand_section != "domestic" and not class_res.classification.is_hard_business_event:
+            return None
+
+        art_event_cat = NewsCategory.DOMESTIC if cand_section == "domestic" else (
+            NewsCategory.INDIA if cand_section == "india" else NewsCategory.INTERNATIONAL
+        )
         classified_companies = populate_event_companies(
             art,
             class_res.classification.company_names,
@@ -797,7 +884,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         existing_event = next(
             (e for e in single_source_events if e.article_ids and
              verifier.is_same_underlying_event(
-                 articles_lookup.get(e.article_ids[0], art), art
+                 articles_lookup.get(e.article_ids[0], art), art, now_utc=run_reference_time
               )[0]),
             None
         )
@@ -805,18 +892,25 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             if art.id not in existing_event.article_ids:
                 existing_event.article_ids.append(art.id)
                 ev_arts = [articles_lookup[i] for i in existing_event.article_ids if i in articles_lookup]
-                rv = verifier.verify_event(existing_event, ev_arts)
-                if rv.is_verified and existing_event not in verified_events:
+                rv = verifier.verify_event(existing_event, ev_arts, now_utc=run_reference_time)
+                if rv.is_verified:
                     existing_event.event_category = reg_clf.classify_event(existing_event, ev_arts)
-                    verified_events.append(existing_event)
-                    organic_second_sources_found += 1
-                    log_exec(f"    EXPANSION ORGANICALLY VERIFIED: {existing_event.canonical_title[:45]}")
+                    if existing_event not in verified_events:
+                        verified_events.append(existing_event)
+                        organic_second_sources_found += 1
+                        log_exec(f"    EXPANSION ORGANICALLY VERIFIED: {existing_event.canonical_title[:45]}")
+                    if existing_event in high_confidence_single_candidates:
+                        high_confidence_single_candidates.remove(existing_event)
             return existing_event
         else:
             single_source_events.append(event)
             event.event_category = reg_clf.classify_event(event, [art])
             if not is_multi_event_roundup(event.canonical_title):
-                is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
+                if event.event_category == NewsCategory.DOMESTIC:
+                    is_elig, conf, rsn = domestic_evaluator.evaluate(event, art)
+                else:
+                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
+
                 if is_elig:
                     event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
                     event.verification_confidence = conf
@@ -824,9 +918,9 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     event.primary_publisher = art.source_name
                     event.primary_url = art.url
                     event.verification_reason = rsn
-                    if event not in high_confidence_single_candidates:
+                    if event not in high_confidence_single_candidates and event not in verified_events:
                         high_confidence_single_candidates.append(event)
-                        prefix = "[INTL_RESCUE_QUALIFIED]" if event.event_category == NewsCategory.INTERNATIONAL else "[INDIA_RESCUE_QUALIFIED]"
+                        prefix = f"[{event.event_category.value.upper()}_QUALIFIED]"
                         log_exec(f"    {prefix} {event.canonical_title[:55]} | {rsn}")
             return event
 
@@ -843,41 +937,52 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
             e.event_category = reg_clf.classify_event(e, e_arts)
 
-        india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-        intl_qual_events  = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
+        dom_unique_count   = count_unique_section_events(NewsCategory.DOMESTIC)
+        india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+        intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
+        total_unique       = len(get_unique_candidate_events())
         
-        # Freezing India completely if quality >= 5
-        india_frozen = (len(india_qual_events) >= 5)
-        intl_target_met = (len(intl_qual_events) >= 8)
+        # Independent section freezing
+        dom_frozen      = (dom_unique_count >= 5)
+        india_frozen    = (india_unique_count >= 5)
+        intl_target_met = (intl_unique_count >= 5)
 
-        if india_frozen and intl_target_met:
+        if dom_frozen and india_frozen and intl_target_met and total_unique >= 15:
             log_exec(
-                f"Quality candidate targets satisfied: "
-                f"India={len(india_qual_events)}/5 quality candidates (FROZEN); "
-                f"Intl={len(intl_qual_events)}/8 quality candidates."
+                f"[EXPANSION_COMPLETE] Quality candidate targets satisfied: "
+                f"Domestic={dom_unique_count}/5 (FROZEN); "
+                f"India={india_unique_count}/5 (FROZEN); "
+                f"Intl={intl_unique_count}/5 (FROZEN) (Total unique: {total_unique})."
             )
             break
 
-        unseen_india = [c for c in india_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls] if not india_frozen else []
-        unseen_intl  = [c for c in intl_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
-        log_exec(f"RESERVE_STATE: India unseen={len(unseen_india)} (quality={len(india_qual_events)}/5 {'[FROZEN]' if india_frozen else ''}), Intl unseen={len(unseen_intl)} (quality={len(intl_qual_events)}/8)")
+        unseen_dom      = [c for c in domestic_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls] if not dom_frozen else []
+        unseen_india    = [c for c in india_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls] if not india_frozen else []
+        unseen_intl     = [c for c in intl_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
+        log_exec(f"RESERVE_STATE: Domestic unseen={len(unseen_dom)} ({dom_unique_count}/5 {'[FROZEN]' if dom_frozen else ''}), India unseen={len(unseen_india)} ({india_unique_count}/5 {'[FROZEN]' if india_frozen else ''}), Intl unseen={len(unseen_intl)} ({intl_unique_count}/5 {'[FROZEN]' if intl_target_met else ''})")
 
-        step_india = min(len(unseen_india), 15) if not india_frozen else 0
-        step_intl  = min(len(unseen_intl), 15) if not intl_target_met else 0
+        step_dom      = min(len(unseen_dom), 15) if not dom_frozen else 0
+        step_india    = min(len(unseen_india), 15) if not india_frozen else 0
+        step_intl     = min(len(unseen_intl), 15) if not intl_target_met else 0
 
         # Process reserve candidates immediately
+        if step_dom > 0:
+            for c in unseen_dom[:step_dom]:
+                process_candidate_item(c, "domestic")
+                if count_unique_section_events(NewsCategory.DOMESTIC) >= 5:
+                    log_exec(f"[DOMESTIC_TARGET_MET] Domestic unique quality stories reached {count_unique_section_events(NewsCategory.DOMESTIC)}/5 from reserve pool.")
+                    break
         if step_india > 0:
             for c in unseen_india[:step_india]:
                 process_candidate_item(c, "india")
-                current_in_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-                if len(current_in_qual) >= 5:
-                    log_exec(f"[INDIA_TARGET_MET] India quality stories reached {len(current_in_qual)}/5 from reserve pool.")
+                if count_unique_section_events(NewsCategory.INDIA) >= 5:
+                    log_exec(f"[INDIA_TARGET_MET] India unique quality stories reached {count_unique_section_events(NewsCategory.INDIA)}/5 from reserve pool.")
                     break
         if step_intl > 0:
             for c in unseen_intl[:step_intl]:
                 process_candidate_item(c, "international")
-                intl_qual_now = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-                if len(intl_qual_now) >= 8:
+                if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                    log_exec(f"[INTL_TARGET_MET] International unique quality stories reached {count_unique_section_events(NewsCategory.INTERNATIONAL)}/5 from reserve pool.")
                     break
 
         # Re-evaluate quality counts after reserve processing
@@ -887,14 +992,17 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         for e in high_confidence_single_candidates:
             e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
             e.event_category = reg_clf.classify_event(e, e_arts)
-        india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-        intl_qual_events  = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
+
+        dom_unique_count   = count_unique_section_events(NewsCategory.DOMESTIC)
+        india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+        intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
+        total_unique       = len(get_unique_candidate_events())
 
         # Final-mile RSS Discovery (only if International < 5 and RSS search budget remains)
-        if len(intl_qual_events) < 5:
+        if intl_unique_count < 5:
             rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rss_rem > 0:
-                log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={len(intl_qual_events)}/5)...")
+                log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={intl_unique_count}/5)...")
                 INTL_SOURCE_GROUPS = [
                     "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com)",
                     "(site:cnbc.com OR site:apnews.com OR site:bbc.com)",
@@ -940,19 +1048,18 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                             u = it.url.strip()
                             if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
                                 process_candidate_item(it, "international")
-                                current_intl_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-                                if len(current_intl_qual) >= 5:
-                                    log_exec(f"[INTL_RESCUE_TARGET_MET] International quality stories reached {len(current_intl_qual)}/5. Stopping RSS discovery.")
+                                if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                                    log_exec(f"[INTL_RESCUE_TARGET_MET] International unique stories reached {count_unique_section_events(NewsCategory.INTERNATIONAL)}/5. Stopping RSS discovery.")
                                     stop_rss_discovery = True
                                     break
                         if stop_rss_discovery:
                             break
 
         # Check India if India is still < 5 (only if not frozen)
-        if len(india_qual_events) < 5:
+        if india_unique_count < 5:
             rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rss_rem > 0:
-                log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (current={len(india_qual_events)}/5)...")
+                log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (current={india_unique_count}/5)...")
                 INDIA_SOURCE_GROUPS = [
                     "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com)",
                     "(site:businesstoday.in OR site:financialexpress.com OR site:thehindubusinessline.com)",
@@ -990,9 +1097,8 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                             u = it.url.strip()
                             if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
                                 process_candidate_item(it, "india")
-                                current_in_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-                                if len(current_in_qual) >= 5:
-                                    log_exec(f"[INDIA_TARGET_MET] India quality stories reached {len(current_in_qual)}/5. Stopping India discovery.")
+                                if count_unique_section_events(NewsCategory.INDIA) >= 5:
+                                    log_exec(f"[INDIA_TARGET_MET] India unique stories reached {count_unique_section_events(NewsCategory.INDIA)}/5. Stopping India discovery.")
                                     stop_india_discovery = True
                                     break
                         if stop_india_discovery:
@@ -1005,21 +1111,24 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         for e in high_confidence_single_candidates:
             e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
             e.event_category = reg_clf.classify_event(e, e_arts)
-        india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-        intl_qual_events  = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
+
+        dom_unique_count   = count_unique_section_events(NewsCategory.DOMESTIC)
+        india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+        intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
+        total_unique       = len(get_unique_candidate_events())
         
-        if len(india_qual_events) >= 5 and len(intl_qual_events) >= 5:
-            log_exec(f"[EXPANSION_COMPLETE] Both sections reached sufficiency: India={len(india_qual_events)}/5, Intl={len(intl_qual_events)}/5.")
+        if dom_unique_count >= 5 and india_unique_count >= 5 and intl_unique_count >= 5 and total_unique >= 15:
+            log_exec(f"[EXPANSION_COMPLETE] All 3 sections reached sufficiency: Domestic={dom_unique_count}/5, India={india_unique_count}/5, Intl={intl_unique_count}/5 (Total unique: {total_unique}).")
             break
 
         expansion_pass += 1
 
     # SerpAPI Secondary Discovery (Fix 8) — ONLY if International < 5 after RSS discovery
-    intl_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-    if len(intl_qual_events) < 5:
+    intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+    if intl_unique_count < 5:
         serp_key = getattr(get_settings(), "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
         if serp_key and serp_key.strip():
-            log_exec(f"[SERPAPI_INTL_DISCOVERY] International quality={len(intl_qual_events)}/5. Searching SerpAPI for NEW International events...")
+            log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5. Searching SerpAPI for NEW International events...")
             from app.verification.serpapi_corroborator import SerpAPICorroborator
             serp_corrob = SerpAPICorroborator(extractor=extractor, api_key=serp_key)
             SERP_DISCOVERY_QUERIES = [
@@ -1030,79 +1139,18 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                 "today corporate guidance",
             ]
             for sq in SERP_DISCOVERY_QUERIES:
-                current_intl_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-                if len(current_intl_qual) >= 5:
+                if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
                     log_exec(f"[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
                     break
                 try:
                     serp_items = serp_corrob.discover(sq)
                     for sit in serp_items:
                         process_candidate_item(sit, "international")
-                        current_intl_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-                        if len(current_intl_qual) >= 5:
+                        if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
                             log_exec(f"[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
                             break
                 except Exception as e:
                     log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
-
-    # Emergency Manual Seed Fallback — India & International
-    # 1. India Manual Seeds (submission_seed_india_urls.txt)
-    india_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-    if len(india_qual_events) < 5:
-        seed_in_path = Path("submission_seed_india_urls.txt")
-        if seed_in_path.exists():
-            log_exec(f"[MANUAL_SEED_DISCOVERY] India quality={len(india_qual_events)}/5. Reading emergency URLs from {seed_in_path}...")
-            try:
-                with open(seed_in_path, "r", encoding="utf-8") as f:
-                    seed_urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-                for s_url in seed_urls:
-                    current_in_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INDIA]
-                    if len(current_in_qual) >= 5:
-                        log_exec(f"[MANUAL_SEED_TARGET_MET] India reached 5/5 quality candidates via manual seeds.")
-                        break
-                    from app.discovery.models import DiscoveredArticle
-                    s_cand = DiscoveredArticle(
-                        title="",
-                        url=s_url,
-                        source="",
-                        country="India",
-                        search_query="manual_seed_india",
-                    )
-                    ev = process_candidate_item(s_cand, "india")
-                    if ev and (ev in high_confidence_single_candidates or ev in verified_events):
-                        log_exec(f"[MANUAL_SEED_QUALIFIED] {ev.canonical_title[:55]}")
-            except Exception as e:
-                log_exec(f"[MANUAL_SEED_ERROR] Failed to process India seed file: {e}")
-
-    # 2. International Manual Seeds (submission_seed_international_urls.txt or submission_seed_urls.txt)
-    intl_qual_events = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-    if len(intl_qual_events) < 5:
-        seed_intl_path = Path("submission_seed_international_urls.txt")
-        if not seed_intl_path.exists():
-            seed_intl_path = Path("submission_seed_urls.txt")
-        if seed_intl_path.exists():
-            log_exec(f"[MANUAL_SEED_DISCOVERY] International quality={len(intl_qual_events)}/5. Reading emergency URLs from {seed_intl_path}...")
-            try:
-                with open(seed_intl_path, "r", encoding="utf-8") as f:
-                    seed_urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-                for s_url in seed_urls:
-                    current_intl_qual = [e for e in verified_events + high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL]
-                    if len(current_intl_qual) >= 5:
-                        log_exec(f"[MANUAL_SEED_TARGET_MET] International reached 5/5 quality candidates via manual seeds.")
-                        break
-                    from app.discovery.models import DiscoveredArticle
-                    s_cand = DiscoveredArticle(
-                        title="",
-                        url=s_url,
-                        source="",
-                        country="US",
-                        search_query="manual_seed_intl",
-                    )
-                    ev = process_candidate_item(s_cand, "international")
-                    if ev and (ev in high_confidence_single_candidates or ev in verified_events):
-                        log_exec(f"[MANUAL_SEED_QUALIFIED] {ev.canonical_title[:55]}")
-            except Exception as e:
-                log_exec(f"[MANUAL_SEED_ERROR] Failed to process International seed file: {e}")
 
     # Reclassify and update categories
     for e in verified_events:
@@ -1112,16 +1160,11 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
         e.event_category = reg_clf.classify_event(e, e_arts)
 
-    india_two_source = [e for e in verified_events if e.event_category == NewsCategory.INDIA and e.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED]
-    intl_two_source  = [e for e in verified_events if e.event_category == NewsCategory.INTERNATIONAL and e.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED]
-    india_single_src = [e for e in high_confidence_single_candidates if e.event_category == NewsCategory.INDIA and e not in verified_events]
-    intl_single_src  = [e for e in high_confidence_single_candidates if e.event_category == NewsCategory.INTERNATIONAL and e not in verified_events]
-
     # =========================================================================
     # STAGE 6: Deduplication & History
     # =========================================================================
     log_exec("=" * 60)
-    log_exec("STAGE 6: Deduplication — 3-day SQLite lookback and company restrictions")
+    log_exec("STAGE 6: Deduplication — 3-day SQLite lookback and cross-section deduplication")
     log_exec("=" * 60)
     dedup_engine = DeduplicationEngine(history_store=history_store)
 
@@ -1129,7 +1172,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     event_by_id: Dict[str, Event] = {}
     from app.models.entity_sanitizer import sanitize_company_entities
     
-    all_candidate_events = verified_events + [e for e in high_confidence_single_candidates if e not in verified_events]
+    all_candidate_events = get_unique_candidate_events()
 
     for event in all_candidate_events:
         event_by_id[event.id] = event
@@ -1138,12 +1181,15 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         comp = clean_comps[0] if clean_comps else "unspecified"
         primary_aid = event.article_ids[0]
         event_type_str = class_map[primary_aid].event_type.value if primary_aid in class_map else "OTHER"
+        cat_str = "domestic" if event.event_category == NewsCategory.DOMESTIC else (
+            "india" if event.event_category == NewsCategory.INDIA else "international"
+        )
         candidate_stories.append({
             "event_id":    event.id,
             "headline":    event.canonical_title,
             "company_name": comp,
             "event_type":  event_type_str,
-            "category":    "india" if event.event_category == NewsCategory.INDIA else "international",
+            "category":    cat_str,
             "key_facts":   event.financial_figures,
         })
 
@@ -1160,7 +1206,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     # STAGE 7: Ranking (freshness-aware & hybrid verification aware)
     # =========================================================================
     log_exec("=" * 60)
-    log_exec("STAGE 7: Ranking — deterministic investment relevance scores (freshness-aware)")
+    log_exec("STAGE 7: Ranking — deterministic relevance scores across 3 sections")
     log_exec("=" * 60)
     ranker  = CandidatePoolRanker()
     scorer  = InvestmentRelevanceScorer()
@@ -1179,7 +1225,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         except Exception:
             pass
 
-    # Rank all eligible events, then apply the quality ladder without capping singles at two.
+    # Rank all eligible events into Domestic, India, and International pools
     candidate_pool = ranker.rank_events(
         events=accepted_events,
         top_n=max(10, len(accepted_events)),
@@ -1188,7 +1234,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     def _ladder_order(scored_event):
         event = scored_event.event
         article = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
-        age_hours = get_article_age_hours(article) if article else None
+        age_hours = get_article_age_hours(article, now_utc=run_reference_time) if article else None
         age_hours = age_hours if age_hours is not None else 999.0
         if age_hours <= 24:
             horizon_rank = 0
@@ -1201,6 +1247,10 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         tier_rank = 0 if event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else 1
         return (horizon_rank, tier_rank, -scored_event.investment_score, -float(event.verification_confidence or 0.0), age_hours)
 
+    dom_ranked = sorted(
+        [scored for scored in candidate_pool.domestic_candidates],
+        key=_ladder_order,
+    )
     india_ranked = sorted(
         [scored for scored in candidate_pool.india_candidates],
         key=_ladder_order,
@@ -1209,22 +1259,57 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         [scored for scored in candidate_pool.international_candidates],
         key=_ladder_order,
     )
+    for rank, scored in enumerate(dom_ranked, 1):
+        scored.rank = rank
     for rank, scored in enumerate(india_ranked, 1):
         scored.rank = rank
     for rank, scored in enumerate(intl_ranked, 1):
         scored.rank = rank
+
+    candidate_pool.domestic_candidates = dom_ranked[:5]
     candidate_pool.india_candidates = india_ranked[:5]
     candidate_pool.international_candidates = intl_ranked[:5]
+
+    domestic_pool = candidate_pool.domestic_candidates
     india_pool = candidate_pool.india_candidates
     intl_pool = candidate_pool.international_candidates
 
+    dom_two_count   = len([s for s in domestic_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
+    dom_sng_count   = len([s for s in domestic_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
     india_two_count = len([s for s in india_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     india_sng_count = len([s for s in india_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
     intl_two_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     intl_sng_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
-    india_quality_level = get_quality_level(india_pool, india_two_count, articles_lookup)
-    intl_quality_level = get_quality_level(intl_pool, intl_two_count, articles_lookup)
-    quality_levels = [india_quality_level, intl_quality_level]
+
+    dom_quality_level = get_quality_level(domestic_pool, dom_two_count, articles_lookup, now_utc=run_reference_time)
+    india_quality_level = get_quality_level(india_pool, india_two_count, articles_lookup, now_utc=run_reference_time)
+    intl_quality_level = get_quality_level(intl_pool, intl_two_count, articles_lookup, now_utc=run_reference_time)
+    quality_levels = [dom_quality_level, india_quality_level, intl_quality_level]
+
+    # Map quality level name -> freshness horizon hours so that Stage 9 (FinalValidationEngine)
+    # can apply the correct per-section window instead of always defaulting to 24h.
+    _QUALITY_LEVEL_HORIZONS: Dict[str, float] = {
+        "STRICT_SUCCESS":        24.0,
+        "FALLBACK_SUCCESS_24H":  24.0,
+        "FALLBACK_SUCCESS_36H":  36.0,
+        "FALLBACK_SUCCESS_48H":  48.0,
+        "EMERGENCY_SUCCESS_72H": 72.0,
+        "DATA_UNAVAILABLE":      24.0,
+    }
+    for section_pool, section_quality_level in [
+        (domestic_pool, dom_quality_level),
+        (india_pool, india_quality_level),
+        (intl_pool, intl_quality_level),
+    ]:
+        horizon_hours = _QUALITY_LEVEL_HORIZONS.get(section_quality_level, 24.0)
+        for scored in section_pool:
+            ev = scored.event
+            ev.metadata = getattr(ev, "metadata", {}) or {}
+            try:
+                ev.metadata["fallback_horizon_hours"] = horizon_hours
+            except Exception:
+                pass
+
     if "DATA_UNAVAILABLE" in quality_levels:
         pipeline_status = "DATA_UNAVAILABLE"
     elif "EMERGENCY_SUCCESS_72H" in quality_levels:
@@ -1238,26 +1323,29 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     else:
         pipeline_status = "STRICT_SUCCESS"
 
-    log_exec(f"Stage 7 Summary (Quality Verification Model):")
+    log_exec(f"Stage 7 Summary (Quality Verification Model — 3 Sections):")
+    log_exec(f"  Domestic pool:      {len(domestic_pool)} (Two-source: {dom_two_count}, Single-source: {dom_sng_count})")
     log_exec(f"  India pool:         {len(india_pool)} (Two-source: {india_two_count}, Single-source: {india_sng_count})")
     log_exec(f"  International pool: {len(intl_pool)} (Two-source: {intl_two_count}, Single-source: {intl_sng_count})")
-    log_exec(f"[GUARANTEED_MODE] Strict 24h result: India={india_two_count + india_sng_count}, Intl={intl_two_count + intl_sng_count}")
-    log_exec(f"  India QualityLevel={india_quality_level}; International QualityLevel={intl_quality_level}")
+    log_exec(f"  QualityLevels: Dom={dom_quality_level}, India={india_quality_level}, Intl={intl_quality_level}")
 
     # =========================================================================
-    # PIPELINE SUFFICIENCY GATE (QUALITY VERIFICATION MODEL)
+    # PIPELINE SUFFICIENCY GATE (3 SECTIONS: 5 + 5 + 5 = 15)
     # =========================================================================
-    india_sufficient = len(india_pool) >= 5
-    intl_sufficient  = len(intl_pool) >= 5
-    sufficient = (india_sufficient and intl_sufficient)
+    dom_sufficient      = len(domestic_pool) >= 5
+    india_sufficient    = len(india_pool) >= 5
+    intl_sufficient     = len(intl_pool) >= 5
+    sufficient = (dom_sufficient and india_sufficient and intl_sufficient)
 
     # Print Candidate Audit Manifest
     print("\n" + "=" * 60)
     print("=== VERIFIED CANDIDATE AUDIT ===")
     print("=" * 60)
-    for scored in india_pool + intl_pool:
+    for scored in domestic_pool + india_pool + intl_pool:
         ev = scored.event
-        sec_name = "INDIA" if ev.event_category == NewsCategory.INDIA else "INTERNATIONAL"
+        sec_name = "DOMESTIC" if ev.event_category == NewsCategory.DOMESTIC else (
+            "INDIA" if ev.event_category == NewsCategory.INDIA else "INTERNATIONAL"
+        )
         tier_str = ev.verification_tier.value if ev.verification_tier else "TWO_SOURCE_VERIFIED"
         prim_pub = ev.primary_publisher or (articles_lookup[ev.article_ids[0]].source_name if ev.article_ids and ev.article_ids[0] in articles_lookup else "N/A")
         prim_u   = ev.primary_url or (articles_lookup[ev.article_ids[0]].url if ev.article_ids and ev.article_ids[0] in articles_lookup else "N/A")
@@ -1269,6 +1357,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         elif ev.verification_reason:
             print(f"  Reason:     {ev.verification_reason}")
     print("\n=== CANDIDATE POOL SUMMARY ===")
+    print(f"Domestic Quality Candidates:      {len(domestic_pool)}/5 (Two-source: {dom_two_count}, Singles: {dom_sng_count})")
     print(f"India Quality Candidates:         {len(india_pool)}/5 (Two-source: {india_two_count}, Singles: {india_sng_count})")
     print(f"International Quality Candidates: {len(intl_pool)}/5 (Two-source: {intl_two_count}, Singles: {intl_sng_count})")
     print("=" * 60 + "\n")
@@ -1276,8 +1365,9 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     if not sufficient:
         log_exec("=" * 60)
         log_exec("PIPELINE SUFFICIENCY GATE: INSUFFICIENT QUALITY STORIES")
-        log_exec(f"  India pool:  {len(india_pool)} / 5")
-        log_exec(f"  Intl pool:   {len(intl_pool)} / 5")
+        log_exec(f"  Domestic pool: {len(domestic_pool)} / 5")
+        log_exec(f"  India pool:    {len(india_pool)} / 5")
+        log_exec(f"  Intl pool:     {len(intl_pool)} / 5")
         log_exec("  Stage 8 Editorial:        SKIPPED")
         log_exec("  Stage 9 Final Validation: SKIPPED")
         log_exec("  Stage 10 Formatter:       SKIPPED")
@@ -1286,14 +1376,14 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
         # Stage 8 SKIPPED
         log_exec("=" * 60)
-        log_exec("STAGE 8: Gemini Editorial — SKIPPED (No 5+5 eligible stories)")
+        log_exec("STAGE 8: Gemini Editorial — SKIPPED (No 5+5+5 eligible stories)")
         log_exec("=" * 60)
-        log_exec(f"  -> STAGE 8 SKIPPED: Insufficient stories (India={len(india_pool)}, Intl={len(intl_pool)}).")
-        selection_payload = BriefingEditorialPayload(india_stories=[], international_stories=[])
+        log_exec(f"  -> STAGE 8 SKIPPED: Insufficient stories (Dom={len(domestic_pool)}, India={len(india_pool)}, Intl={len(intl_pool)}).")
+        selection_payload = BriefingEditorialPayload(domestic_stories=[], india_stories=[], international_stories=[])
 
         # Stage 9 SKIPPED
         log_exec("=" * 60)
-        log_exec("STAGE 9: Final Validation — SKIPPED (No 5+5 eligible stories)")
+        log_exec("STAGE 9: Final Validation — SKIPPED (No 5+5+5 eligible stories)")
         log_exec("=" * 60)
         log_exec("  -> STAGE 9 SKIPPED: Zero candidate briefing payload. Validation skipped cleanly.")
         validation_report = None
@@ -1309,7 +1399,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         # STAGE 8: Gemini Editorial (only if sufficient)
         # =========================================================================
         log_exec("=" * 60)
-        log_exec("STAGE 8: Gemini Editorial — final editorial curation")
+        log_exec("STAGE 8: Gemini Editorial — final editorial curation across 3 sections")
         log_exec("=" * 60)
         editorial_engine = GeminiEditorialEngine()
         time.sleep(2)
@@ -1327,10 +1417,24 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if editorial_res and editorial_res.success and editorial_res.selection:
             selection_payload = editorial_res.selection
             log_exec(f"Stage 8 Summary:")
-            log_exec(f"  Gemini selected: {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
+            log_exec(f"  Gemini selected: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
         else:
             err = editorial_res.error_message if editorial_res else "Unknown editorial error"
             log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
+            
+            dom_stories_selected = []
+            for s in candidate_pool.domestic_candidates[:5]:
+                ev = s.event
+                art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                src = ev.primary_publisher or (art.source_name if art else "The Hindu")
+                u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
+                dom_stories_selected.append(EditorialStorySelection(
+                    section="domestic",
+                    event_id=ev.id,
+                    headline=ev.canonical_title,
+                    source=src,
+                    url=u,
+                ))
             india_stories_selected = []
             for s in candidate_pool.india_candidates[:5]:
                 ev = s.event
@@ -1358,9 +1462,17 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                     url=u,
                 ))
             selection_payload = BriefingEditorialPayload(
+                domestic_stories=dom_stories_selected,
                 india_stories=india_stories_selected,
                 international_stories=intl_stories_selected,
             )
+
+        with open(data_dir / "final_15_stories.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
+                "india":         [s.model_dump() for s in selection_payload.india_stories],
+                "international": [s.model_dump() for s in selection_payload.international_stories],
+            }, f, indent=2)
 
         with open(data_dir / "final_10_stories.json", "w", encoding="utf-8") as f:
             json.dump({
@@ -1382,6 +1494,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             target_date=date.today(),
             strict_5_per_section=True,
             quality_ladder_mode=True,
+            run_reference_time=run_reference_time,
         )
         log_exec(f"Stage 9 Summary:")
         log_exec(f"  Status:        {validation_report.status.value}")
@@ -1406,7 +1519,12 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
 
                 # Persist to history
                 history_stories = []
-                for s in selection_payload.india_stories + selection_payload.international_stories:
+                all_final_stories = (
+                    selection_payload.domestic_stories +
+                    selection_payload.india_stories +
+                    selection_payload.international_stories
+                )
+                for s in all_final_stories:
                     ev = event_by_id.get(s.event_id)
                     comp = ev.companies_involved[0] if (ev and ev.companies_involved) else "unspecified"
                     history_stories.append({
@@ -1419,7 +1537,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
                         "published_date":    date.today(),
                     })
                 history_store.save_briefing(date.today(), history_stories)
-                log_exec("Saved selected stories to SQLite briefing history.")
+                log_exec(f"Saved {len(history_stories)} selected stories to SQLite briefing history.")
             except Exception as e:
                 log_exec(f"Error during briefing formatting: {e}")
         else:
@@ -1440,7 +1558,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     # =========================================================================
     # FINAL REPORT
     # =========================================================================
-    total_discovered = len(india_reserve_pool) + len(intl_reserve_pool)
+    total_discovered = len(domestic_reserve_pool) + len(india_reserve_pool) + len(intl_reserve_pool)
     reserve_rem = total_discovered - processed_pass1 - expansion_new_candidates
 
     print("\n" + "=" * 60)
@@ -1448,7 +1566,7 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print("=" * 60)
     print("\nDISCOVERY & RESERVE POOL")
     print("-" * 30)
-    print(f"  reserve_discovered:         {total_discovered} (India: {len(india_reserve_pool)}, Intl: {len(intl_reserve_pool)})")
+    print(f"  reserve_discovered:         {total_discovered} (Domestic: {len(domestic_reserve_pool)}, India: {len(india_reserve_pool)}, Intl: {len(intl_reserve_pool)})")
     print(f"  pass1_processed:            {processed_pass1}")
     print(f"  expansion_processed:        {expansion_new_candidates}")
     print(f"  reserve_remaining:          {max(0, reserve_rem)}")
@@ -1506,16 +1624,21 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print(f"  Remaining:                  {len(accepted_stories)}")
     print("\nRANKING & SUFFICIENCY (QUALITY VERIFICATION MODEL)")
     print("-" * 30)
-    print(f"  India quality candidates:   {len(india_pool)} / 5")
+    print(f"  Domestic quality candidates:      {len(domestic_pool)} / 5")
+    print(f"  India quality candidates:         {len(india_pool)} / 5")
     print(f"  International quality candidates: {len(intl_pool)} / 5")
     print(f"  Sufficiency gate:           {'PASSED' if sufficient else 'FAILED (' + pipeline_status + ')'}")
     print("\nEDITORIAL")
     print("-" * 30)
     if sufficient and selection_payload:
+        print(f"  Selected Domestic:          {len(selection_payload.domestic_stories)}")
         print(f"  Selected India:             {len(selection_payload.india_stories)}")
         print(f"  Selected International:     {len(selection_payload.international_stories)}")
     elif not sufficient:
         print(f"  Status:                     SKIPPED ({pipeline_status})")
+        print(f"  Domestic pool:      {len(domestic_pool)} / 5")
+        print(f"  India pool:         {len(india_pool)} / 5")
+        print(f"  International pool: {len(intl_pool)} / 5")
     else:
         err = editorial_res.error_message if editorial_res else "EDITORIAL_VALIDATION_FAILED"
         print(f"  Status:                     FAILED ({err})")
@@ -1543,7 +1666,11 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
     print("=" * 60 + "\n")
 
     # URL Audit for selected final stories
-    all_final = selection_payload.india_stories + selection_payload.international_stories
+    all_final = (
+        (selection_payload.domestic_stories if selection_payload else []) +
+        (selection_payload.india_stories if selection_payload else []) +
+        (selection_payload.international_stories if selection_payload else [])
+    )
     if all_final:
         print("=== FINAL STORY AUDIT ===")
         for idx, story in enumerate(all_final, 1):
@@ -1583,10 +1710,19 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
             print(f"  Internal pipeline errors: {internal_pipeline_errors}")
             print(f"  Reason: Internal processing errors ({internal_pipeline_errors}) prevented candidate extraction.")
         elif not sufficient:
+            deficient_sections = []
+            if len(domestic_pool) < 5:
+                deficient_sections.append(f"Domestic ({len(domestic_pool)}/5)")
+            if len(india_pool) < 5:
+                deficient_sections.append(f"India ({len(india_pool)}/5)")
+            if len(intl_pool) < 5:
+                deficient_sections.append(f"International ({len(intl_pool)}/5)")
+            section_msg = f"{', '.join(deficient_sections)} remained below 5 quality-eligible stories after fallback exhaustion ({pipeline_status})."
             print(f"\nSTATUS: {pipeline_status}")
+            print(f"  Domestic pool:        {len(domestic_pool)} / 5")
             print(f"  India pool:           {len(india_pool)} / 5")
             print(f"  International pool:   {len(intl_pool)} / 5")
-            print("  Reason: Fewer than 5 quality-eligible <=24h stories were discovered.")
+            print(f"  Reason: {section_msg}")
 
     if briefing_text:
         print("\n--- [FINAL BRIEFING] ---")
@@ -1598,11 +1734,20 @@ def run_pipeline(max_india: Optional[int] = None, max_international: Optional[in
         if internal_pipeline_errors > 0:
             print(f"Reason: INSUFFICIENT_VERIFIED_STORIES_WITH_PROCESSING_ERRORS — {internal_pipeline_errors} internal error(s) occurred during candidate processing.")
         elif not sufficient:
-            print(f"Reason: {pipeline_status} — Fewer than 5 quality-eligible <=24h stories were discovered.")
+            deficient_sections = []
+            if len(domestic_pool) < 5:
+                deficient_sections.append(f"Domestic ({len(domestic_pool)}/5)")
+            if len(india_pool) < 5:
+                deficient_sections.append(f"India ({len(india_pool)}/5)")
+            if len(intl_pool) < 5:
+                deficient_sections.append(f"International ({len(intl_pool)}/5)")
+            section_msg = f"{', '.join(deficient_sections)} remained below 5 quality-eligible stories after fallback exhaustion ({pipeline_status})."
+            print(f"Reason: {section_msg}")
         elif validation_report and validation_report.failure_reason:
             print(f"Reason: {validation_report.failure_reason}")
 
     return 0 if (sufficient and validation_report and validation_report.is_valid) else 1
+
 
 
 if __name__ == "__main__":

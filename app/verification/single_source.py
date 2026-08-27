@@ -67,6 +67,15 @@ TRUSTED_INDIA_PUBLISHERS: Set[str] = {
     "nse",
     "sebi",
     "rbi",
+    "reserve bank of india",
+    "press information bureau",
+    "pib",
+    "pib.gov.in",
+    "rbi.org.in",
+    "sebi.gov.in",
+    "mospi.gov.in",
+    "finmin.gov.in",
+    "ministry of finance",
 }
 
 TRUSTED_INTL_PUBLISHERS: Set[str] = {
@@ -342,7 +351,8 @@ class SingleSourceEvaluator:
 
         # C. Recognized hard event type (+20)
         has_hard_action = bool(re.search(
-            r"\b(acquires?|acquisition|to buy|to acquire|acquisition of|buys|bought|sold|sale|sells|sell|to sell|offload|pares|stake|merger|takeover|buyout|block deal|stake sale|stake purchase|divests|calls off|terminates|net profit|earnings|financial results|results|revenue|ebitda|q[1-4]|ipo|drhp|funding|financing|raises|guidance|buyback|repurchase|dividend|investment|invests?|to invest|commits|penalty|fine|order|capex|contract|joint venture|appointed|resigns|antitrust|launches?|launch)\b",
+            r"\b(acquires?|acquisition|to buy|to acquire|acquisition of|buys|bought|sold|sale|sells|sell|to sell|offload|pares|stake|merger|takeover|buyout|block deal|stake sale|stake purchase|divests|calls off|terminates|net profit|earnings|financial results|results|revenue|ebitda|q[1-4]|ipo|drhp|funding|financing|raises|guidance|buyback|repurchase|dividend|investment|invests?|to invest|commits|penalty|fine|order|capex|contract|joint venture|appointed|resigns|antitrust|launches?|launch|"
+            r"monetary policy|repo rate|reverse repo|mpc|interest rate decision|inflation|cpi|wpi|gdp|iip|industrial production|trade deficit|gst council|tax rate|customs duty|import duty|export duty|pli scheme|semiconductor incentive|national mission|cabinet approves|centre approves|government approves|fdi policy|banking regulation|nbfc regulation|liquidity framework|crr|slr)\b",
             title.lower() + " " + body[:300].lower()
         ))
         if has_hard_action:
@@ -354,14 +364,14 @@ class SingleSourceEvaluator:
         # D. Concrete amount/percentage facts (+15)
         has_concrete_metric = bool(
             event.financial_figures
-            or re.search(r"\b(\d+(\.\d+)?\s*(crore|cr|billion|million|\$|₹|%|rs\.?))\b", (title + " " + body[:400]).lower())
+            or re.search(r"\b(\d+(\.\d+)?\s*(crore|cr|billion|million|\$|₹|%|rs\.?|bps|basis points))\b", (title + " " + body[:400]).lower())
         )
         if has_concrete_metric:
             score += 15.0
             reasons.append("concrete_facts(+15)")
         else:
-            # Leadership change, regulatory action, or explicit M&A / strategic actions may pass if explicit
-            if not re.search(r"\b(appointed|resigns|named ceo|named md|penalty|order|probe|to buy|to acquire|acquisition of|acquires|acquired|merger|buyout|calls off|terminates|block deal|stake sale)\b", title.lower()):
+            # Leadership change, regulatory action, policy actions, or explicit M&A / strategic actions may pass if explicit
+            if not re.search(r"\b(appointed|resigns|named ceo|named md|penalty|order|probe|to buy|to acquire|acquisition of|acquires|acquired|merger|buyout|calls off|terminates|block deal|stake sale|monetary policy|repo rate|inflation|cpi|gdp|iip|gst council|cabinet approves|pli scheme)\b", title.lower()):
                 return False, 0.0, "REJECT: Missing concrete quantified facts or key metrics"
 
         # E. Verified publication timestamp (+10, or -20 if unverified)

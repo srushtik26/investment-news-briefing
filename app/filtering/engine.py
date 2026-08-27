@@ -14,6 +14,7 @@ from app.filtering.models import FilterResult
 from app.filtering.rules import (
     BaseFilterRule,
     DateFilterRule,
+    DomesticSourceFilterRule,
     SourceFilterRule,
     StoryTypeFilterRule,
     URLFilterRule,
@@ -124,3 +125,107 @@ class HardFilterEngine:
             len(articles),
         )
         return accepted, rejections
+
+
+class DomesticHardFilterEngine:
+    """
+    Lightweight filter engine for Domestic (General Trending India News) articles.
+
+    Applies ONLY:
+        1. URLFilterRule          — reject non-article hub/category URLs
+        2. DomesticSourceFilterRule — must be a trusted domestic publisher
+        3. DateFilterRule         — must be within 24h freshness window
+
+    Does NOT apply:
+        - SourceFilterRule (business financial whitelist)
+        - StoryTypeFilterRule (business hard-event requirement)
+
+    Domestic articles are general national news (Supreme Court, Cabinet, ISRO,
+    weather, health, education, defence). They do NOT need to be corporate events.
+    """
+
+    def __init__(self) -> None:
+        self.url_rule = URLFilterRule()
+        self.source_rule = DomesticSourceFilterRule()
+        self.date_rule = DateFilterRule()
+        logger.info(
+            "DomesticHardFilterEngine initialized: [URLFilterRule, DomesticSourceFilterRule, DateFilterRule]"
+        )
+
+    def filter_article(
+        self,
+        article: Article,
+        now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
+    ) -> FilterResult:
+        """
+        Evaluate a domestic candidate article through URL, source, and date rules only.
+        Returns FilterResult; does NOT check for business hard events.
+        """
+        current_time = now_utc or datetime.now(timezone.utc)
+
+        # 1. URL validity
+        result = self.url_rule.evaluate(article, now_utc=current_time)
+        if not result.is_accepted:
+            logger.info(
+                "Domestic article rejected [URL]: '%s' — %s",
+                article.title[:50],
+                result.rejection_reason,
+            )
+            return result
+
+        # 2. Domestic source whitelist
+        result = self.source_rule.evaluate(article, now_utc=current_time)
+        if not result.is_accepted:
+            logger.info(
+                "Domestic article rejected [DOMESTIC_SOURCE]: '%s' — %s",
+                article.title[:50],
+                result.rejection_reason,
+            )
+            return result
+
+        # 3. Freshness (24h)
+        result = self.date_rule.evaluate(article, now_utc=current_time, max_age_hours=max_age_hours)
+        if not result.is_accepted:
+            logger.info(
+                "Domestic article rejected [DATE]: '%s' — %s",
+                article.title[:50],
+                result.rejection_reason,
+            )
+            return result
+
+        logger.debug("Domestic article accepted: '%s'", article.title[:50])
+        return FilterResult(
+            is_accepted=True,
+            article_url=article.url,
+            article_title=article.title,
+        )
+
+    def filter_candidates(
+        self,
+        articles: List[Article],
+        now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
+    ) -> Tuple[List[Article], List[FilterResult]]:
+        """Filter a batch of domestic candidate articles."""
+        current_time = now_utc or datetime.now(timezone.utc)
+        accepted: List[Article] = []
+        rejections: List[FilterResult] = []
+
+        logger.info(
+            "DomesticHardFilterEngine evaluating %d domestic candidates...", len(articles)
+        )
+        for article in articles:
+            result = self.filter_article(article, now_utc=current_time, max_age_hours=max_age_hours)
+            if result.is_accepted:
+                accepted.append(article)
+            else:
+                rejections.append(result)
+
+        logger.info(
+            "DomesticHardFilterEngine complete: %d accepted, %d rejected",
+            len(accepted),
+            len(rejections),
+        )
+        return accepted, rejections
+
