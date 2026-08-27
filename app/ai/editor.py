@@ -157,6 +157,23 @@ class GeminiEditorialEngine:
                 parsed_json = self._extract_json_from_response(raw_text)
                 payload = BriefingEditorialPayload.model_validate(parsed_json)
 
+                # Ensure Domestic stories from ranked_pool are preserved (Domestic is deterministic)
+                if not getattr(payload, "domestic_stories", None) or len(payload.domestic_stories) < 5:
+                    dom_stories = []
+                    for scored in (getattr(ranked_pool, "domestic_candidates", []) or [])[:5]:
+                        e = scored.event
+                        art = articles_map.get(e.article_ids[0]) if e.article_ids else None
+                        src = e.primary_publisher or (art.source_name if art else "The Hindu")
+                        u = e.primary_url or (art.url if art else f"https://example.com/dom-{e.id}")
+                        dom_stories.append(EditorialStorySelection(
+                            section="domestic",
+                            event_id=e.id,
+                            headline=e.canonical_title,
+                            source=src,
+                            url=u,
+                        ))
+                    payload.domestic_stories = dom_stories
+
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)
 

@@ -81,6 +81,99 @@ TRUSTED_DOMESTIC_DOMAINS: Set[str] = {
     "nic.in",
 }
 
+from enum import Enum
+
+# Domestic Topic Classification Taxonomy
+class DomesticTopic(str, Enum):
+    COURT_JUDICIARY = "COURT_JUDICIARY"
+    GOVERNMENT_POLICY = "GOVERNMENT_POLICY"
+    POLITICS_ELECTIONS = "POLITICS_ELECTIONS"
+    INFRASTRUCTURE = "INFRASTRUCTURE"
+    DEFENCE_SECURITY = "DEFENCE_SECURITY"
+    SCIENCE_ISRO_TECH = "SCIENCE_ISRO_TECH"
+    WEATHER_DISASTER = "WEATHER_DISASTER"
+    HEALTH = "HEALTH"
+    EDUCATION = "EDUCATION"
+    ENVIRONMENT = "ENVIRONMENT"
+    OTHER_NATIONAL = "OTHER_NATIONAL"
+
+
+# Topic Detection Patterns
+DOMESTIC_TOPIC_PATTERNS: List[Tuple[DomesticTopic, List[str]]] = [
+    (
+        DomesticTopic.COURT_JUDICIARY,
+        [
+            r"\b(supreme court|high court|chief justice|cji|sc bench|hc bench|quashes|stays order|plea in court|judiciary|collegium|bail granted|anticipatory bail|sessions court|magistrate|tribunal|trial court|judge seeks transfer|judge transferred|judge wants|contempt of court|law commission|constitution bench|judicial probe|orders sit|oppose bail|opposes bail|seeks bail|bail plea|bail hearing|delhi riots case)\b",
+            r"\b(judge|justice|advocate|bench|court|magistrate)\b.*\b(transfer|transferred|hearing|verdict|ruling|orders|probe|sits|plea|ban)\b",
+        ],
+    ),
+    (
+        DomesticTopic.DEFENCE_SECURITY,
+        [
+            r"\b(indian army|indian navy|indian air force|iaf|drdo|missile test|border security|anti-terror|nia|crpf|bsf|loc|lac|defence procurement|warship|submarine|combat aircraft|ins vikrant|security forces|armed forces|anti-naxal)\b",
+        ],
+    ),
+    (
+        DomesticTopic.SCIENCE_ISRO_TECH,
+        [
+            r"\b(isro|chandrayaan|gaganyaan|aditya-l1|satellite launch|pslv|gslv|space mission|supercomputer|quantum mission|ai mission|iit|scientific discovery|nuclear reactor|bhabha atomic)\b",
+        ],
+    ),
+    (
+        DomesticTopic.WEATHER_DISASTER,
+        [
+            r"\b(cyclone|landslide|cloudburst|flood|floods|flooding|earthquake|imd alert|heatwave|red alert|rescue operation|ndrf|monsoon forecast|heavy rain|cold wave|avalanche|drowning)\b",
+        ],
+    ),
+    (
+        DomesticTopic.INFRASTRUCTURE,
+        [
+            r"\b(railway corridor|vande bharat|national highway|expressway|metro rail|bullet train|mega bridge|airport terminal|nhai|tunnel|port project|smart cities|freight corridor|railways|rail line)\b",
+        ],
+    ),
+    (
+        DomesticTopic.HEALTH,
+        [
+            r"\b(ayushman bharat|vaccination|icmr|who alert|aiims|hospital|medical college|disease outbreak|public health|dengue|mpox|generic medicine|health mission|neet pg)\b",
+        ],
+    ),
+    (
+        DomesticTopic.EDUCATION,
+        [
+            r"\b(national education policy|nep|ncert|ugc|neet|cbse|iim|university|board exams|school syllabus|scholarship|higher education|professors|admissions)\b",
+        ],
+    ),
+    (
+        DomesticTopic.ENVIRONMENT,
+        [
+            r"\b(pollution|air quality|aqi|forest cover|wildlife sanctuary|tiger reserve|western ghats|renewable energy|solar park|green hydrogen|climate action|smog|yamuna clean)\b",
+        ],
+    ),
+    (
+        DomesticTopic.POLITICS_ELECTIONS,
+        [
+            r"\b(election commission|ec|eci|assembly election|lok sabha election|bypoll|polling|voter turnout|political rally|seat sharing|opposition alliance|party president|bjp|congress|aap|tmc|election dates|campaigning)\b",
+        ],
+    ),
+    (
+        DomesticTopic.GOVERNMENT_POLICY,
+        [
+            r"\b(union cabinet|cabinet approves|cabinet clears|parliament|lok sabha|rajya sabha|bill passed|new national law|centre notifies|centre announces|pmo|prime minister|narendra modi|ministry of|gazette notification|scheme launched|central government|sub-quota|caste census)\b",
+        ],
+    ),
+]
+
+
+def classify_domestic_topic(title: str, text: Optional[str] = None) -> DomesticTopic:
+    """Deterministically classify a domestic news story into its specific topic category."""
+    comb = f"{title or ''} {(text or '')[:300]}".lower()
+    for topic, patterns in DOMESTIC_TOPIC_PATTERNS:
+        for pat in patterns:
+            if re.search(pat, comb):
+                return topic
+    return DomesticTopic.OTHER_NATIONAL
+
+
 # Hard noise rejection patterns for Domestic General News
 DOMESTIC_NOISE_PATTERNS: List[str] = [
     # Celebrity gossip & Bollywood entertainment fluff
@@ -119,8 +212,14 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     # Generic explainers, listicles & evergreen features
     r"\b(top 10 (?:tourist|holiday|travel|places)|things to know before|explained: how does|a complete guide to|history of|all you need to know about (?:why|how))\b",
     
-    # Opinion columns & Editorials
-    r"\b(opinion:|editorial:|column:|view:|analysis:|why we must|the need for|it is time to)\b",
+    # Exam preparation, study material, practice questions, quizzes (NOT trending news)
+    r"\b(upsc mains answer practice|answer practice|upsc essentials|practice questions?|mock test|exam preparation|study material|current affairs quiz|daily quiz|question of the day|quiz of the day|sample papers?|previous year questions?|pyq|test series)\b",
+    r"\b(school assembly news headlines|assembly headlines for school|thought for the day)\b",
+
+    # Opinion columns, Editorials & Op-eds
+    r"\b(opinion:|editorial:|column:|view:|analysis:|why we must|the need for|it is time to|op-ed|guest column|opinion piece|editorial board)\b",
+    r"^(?:opinion|editorial|op-ed|column|analysis|view)\s*[:|-]",
+    r"\b(and the (?:sir|citizenship|election|constitution) exercise)\b",
 ]
 
 # National Significance Markers
@@ -160,8 +259,24 @@ class DomesticTrendingEvaluator:
                 return True
         return False
 
-    def is_domestic_noise(self, title: str, text: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-        """Detect noise, gossip, horoscope, product reviews, personal finance, explainers."""
+    def is_domestic_noise(self, title: str, text: Optional[str] = None, url: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Detect noise, gossip, horoscope, product reviews, personal finance, explainers, opinion/op-eds."""
+        # 1. Check Opinion / Op-ed / Editorial in URL path
+        if url:
+            u_low = url.lower()
+            if any(p in u_low for p in ("/opinion/", "/op-ed/", "/editorial/", "/columns/", "/commentary/", "/readers-editor/")):
+                # Accept only if it is a concrete breaking hard event headline, otherwise reject commentary/op-eds
+                has_hard_action = bool(re.search(
+                    r"\b(approves?|clears?|orders?|rules?|directs?|launches?|inaugurates?|passes?|issues?|announces?|arrests?|bans?|quashes?|stays?)\b",
+                    title.lower()
+                ))
+                is_explicit_opinion = bool(re.search(
+                    r"\b(opinion|editorial|op-ed|column|view|why |the need for|analysis:|and the )\b",
+                    title.lower()
+                ))
+                if not has_hard_action or is_explicit_opinion:
+                    return True, "Opinion/Op-ed URL path without concrete breaking event"
+
         comb = f"{title} {(text or '')[:300]}".lower()
         for pat in DOMESTIC_NOISE_PATTERNS:
             m = re.search(pat, comb)
@@ -193,9 +308,10 @@ class DomesticTrendingEvaluator:
         title = event.canonical_title or (primary_article.title if primary_article else "")
         body = (primary_article.content_text or "") if primary_article else (event.description or "")
         now = now_utc or datetime.now(timezone.utc)
+        url = (primary_article.url if primary_article else None) or event.primary_url or ""
 
         # 1. Hard Noise Check
-        is_noise, noise_rsn = self.is_domestic_noise(title, body)
+        is_noise, noise_rsn = self.is_domestic_noise(title, body, url=url)
         if is_noise:
             return False, 0.0, f"REJECT_NOISE: {noise_rsn}"
 

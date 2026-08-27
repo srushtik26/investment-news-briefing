@@ -104,3 +104,104 @@ class CandidatePoolRanker:
             international_candidates=top_intl,
             total_evaluated=len(events),
         )
+
+
+def select_diverse_domestic_candidates(
+    domestic_candidates: List[ScoredEvent],
+    articles_lookup: Optional[dict] = None,
+    target_count: int = 5,
+    max_court_stories: int = 2,
+    max_same_topic: int = 2,
+) -> List[ScoredEvent]:
+    """
+    Select top domestic candidate stories enforcing topic diversity and duplicate-event suppression.
+
+    Rules:
+    1. Deduplicate: If multiple candidates cover the same underlying event (e.g. Rajasthan HC transfer),
+       keep only the higher-ranked one.
+    2. Topic Diversity:
+       - Maximum 2 stories from COURT_JUDICIARY in Pass 1.
+       - Prefer at least 3 distinct topic categories across the final 5.
+       - If enough eligible candidates exist, do not allow one topic category to dominate (>2 stories).
+    3. Quality Precedence:
+       - Quality outranks diversity; if fewer than 5 stories qualify across distinct topics,
+         remaining slots are filled from the next best available quality candidates (Pass 2).
+       - Never fail the section solely for lack of diversity if total qualified candidates >= 5.
+    """
+    if not domestic_candidates:
+        return []
+
+    articles_map = articles_lookup or {}
+
+    # Step 1: Duplicate Event Suppression across candidate events
+    from app.verification.verifier import TwoSourceVerifier
+    verifier = TwoSourceVerifier()
+    
+    deduped: List[ScoredEvent] = []
+    for scored in domestic_candidates:
+        ev = scored.event
+        art = articles_map.get(ev.article_ids[0]) if ev.article_ids else None
+        
+        is_duplicate = False
+        for ex in deduped:
+            ex_ev = ex.event
+            ex_art = articles_map.get(ex_ev.article_ids[0]) if ex_ev.article_ids else None
+            if art and ex_art:
+                if verifier.is_same_underlying_event(art, ex_art)[0]:
+                    is_duplicate = True
+                    break
+        if not is_duplicate:
+            deduped.append(scored)
+
+    # Step 2: Classify Topics
+    from app.verification.domestic_trending import classify_domestic_topic, DomesticTopic
+    
+    candidate_topics = []
+    for scored in deduped:
+        ev = scored.event
+        art = articles_map.get(ev.article_ids[0]) if ev.article_ids else None
+        title = ev.canonical_title or (art.title if art else "")
+        body = (art.content_text if art else "") or ev.description or ""
+        topic = classify_domestic_topic(title, body)
+        ev.metadata = getattr(ev, "metadata", {}) or {}
+        ev.metadata["domestic_topic"] = topic.value
+        candidate_topics.append((scored, topic))
+
+    # Step 3: Pass 1 — Diversity-aware Selection
+    selected: List[ScoredEvent] = []
+    selected_topic_counts: dict[DomesticTopic, int] = {}
+    remaining_pool: List[ScoredEvent] = []
+
+    for scored, topic in candidate_topics:
+        court_count = selected_topic_counts.get(DomesticTopic.COURT_JUDICIARY, 0)
+        topic_count = selected_topic_counts.get(topic, 0)
+
+        # Cap COURT_JUDICIARY at max_court_stories (default 2)
+        if topic == DomesticTopic.COURT_JUDICIARY and court_count >= max_court_stories:
+            remaining_pool.append(scored)
+            continue
+
+        # Cap other categories at max_same_topic if other candidates exist
+        if topic_count >= max_same_topic:
+            remaining_pool.append(scored)
+            continue
+
+        selected.append(scored)
+        selected_topic_counts[topic] = topic_count + 1
+
+        if len(selected) == target_count:
+            break
+
+    # Step 4: Pass 2 — Quality Fallback (Quality outranks diversity)
+    if len(selected) < target_count:
+        for scored in remaining_pool:
+            if scored not in selected:
+                selected.append(scored)
+                if len(selected) == target_count:
+                    break
+
+    # Re-assign ranks 1..N
+    for rank, scored in enumerate(selected, 1):
+        scored.rank = rank
+
+    return selected

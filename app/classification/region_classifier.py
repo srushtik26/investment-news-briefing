@@ -156,6 +156,11 @@ class EventRegionClassifier:
         r"\b(national education policy|nep|ncert|ugc|neet|ayushman bharat|vaccination drive|icmr|who alert|public health|food security)\b",
     ]
 
+    # Foreign Geographies, Demonyms & International Transaction Keywords
+    FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
+        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican)\b",
+    ]
+
     def classify_with_reason(
         self,
         title: str,
@@ -268,6 +273,11 @@ class EventRegionClassifier:
                 return NewsCategory.INDIA, f"Financial sponsor '{sponsor_matches[0]}' in Indian transaction context"
             if discovery_region == NewsCategory.INTERNATIONAL or has_dollar_local:
                 return NewsCategory.INTERNATIONAL, f"Financial sponsor '{sponsor_matches[0]}' in international transaction context"
+
+        # RULE G2: Explicit Foreign Geography & Corporate Context Override (Prior Overriding)
+        has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and "india" not in title_lower:
+            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / company evidence overrides discovery prior"
 
         # RULE H: Discovery Region Prior Protection
         if discovery_region == NewsCategory.INTERNATIONAL:

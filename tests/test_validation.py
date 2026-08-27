@@ -147,7 +147,78 @@ def valid_briefing_fixtures():
             )
         )
 
+    # 5 Domestic Stories
+    domestic_stories: list[EditorialStorySelection] = []
+    dom_titles = [
+        "Supreme Court Constitution Bench rules on national tribunal appointments",
+        "Cabinet approves Rs 10000 crore national semiconductor mission package",
+        "Election Commission announces schedule for assembly elections",
+        "ISRO successfully launches next generation navigation satellite",
+        "Parliament passes landmark national digital data protection bill",
+    ]
+    for i in range(1, 6):
+        art_id1 = f"art-dom-a-{i}"
+        art_id2 = f"art-dom-b-{i}"
+        url1 = f"https://www.thehindu.com/news/national/domestic-policy-{i}.html"
+        url2 = f"https://indianexpress.com/article/india/domestic-policy-{i}.html"
+        title = dom_titles[i - 1]
+
+        art1 = Article(
+            id=art_id1,
+            title=title,
+            url=url1,
+            source_name="The Hindu",
+            published_at=datetime.now(timezone.utc) - timedelta(hours=3),
+            content_text=f"Government national policy {title}",
+            category=NewsCategory.DOMESTIC,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        art2 = Article(
+            id=art_id2,
+            title=title,
+            url=url2,
+            source_name="The Indian Express",
+            published_at=datetime.now(timezone.utc) - timedelta(hours=4),
+            content_text=f"Government national policy {title}",
+            category=NewsCategory.DOMESTIC,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        articles_lookup[art_id1] = art1
+        articles_lookup[art_id2] = art2
+        candidate_urls.add(url1)
+        candidate_urls.add(url2)
+
+        evt_id = f"evt-dom-{i}"
+        event = Event(
+            id=evt_id,
+            canonical_title=title,
+            description=art1.content_text,
+            event_category=NewsCategory.DOMESTIC,
+            article_ids=[art_id1, art_id2],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            primary_publisher="The Hindu",
+            primary_url=url1,
+            secondary_publisher="The Indian Express",
+            secondary_url=url2,
+        )
+        events_lookup[evt_id] = event
+
+        domestic_stories.append(
+            EditorialStorySelection(
+                section="domestic",
+                event_id=evt_id,
+                headline=title,
+                source="The Hindu",
+                url=url1,
+            )
+        )
+
     payload = BriefingEditorialPayload(
+        domestic_stories=domestic_stories,
         india_stories=india_stories,
         international_stories=intl_stories,
     )
@@ -194,7 +265,7 @@ class TestFinalValidationEngine:
         )
 
         assert report.status == ValidationStatus.FAILED
-        assert report.failed_check_id == 1
+        assert report.failed_check_id == 2
         assert "Expected exactly 5 India stories" in (report.failure_reason or "")
 
     def test_check_3_and_4_fails_on_dead_url(self, valid_briefing_fixtures):

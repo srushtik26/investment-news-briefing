@@ -113,8 +113,8 @@ class TwoSourceVerifier:
 
     EVENT_CATEGORY_PATTERNS: Dict[str, List[str]] = {
         "EARNINGS": [
-            r"\b(net profit|quarterly profit|profit|net loss|ebitda|quarterly results|earnings|operating income|sales jump|sales surge|profit rises|profit falls|profit surges|profit drops|profit jumps|topline|bottomline|pat|pbt)\b",
-            r"\b(q[1-4]|quarter ended|june quarter|march quarter|september quarter|december quarter|first quarter|second quarter|third quarter|fourth quarter)\b",
+            r"\b(net profit|quarterly profit|profit|net loss|ebitda|quarterly results|earnings|operating income|sales jump|sales surge|profit rises|profit falls|profit surges|profit drops|profit jumps|sales soar|sales soars|revenue soars|sales climb|revenue climbs|sales rise|revenue rises|topline|bottomline|pat|pbt|data centres|data centers|ai chip demand)\b",
+            r"\b(q[1-4]|quarter ended|june quarter|march quarter|september quarter|december quarter|first quarter|second quarter|third quarter|fourth quarter|quarter shows|record quarter|quarterly|quarter)\b",
         ],
         "ACQUISITION_M_A": [
             r"\b(buys\b|buys stake|stake purchase|stake sale|acquires?|acquisition|buyout|merger|takeover|amalgamation|demerger|purchases?|invests in|investment in|units of|all-cash deal|block deal|deal to buy|agrees to buy)\b",
@@ -258,19 +258,32 @@ class TwoSourceVerifier:
 
         # Step 2: Shared Company / Entity Presence using EventQueryBuilder
         from app.verification.query_builder import GENERIC_ENTITY_BLACKLIST
+        from app.deduplication.fingerprint import normalize_entity_name
 
         entities1 = EventQueryBuilder.extract_entities(art1)
         entities2 = EventQueryBuilder.extract_entities(art2)
 
-        set_ent1 = {e.lower().strip() for e in entities1 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST}
-        set_ent2 = {e.lower().strip() for e in entities2 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST}
+        norm_ent1 = {normalize_entity_name(e) for e in entities1 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST and normalize_entity_name(e) not in ("unspecified_entity", "")}
+        norm_ent2 = {normalize_entity_name(e) for e in entities2 if e.lower().strip() not in GENERIC_ENTITY_BLACKLIST and normalize_entity_name(e) not in ("unspecified_entity", "")}
+
+        GENERIC_ROOT_TOKENS = {
+            "energy", "green", "tech", "technology", "technologies", "group", "holdings",
+            "industries", "industry", "solutions", "services", "capital", "finance",
+            "financial", "bank", "properties", "property", "developer", "jewellery",
+            "jewellers", "retail", "infrastructure", "infra", "parks", "power", "pharma",
+            "boat", "industrial", "ventures", "trust"
+        }
 
         # Check direct entity matches or partial company root matches (e.g. "Piramal Pharma" / "Piramal")
         shared_entities = set()
-        for e1 in set_ent1:
-            for e2 in set_ent2:
-                if e1 == e2 or (len(e1) >= 4 and len(e2) >= 4 and (e1 in e2 or e2 in e1)):
+        for e1 in norm_ent1:
+            for e2 in norm_ent2:
+                if e1 == e2 and e1 not in GENERIC_ROOT_TOKENS:
                     shared_entities.add(e1)
+                elif len(e1) >= 4 and len(e2) >= 4 and (e1 in e2 or e2 in e1):
+                    sub = e1 if len(e1) <= len(e2) else e2
+                    if sub not in GENERIC_ROOT_TOKENS and not any(sub == gt for gt in GENERIC_ROOT_TOKENS):
+                        shared_entities.add(sub)
 
         stopwords = {
             "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "is", "with", "by", "its", "from", "as",
@@ -280,6 +293,11 @@ class TwoSourceVerifier:
         }
         w1 = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in stopwords and len(w) >= 2}
         w2 = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in stopwords and len(w) >= 2}
+        if "dmart" in t1 or "d-mart" in t1 or "d mart" in t1:
+            w1.add("dmart")
+        if "dmart" in t2 or "d-mart" in t2 or "d mart" in t2:
+            w2.add("dmart")
+
         overlap = w1.intersection(w2)
         union = w1.union(w2)
         title_similarity = len(overlap) / len(union) if union else 0.0
@@ -287,9 +305,9 @@ class TwoSourceVerifier:
         major_entities = {
             "hdfc", "tata", "reliance", "nvidia", "infosys", "lt", "larsen", "toubro",
             "rio", "tinto", "arcadium", "apple", "google", "meta", "microsoft", "shiprocket",
-            "nxt", "infra", "trust", "dersimelagon", "leo", "pharma", "adani", "wipro",
-            "icici", "sbi", "airtel", "bharti", "itc", "maruti", "mahindra", "bajaj", "kfin",
-            "piramal", "yapan", "blackstone", "walmart", "target", "goldman"
+            "dersimelagon", "adani", "wipro", "icici", "sbi", "airtel", "bharti", "itc",
+            "maruti", "mahindra", "bajaj", "kfin", "piramal", "blackstone", "dmart", "zerodha",
+            "broadcom", "qualcomm", "intel", "amd", "tsmc", "asml", "samsung", "sony"
         }
         shared_major = {w for w in overlap if w in major_entities}
 
@@ -310,20 +328,53 @@ class TwoSourceVerifier:
                 "india", "state", "states", "minister", "bench", "chief", "justice", "sc", "hc",
                 "cji", "ruling", "plea", "verdict", "quashes", "stays", "case", "matter", "law",
                 "legal", "public", "delhi", "centre", "central", "probes", "probed", "investigation",
-                "hearing", "notice", "notices", "pleas", "judiciary", "judges", "directs"
+                "hearing", "notice", "notices", "pleas", "judiciary", "judges", "directs", "seeks",
+                "why", "how", "what", "who", "when", "wants", "powers", "misuse", "calls", "held"
             }
-            w1_topic = {w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3}
-            w2_topic = {w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3}
-            topic_overlap = w1_topic.intersection(w2_topic)
-            if len(topic_overlap) < 2:
-                return False, 0.0, f"DOMESTIC_TOPIC_MISMATCH: Insufficient specific subject/topic overlap for domestic events ({list(topic_overlap)})"
+            def _stem_topic_word(w: str) -> str:
+                w = w.lower()
+                # Suffix normalizations (transferred -> transfer, transferring -> transfer, judges -> judge)
+                w = re.sub(r"(?:ing|ed|es|s|tion|ment)$", "", w)
+                return w
+
+            # Extract specific topic keywords from titles
+            raw_w1 = [w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
+            raw_w2 = [w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
             
-            score = max(title_similarity, 0.85)
-            return True, score, f"DOMESTIC_EVENT_MATCH: Shared specific topics ({list(topic_overlap)})"
+            w1_stemmed = {_stem_topic_word(w) for w in raw_w1 if len(_stem_topic_word(w)) >= 3}
+            w2_stemmed = {_stem_topic_word(w) for w in raw_w2 if len(_stem_topic_word(w)) >= 3}
+            
+            topic_overlap = w1_stemmed.intersection(w2_stemmed)
+
+            # Check if there is specific geographic or named entity overlap (e.g. rajasthan, manipur, kashmir, etc.)
+            geo_entities = {
+                "rajasthan", "gujarat", "maharashtra", "kerala", "karnataka", "tamil", "nadu", "bengal",
+                "bihar", "punjab", "haryana", "assam", "odisha", "uttarakhand", "jharkhand", "chhattisgarh",
+                "telangana", "andhra", "goa", "kashmir", "ladakh", "manipur", "nagaland", "mizoram", "tripura",
+                "meghalaya", "sikkim", "mumbai", "kolkata", "chennai", "bengaluru", "hyderabad", "ahmedabad", "jaipur"
+            }
+            shared_geo = {w for w in (set(raw_w1).intersection(set(raw_w2))) if w in geo_entities}
+
+            # If shared named geography + at least 1 shared topic stem (e.g. rajasthan + transfer)
+            # or >= 2 shared specific topic stems
+            if len(topic_overlap) >= 2 or (shared_geo and len(topic_overlap) >= 1):
+                score = max(title_similarity, 0.85)
+                return True, score, f"DOMESTIC_EVENT_MATCH: Shared specific topics ({list(topic_overlap)})"
+
+            # Check body text overlap for candidate matches with high headline concept similarity
+            if (art1.content_text and art2.content_text):
+                b1_words = {_stem_topic_word(w) for w in re.findall(r"[a-zA-Z0-9]+", art1.content_text.lower()[:300]) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 4}
+                b2_words = {_stem_topic_word(w) for w in re.findall(r"[a-zA-Z0-9]+", art2.content_text.lower()[:300]) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 4}
+                body_topic_overlap = w1_stemmed.intersection(b2_words).union(w2_stemmed.intersection(b1_words))
+                if len(body_topic_overlap) >= 2 and (topic_overlap or shared_geo):
+                    score = max(title_similarity, 0.80)
+                    return True, score, f"DOMESTIC_EVENT_MATCH: Cross title-body topic overlap ({list(body_topic_overlap)})"
+
+            return False, 0.0, f"DOMESTIC_TOPIC_MISMATCH: Insufficient specific subject/topic overlap for domestic events ({list(topic_overlap)})"
 
         has_shared_entity = bool(shared_entities or shared_major)
         if not has_shared_entity:
-            return False, 0.0, f"ENTITY_MISMATCH: No shared corporate entity found between articles ('{list(set_ent1)[:2]}' vs '{list(set_ent2)[:2]}')"
+            return False, 0.0, f"ENTITY_MISMATCH: No shared corporate entity found between articles ('{list(norm_ent1)[:2]}' vs '{list(norm_ent2)[:2]}')"
 
         # Step 3: Check Reporting Period / Financial Fact Consistency
         q1 = self._extract_reporting_quarter(f"{art1.title} {(art1.content_text or '')[:200]}")
@@ -358,6 +409,9 @@ class TwoSourceVerifier:
             {"tube", "investments", "shanthi", "gears"},
             {"idbi", "bank", "fairfax"},
             {"manipal", "health"},
+            {"dmart", "d-mart", "avenue", "supermarts"},
+            {"capital", "group", "dmart", "d-mart"},
+            {"nvidia"},
         ]
 
         matched_clusters = sum(1 for cluster in COMPANY_CLUSTERS if overlap.intersection(cluster))
@@ -372,17 +426,43 @@ class TwoSourceVerifier:
         has_metric_match = bool(shared_metrics) and bool(
             shared_major or has_counterpart_match or has_period_match or has_strong_title_overlap
         )
-        release_signal_pattern = r"\b(earnings|earning|results|revenue|profit|miss|guidance|outlook|forecast|delivery|deliveries)\b"
+        release_signal_pattern = (
+            r"\b(earnings|earning|results|revenue|profit|miss|beat|beats|guidance|outlook|"
+            r"forecast|delivery|deliveries|sales|soar|soars|surge|surges|jump|jumps|quarter|"
+            r"quarterly|second quarter|first quarter|third quarter|fourth quarter|q[1-4]|"
+            r"chip demand|data centres|data centers|cyber wave|tailwind)\b"
+        )
         has_compatible_release_context = bool(
             re.search(release_signal_pattern, t1)
             and re.search(release_signal_pattern, t2)
-            and shared_metrics
+            and (shared_metrics or q1 == q2 or not (q1 and q2))
         )
         has_compatible_action = bool(
             (action1 and action2 and action1 == action2)
             or (cats1 and cats2 and cats1.intersection(cats2))
             or has_compatible_release_context
         )
+
+        # Same-company quarterly earnings cycle / corporate performance release match
+        is_same_company = bool(shared_entities or shared_major)
+        has_earnings_context = (
+            ("EARNINGS" in cats1 and "EARNINGS" in cats2)
+            or has_compatible_release_context
+            or (
+                re.search(r"\b(quarter|quarterly|earnings|results|profit|revenue|sales|q[1-4])\b", t1)
+                and re.search(r"\b(quarter|quarterly|earnings|results|profit|revenue|sales|q[1-4])\b", t2)
+            )
+        )
+        if is_same_company and has_earnings_context:
+            if not (q1 and q2 and q1 != q2):
+                distinct_actions = {"acquisition", "takeover", "merger", "lawsuit", "resignation", "fundraising"}
+                is_distinct_action = bool(
+                    cats1 and cats2 and not cats1.intersection(cats2) and any(c.lower() in distinct_actions for c in cats1.union(cats2))
+                )
+                if not is_distinct_action:
+                    score = max(title_similarity, 0.85)
+                    return True, score, f"Corroborated: Shared company ({list(shared_entities or shared_major)}) and quarterly earnings context"
+
         if has_compatible_action and (
             has_metric_match
             or has_counterpart_match
@@ -420,6 +500,8 @@ class TwoSourceVerifier:
             EventSourceVerification detailing independence and verification outcome.
         """
         logger.info("Evaluating two-source verification for event '%s' (%d articles)", event.canonical_title[:45], len(articles))
+        event.secondary_publisher = None
+        event.secondary_url = None
 
         # 1. Single Source Check (Strict: No fabrication allowed)
         if not articles or len(articles) < 2:
@@ -450,15 +532,19 @@ class TwoSourceVerifier:
         # 2. Check if both articles refer to the same event
         is_same_event, event_score, event_msg = self.is_same_underlying_event(art1, art2, now_utc=now_utc)
         if not is_same_event:
+            event.secondary_publisher = None
+            event.secondary_url = None
+            if len(event.article_ids) > 1:
+                event.article_ids = [event.article_ids[0]]
             return EventSourceVerification(
                 event_id=event.id,
                 primary_source=art1.source_name,
-                secondary_source=art2.source_name,
-                source_count=len(articles),
+                secondary_source=None,
+                source_count=1,
                 is_independent=False,
                 verification_status=VerificationStatus.REJECTED_UNRELATED,
                 confidence_score=event_score,
-                article_urls=[art1.url, art2.url],
+                article_urls=[art1.url],
                 matching_details=f"Articles discuss different underlying events: {event_msg}",
             )
 
@@ -466,30 +552,38 @@ class TwoSourceVerifier:
         group1 = self.get_publisher_group(art1)
         group2 = self.get_publisher_group(art2)
         if group1 == group2:
+            event.secondary_publisher = None
+            event.secondary_url = None
+            if len(event.article_ids) > 1:
+                event.article_ids = [event.article_ids[0]]
             return EventSourceVerification(
                 event_id=event.id,
                 primary_source=art1.source_name,
-                secondary_source=art2.source_name,
-                source_count=len(articles),
+                secondary_source=None,
+                source_count=1,
                 is_independent=False,
                 verification_status=VerificationStatus.REJECTED_SAME_PUBLISHER,
                 confidence_score=0.4,
-                article_urls=[art1.url, art2.url],
+                article_urls=[art1.url],
                 matching_details=f"Both articles originate from the same publisher/media group ('{group1}').",
             )
 
         # 4. Check for Syndicated / Verbatim Wire Repetition
         is_syndicated, synd_reason = self.is_syndicated_republication(art1, art2)
         if is_syndicated:
+            event.secondary_publisher = None
+            event.secondary_url = None
+            if len(event.article_ids) > 1:
+                event.article_ids = [event.article_ids[0]]
             return EventSourceVerification(
                 event_id=event.id,
                 primary_source=art1.source_name,
-                secondary_source=art2.source_name,
-                source_count=len(articles),
+                secondary_source=None,
+                source_count=1,
                 is_independent=False,
                 verification_status=VerificationStatus.REJECTED_SYNDICATED,
                 confidence_score=0.3,
-                article_urls=[art1.url, art2.url],
+                article_urls=[art1.url],
                 matching_details=f"Syndicated wire copy detected: {synd_reason}",
             )
 

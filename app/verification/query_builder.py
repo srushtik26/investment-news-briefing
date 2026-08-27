@@ -31,6 +31,16 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "controlling stake", "majority stake", "minority stake", "stake", "block deal",
     "stake sale", "acquisition", "transaction", "bulk deal", "promoter stake sale",
     "institutional stake sale", "equity", "completes acquisition", "completes",
+    "ai", "revenue", "bank", "banking", "technology", "tech", "technologies",
+    "chip", "chips", "centres", "data centres", "strong ai", "ai chip",
+    "energy", "green", "green energy", "jewellery", "jewellers", "jewels",
+    "retail", "gold", "metals", "commodities", "crypto", "bitcoin", "etf", "etfs",
+    "bonds", "fund", "funds", "capital", "ventures", "finance", "financial",
+    "properties", "property", "developer", "developers",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
 }
 
 # Prefix tokens to strip from proper noun matches (e.g. 'Wall Street Walmart' -> 'Walmart')
@@ -38,6 +48,7 @@ PREFIXES_TO_STRIP: List[str] = [
     "wall street ", "stock market ", "market ", "shares of ", "shares in ",
     "reports of ", "exclusive: ", "view: ", "update: ", "breaking: ",
     "completes acquisition of ", "acquires ", "buys ", "sale of ", "controlling stake in ",
+    "strong ai chip demand powers ", "ai chip demand powers ",
 ]
 
 EVENT_ACTION_PATTERNS = [
@@ -81,6 +92,10 @@ class EventQueryBuilder:
                 tok = tok[len(prefix):].strip()
                 tok_low = tok.lower()
 
+        # Strip possessive 's or '
+        tok = re.sub(r"('s|’s|')$", "", tok).strip()
+        tok_low = tok.lower()
+
         # Strip reporting quarters/years from end of entity (e.g. 'Company X Q1' -> 'Company X')
         for period in (" q1", " q2", " q3", " q4", " fy24", " fy25", " fy26", " fy27"):
             if tok_low.endswith(period):
@@ -93,8 +108,21 @@ class EventQueryBuilder:
                 tok = tok[:-len(suffix)].strip()
                 tok_low = tok.lower()
 
+        # Check if entity is a date pattern or contains years / calendar months
+        if re.search(r"\b(19\d\d|20\d\d)\b", tok) or re.search(r"\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b", tok_low):
+            return None
+
+        # Check if entity contains generic results / reporting phrases
+        if re.search(r"\b(quarterly results|annual results|financial results|q[1-4] results|fy\d{2} results|board meeting|share price)\b", tok_low):
+            return None
+
         # Check blacklist
         if not tok or len(tok) < 2 or tok_low in GENERIC_ENTITY_BLACKLIST:
+            return None
+
+        # Check if all constituent words belong to GENERIC_ENTITY_BLACKLIST
+        tok_words = [w for w in re.findall(r"[a-zA-Z0-9]+", tok_low) if not w.isdigit()]
+        if tok_words and all(w in GENERIC_ENTITY_BLACKLIST for w in tok_words):
             return None
 
         # Discard multi-word phrases that are all lowercase or purely common dictionary words
@@ -149,6 +177,23 @@ class EventQueryBuilder:
                     clean_entities.append(c)
                     seen.add(c.lower())
 
+        # Check known major corporate entity keywords in title
+        KNOWN_TITLE_ENTITIES = [
+            "Nvidia", "Broadcom", "Apple", "Microsoft", "Google", "Alphabet", "Amazon", "Tesla",
+            "Meta", "Intel", "AMD", "Qualcomm", "TSMC", "ASML", "Samsung", "Sony", "OpenAI",
+            "Target", "Walmart", "Boeing", "Airbus", "Pfizer", "Moderna", "AstraZeneca", "Novartis",
+            "BHP", "Rio Tinto", "Glencore", "Vale", "Shein", "nVent", "Peet", "Ingenia",
+            "Reliance", "Tata", "Adani", "Infosys", "Wipro", "HDFC", "ICICI", "SBI", "ITC",
+            "Maruti", "Mahindra", "Bajaj", "L&T", "KFin", "Piramal", "Welspun", "DMart",
+            "Groww", "Honasa", "Inorbit", "Zerodha", "boAt", "Vikas Ecotech", "Juniper Green Energy",
+        ]
+        for ent in KNOWN_TITLE_ENTITIES:
+            if re.search(rf"\b{re.escape(ent)}\b", title, re.IGNORECASE):
+                c = cls.clean_entity(ent)
+                if c and c.lower() not in seen:
+                    clean_entities.append(c)
+                    seen.add(c.lower())
+
         # Fallback multi-word regex across full title
         for matched_str in re.findall(r"\b(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)(?:\s+(?:[0-9]+[a-zA-Z0-9&'\.\-]+|[A-Z][a-zA-Z0-9&'\.\-]*)){1,3}\b", title):
             c = cls.clean_entity(matched_str)
@@ -156,7 +201,7 @@ class EventQueryBuilder:
                 clean_entities.append(c)
                 seen.add(c.lower())
 
-        return clean_entities
+        return clean_entities[:6]
 
     @classmethod
     def extract_numbers(cls, text: str) -> List[str]:

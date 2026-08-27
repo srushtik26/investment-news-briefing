@@ -98,34 +98,40 @@ class FinalValidationEngine:
             allowed_urls = {art.url for art in articles_lookup.values()}
 
         # -------------------------------------------------------------
-        # CHECK 0 / DOMESTIC: Exactly 5 Domestic stories (when present/strict)
+        # CHECK 1 / DOMESTIC: Exactly 5 Domestic stories
         # -------------------------------------------------------------
         domestic_stories = getattr(payload, "domestic_stories", []) or []
         domestic_count = len(domestic_stories)
-        if strict_5_per_section and domestic_stories:
-            if domestic_count != 5:
-                res = ValidationCheckResult(
-                    check_id=1,
-                    check_name="Exactly 5 Domestic stories",
-                    passed=False,
-                    failure_reason=f"Expected exactly 5 Domestic stories, found {domestic_count}",
-                )
-                check_results.append(res)
+        if strict_5_per_section and domestic_count != 5:
+            res = ValidationCheckResult(
+                check_id=1,
+                check_name="Exactly 5 Domestic stories",
+                passed=False,
+                failure_reason=f"Expected exactly 5 Domestic stories, found {domestic_count}",
+            )
+        else:
+            res = ValidationCheckResult(
+                check_id=1,
+                check_name="Exactly 5 Domestic stories",
+                passed=domestic_count == 5 if strict_5_per_section else (domestic_count > 0),
+                failure_reason=None if (domestic_count == 5 if strict_5_per_section else domestic_count > 0) else f"Domestic section has {domestic_count} stories (expected 5)",
+            )
+        check_results.append(res)
 
         # -------------------------------------------------------------
-        # CHECK 1: Exactly 5 India stories
+        # CHECK 2: Exactly 5 India stories
         # -------------------------------------------------------------
         india_count = len(payload.india_stories)
         if strict_5_per_section and india_count != 5:
             res = ValidationCheckResult(
-                check_id=1,
+                check_id=2,
                 check_name="Exactly 5 India stories",
                 passed=False,
                 failure_reason=f"Expected exactly 5 India stories, found {india_count}",
             )
         else:
             res = ValidationCheckResult(
-                check_id=1,
+                check_id=2,
                 check_name="Exactly 5 India stories",
                 passed=india_count > 0,
                 failure_reason=None if india_count > 0 else "India section is empty",
@@ -133,24 +139,37 @@ class FinalValidationEngine:
         check_results.append(res)
 
         # -------------------------------------------------------------
-        # CHECK 2: Exactly 5 International stories
+        # CHECK 3: Exactly 5 International stories
         # -------------------------------------------------------------
         intl_count = len(payload.international_stories)
         if strict_5_per_section and intl_count != 5:
             res = ValidationCheckResult(
-                check_id=2,
+                check_id=3,
                 check_name="Exactly 5 International stories",
                 passed=False,
                 failure_reason=f"Expected exactly 5 International stories, found {intl_count}",
             )
         else:
             res = ValidationCheckResult(
-                check_id=2,
+                check_id=3,
                 check_name="Exactly 5 International stories",
                 passed=intl_count > 0,
                 failure_reason=None if intl_count > 0 else "International section is empty",
             )
         check_results.append(res)
+
+        # -------------------------------------------------------------
+        # TOTAL COUNT CHECK: Exactly 15 stories total
+        # -------------------------------------------------------------
+        total_count = domestic_count + india_count + intl_count
+        if strict_5_per_section and total_count != 15:
+            res = ValidationCheckResult(
+                check_id=4,
+                check_name="Total 15 stories across 3 sections",
+                passed=False,
+                failure_reason=f"Expected exactly 15 stories across 3 sections, found {total_count} (Dom={domestic_count}, India={india_count}, Intl={intl_count})",
+            )
+            check_results.append(res)
 
         # -------------------------------------------------------------
         # EVENT DEDUPLICATION: No event appears multiple times

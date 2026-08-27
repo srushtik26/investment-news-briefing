@@ -182,7 +182,51 @@ def test_mocked_pool_groww_honasa_horizon_welspun_ardee_produces_briefing():
             ),
         )
 
+    dom_stories_data = [
+        "Supreme Court Constitution Bench rules on national tribunal appointments",
+        "Cabinet approves Rs 10000 crore national semiconductor mission package",
+        "Election Commission announces schedule for assembly elections",
+        "ISRO successfully launches next generation navigation satellite",
+        "Parliament passes landmark national digital data protection bill",
+    ]
+    dom_scored = []
+    for idx, title in enumerate(dom_stories_data):
+        aid = f"art_dom_{idx}"
+        ev = Event(
+            id=f"dom_ev_{idx}",
+            canonical_title=title,
+            description=f"Description for {title}",
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            companies_involved=[],
+            financial_figures=[],
+            percentages=[],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            primary_publisher="The Hindu",
+            primary_url=f"https://thehindu.com/dom-{idx}",
+            secondary_publisher="Indian Express",
+            secondary_url=f"https://indianexpress.com/dom-{idx}",
+        )
+        scored = ScoredEvent(
+            event=ev,
+            score_breakdown=dummy_breakdown,
+            investment_score=95.0 - idx,
+            rank=idx + 1,
+        )
+        dom_scored.append(scored)
+        articles_lookup[aid] = Article(
+            id=aid,
+            title=title,
+            url=f"https://thehindu.com/dom-{idx}",
+            source_name="The Hindu",
+            published_at=datetime.now(timezone.utc),
+            date_verified=True,
+            category=NewsCategory.DOMESTIC,
+            content_text=f"Government national policy {title} announcement covering broad judicial and constitutional developments across the country.",
+        )
+
     pool = RankedCandidatePool(
+        domestic_candidates=dom_scored,
         india_candidates=india_scored,
         international_candidates=intl_scored,
     )
@@ -191,7 +235,7 @@ def test_mocked_pool_groww_honasa_horizon_welspun_ardee_produces_briefing():
     payload = BriefingEditorialPayload.model_validate_json(raw_json)
 
     val_engine = FinalValidationEngine()
-    events_lookup = {s.event.id: s.event for s in india_scored + intl_scored}
+    events_lookup = {s.event.id: s.event for s in dom_scored + india_scored + intl_scored}
 
     report = val_engine.validate_briefing(
         payload=payload,
@@ -204,5 +248,6 @@ def test_mocked_pool_groww_honasa_horizon_welspun_ardee_produces_briefing():
 
     assert report.is_valid is True
     assert report.status == ValidationStatus.PASSED
+    assert len(payload.domestic_stories) == 5
     assert len(payload.india_stories) == 5
     assert len(payload.international_stories) == 5

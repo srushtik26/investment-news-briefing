@@ -52,6 +52,7 @@ from app.verification import (
 )
 
 from app.deduplication import DeduplicationEngine, HistoryStore
+from app.deduplication.fingerprint import normalize_entity_name
 from app.deduplication.clusterer import EventClusterer
 from app.filtering.rules import URLFilterRule
 from app.models.entity_sanitizer import sanitize_company_entities
@@ -737,6 +738,9 @@ def run_pipeline(
                     event.single_source_confidence_score = conf
                     event.primary_publisher = primary_art.source_name
                     event.primary_url = primary_art.url
+                    event.secondary_publisher = None
+                    event.secondary_url = None
+                    event.article_ids = [primary_art.id]
                     event.verification_reason = rsn
                     high_confidence_single_candidates.append(event)
                     log_exec(f"  -> QUALIFIED QUALITY_VERIFIED SINGLE SOURCE [{event.event_category.value.upper()}]: {event.canonical_title[:45]} | {rsn}")
@@ -776,23 +780,100 @@ def run_pipeline(
         e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
         e.event_category = reg_clf.classify_event(e, e_arts)
 
-    def get_unique_candidate_events() -> List[Event]:
-        """Return distinct canonical events preserving verification tier precedence."""
+    def get_final_selectable_unique_events(
+        category: Optional[NewsCategory] = None,
+    ) -> List[Event]:
+        """
+        Compute strictly distinct, final-selectable unique events per section (or all sections).
+        
+        Enforces:
+        1. Verification Tier Precedence: TWO_SOURCE_VERIFIED before HIGH_CONFIDENCE_SINGLE_SOURCE.
+        2. Semantic Event Deduplication:
+           - Merges multiple reports of the same real-world corporate transaction or event
+             using verifier.is_same_underlying_event().
+           - Keeps the single highest-priority/highest-scoring representative Event.
+        3. India Company Exclusivity:
+           - Strictly 1 story per company across all involved entities in India.
+           - Normalized entity aliases (e.g. DMart vs D-Mart vs Avenue Supermarts) are unified.
+        4. International Same-Earnings Dedup:
+           - Collapses same company + same quarterly earnings cycle to 1 briefing story.
+        5. Domestic Event Dedup:
+           - Deduplicates multiple reports of the same domestic event.
+        """
+        from app.deduplication.fingerprint import normalize_entity_name
+        from app.models.entity_sanitizer import sanitize_company_entities
+
+        raw_candidates: List[Event] = []
         seen_ids: Set[str] = set()
-        unique: List[Event] = []
+
         for ev in verified_events:
             if ev.id not in seen_ids:
                 seen_ids.add(ev.id)
-                unique.append(ev)
+                raw_candidates.append(ev)
         for ev in high_confidence_single_candidates:
             if ev.id not in seen_ids:
                 seen_ids.add(ev.id)
-                unique.append(ev)
-        return unique
+                raw_candidates.append(ev)
+
+        def _cand_sort_key(ev: Event):
+            is_two = 1 if (getattr(ev, "verification_tier", None) == VerificationTier.TWO_SOURCE_VERIFIED) else 0
+            score = getattr(ev, "relevance_score", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0
+            return (is_two, score)
+
+        sorted_cands = sorted(raw_candidates, key=_cand_sort_key, reverse=True)
+
+        if category is not None:
+            sorted_cands = [e for e in sorted_cands if e.event_category == category]
+
+        selectable: List[Event] = []
+        selected_india_companies: Set[str] = set()
+
+        for cand in sorted_cands:
+            cand_art = articles_lookup.get(cand.article_ids[0]) if cand.article_ids else None
+            if not cand_art:
+                continue
+
+            cand_cat = cand.event_category
+
+            # 1. Semantic event deduplication against already selected events
+            is_dup = False
+            for sel in selectable:
+                if sel.event_category != cand_cat:
+                    continue
+                sel_art = articles_lookup.get(sel.article_ids[0]) if sel.article_ids else None
+                if sel_art:
+                    is_same, _, _ = verifier.is_same_underlying_event(cand_art, sel_art, now_utc=run_reference_time)
+                    if is_same:
+                        is_dup = True
+                        break
+            if is_dup:
+                continue
+
+            # 2. Section-specific constraints
+            if cand_cat == NewsCategory.INDIA:
+                cand_entities = EventQueryBuilder.extract_entities(cand_art, event=cand)
+                cand_comps = sanitize_company_entities(
+                    (cand.companies_involved or []) + cand_entities,
+                    publisher=cand_art.source_name,
+                )
+                norm_comps = {normalize_entity_name(c) for c in cand_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+                if norm_comps and norm_comps.intersection(selected_india_companies):
+                    # Duplicate company in India section
+                    continue
+                selectable.append(cand)
+                selected_india_companies.update(norm_comps)
+            else:
+                selectable.append(cand)
+
+        return selectable
+
+    def get_unique_candidate_events() -> List[Event]:
+        """Return distinct canonical events preserving verification tier precedence and semantic uniqueness."""
+        return get_final_selectable_unique_events()
 
     def count_unique_section_events(category: NewsCategory) -> int:
         """Count unique eligible events belonging to a section category."""
-        return sum(1 for e in get_unique_candidate_events() if e.event_category == category)
+        return len(get_final_selectable_unique_events(category=category))
 
     def process_candidate_item(cand: Any, cand_section: str) -> Optional[Event]:
         nonlocal organic_second_sources_found
@@ -882,7 +963,7 @@ def run_pipeline(
 
         # Check if this matches existing event organically
         existing_event = next(
-            (e for e in single_source_events if e.article_ids and
+            (e for e in (verified_events + high_confidence_single_candidates + single_source_events) if e.article_ids and
              verifier.is_same_underlying_event(
                  articles_lookup.get(e.article_ids[0], art), art, now_utc=run_reference_time
               )[0]),
@@ -901,6 +982,9 @@ def run_pipeline(
                         log_exec(f"    EXPANSION ORGANICALLY VERIFIED: {existing_event.canonical_title[:45]}")
                     if existing_event in high_confidence_single_candidates:
                         high_confidence_single_candidates.remove(existing_event)
+                else:
+                    if art.id in existing_event.article_ids:
+                        existing_event.article_ids.remove(art.id)
             return existing_event
         else:
             single_source_events.append(event)
@@ -917,12 +1001,38 @@ def run_pipeline(
                     event.single_source_confidence_score = conf
                     event.primary_publisher = art.source_name
                     event.primary_url = art.url
+                    event.secondary_publisher = None
+                    event.secondary_url = None
+                    event.article_ids = [art.id]
                     event.verification_reason = rsn
                     if event not in high_confidence_single_candidates and event not in verified_events:
                         high_confidence_single_candidates.append(event)
                         prefix = f"[{event.event_category.value.upper()}_QUALIFIED]"
                         log_exec(f"    {prefix} {event.canonical_title[:55]} | {rsn}")
             return event
+
+    def is_domestic_diversity_satisfied(domestic_events: List[Event]) -> bool:
+        """
+        Check if domestic candidate pool allows selecting 5 diversified stories:
+        - >= 5 total domestic candidates
+        - >= 3 distinct DomesticTopic categories
+        - <= 2 COURT_JUDICIARY stories (i.e. at least 3 non-court stories exist)
+        """
+        if len(domestic_events) < 5:
+            return False
+        from app.verification.domestic_trending import classify_domestic_topic, DomesticTopic
+        topics = []
+        for ev in domestic_events:
+            art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids and ev.article_ids[0] in articles_lookup else None
+            title = ev.canonical_title or (art.title if art else "")
+            body = (art.content_text if art else "") or ev.description or ""
+            topics.append(classify_domestic_topic(title, body))
+        
+        court_count = topics.count(DomesticTopic.COURT_JUDICIARY)
+        non_court_count = len(topics) - court_count
+        distinct_topics = set(topics)
+        
+        return (len(distinct_topics) >= 3 and non_court_count >= 3)
 
     expansion_pass = 1
     max_expansion_passes = 6
@@ -937,13 +1047,23 @@ def run_pipeline(
             e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
             e.event_category = reg_clf.classify_event(e, e_arts)
 
-        dom_unique_count   = count_unique_section_events(NewsCategory.DOMESTIC)
+        cur_dom_events     = get_final_selectable_unique_events(NewsCategory.DOMESTIC)
+        dom_unique_count   = len(cur_dom_events)
         india_unique_count = count_unique_section_events(NewsCategory.INDIA)
         intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
         total_unique       = len(get_unique_candidate_events())
         
+        has_unseen_dom = any(c.url.strip().lower().rstrip("/") not in seen_urls for c in domestic_reserve_pool)
+
         # Independent section freezing
-        dom_frozen      = (dom_unique_count >= 5)
+        dom_diversity_met = is_domestic_diversity_satisfied(cur_dom_events)
+        if dom_diversity_met:
+            dom_frozen = True
+        elif not has_unseen_dom and dom_unique_count >= 5:
+            dom_frozen = True  # Quality fallback: day genuinely only has court stories, permit 5 stories
+        else:
+            dom_frozen = False
+
         india_frozen    = (india_unique_count >= 5)
         intl_target_met = (intl_unique_count >= 5)
 
@@ -969,8 +1089,9 @@ def run_pipeline(
         if step_dom > 0:
             for c in unseen_dom[:step_dom]:
                 process_candidate_item(c, "domestic")
-                if count_unique_section_events(NewsCategory.DOMESTIC) >= 5:
-                    log_exec(f"[DOMESTIC_TARGET_MET] Domestic unique quality stories reached {count_unique_section_events(NewsCategory.DOMESTIC)}/5 from reserve pool.")
+                cur_dom = get_final_selectable_unique_events(NewsCategory.DOMESTIC)
+                if is_domestic_diversity_satisfied(cur_dom):
+                    log_exec(f"[DOMESTIC_TARGET_MET] Domestic diversified quality stories reached {len(cur_dom)}/5 with >=3 topics and <=2 courts.")
                     break
         if step_india > 0:
             for c in unseen_india[:step_india]:
@@ -1177,7 +1298,12 @@ def run_pipeline(
     for event in all_candidate_events:
         event_by_id[event.id] = event
         prim_pub = articles_lookup[event.article_ids[0]].source_name if event.article_ids and event.article_ids[0] in articles_lookup else None
-        clean_comps = sanitize_company_entities(event.companies_involved, publisher=prim_pub)
+        cand_art = articles_lookup.get(event.article_ids[0]) if event.article_ids else None
+        extracted_entities = EventQueryBuilder.extract_entities(cand_art, event=event) if cand_art else []
+        clean_comps = sanitize_company_entities(
+            (event.companies_involved or []) + extracted_entities,
+            publisher=prim_pub,
+        )
         comp = clean_comps[0] if clean_comps else "unspecified"
         primary_aid = event.article_ids[0]
         event_type_str = class_map[primary_aid].event_type.value if primary_aid in class_map else "OTHER"
@@ -1185,12 +1311,13 @@ def run_pipeline(
             "india" if event.event_category == NewsCategory.INDIA else "international"
         )
         candidate_stories.append({
-            "event_id":    event.id,
-            "headline":    event.canonical_title,
-            "company_name": comp,
-            "event_type":  event_type_str,
-            "category":    cat_str,
-            "key_facts":   event.financial_figures,
+            "event_id":      event.id,
+            "headline":      event.canonical_title,
+            "company_name":   comp,
+            "all_companies": clean_comps,
+            "event_type":    event_type_str,
+            "category":      cat_str,
+            "key_facts":     event.financial_figures,
         })
 
     accepted_stories, rejected_stories = dedup_engine.filter_stories(
@@ -1259,16 +1386,75 @@ def run_pipeline(
         [scored for scored in candidate_pool.international_candidates],
         key=_ladder_order,
     )
-    for rank, scored in enumerate(dom_ranked, 1):
-        scored.rank = rank
-    for rank, scored in enumerate(india_ranked, 1):
-        scored.rank = rank
-    for rank, scored in enumerate(intl_ranked, 1):
+    # Apply Domestic topic diversity and duplicate-event suppression
+    from app.ranking.sorter import select_diverse_domestic_candidates
+    candidate_pool.domestic_candidates = select_diverse_domestic_candidates(
+        domestic_candidates=dom_ranked,
+        articles_lookup=articles_lookup,
+        target_count=5,
+        max_court_stories=2,
+    )
+    for rank, scored in enumerate(candidate_pool.domestic_candidates, 1):
         scored.rank = rank
 
-    candidate_pool.domestic_candidates = dom_ranked[:5]
-    candidate_pool.india_candidates = india_ranked[:5]
-    candidate_pool.international_candidates = intl_ranked[:5]
+    # Ensure India candidates strictly enforce 1 story per company and deduplicate semantic duplicates
+    india_selected: List[ScoredEvent] = []
+    seen_india_comps: Set[str] = set()
+    for scored in india_ranked:
+        ev = scored.event
+        cand_art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+        if not cand_art:
+            continue
+        # Check semantic duplicate against already selected
+        is_dup = False
+        for ex in india_selected:
+            ex_art = articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+            if ex_art and verifier.is_same_underlying_event(cand_art, ex_art, now_utc=run_reference_time)[0]:
+                is_dup = True
+                break
+        if is_dup:
+            continue
+
+        extracted_entities = EventQueryBuilder.extract_entities(cand_art, event=ev) if cand_art else []
+        clean_comps = sanitize_company_entities(
+            (ev.companies_involved or []) + extracted_entities,
+            publisher=cand_art.source_name if cand_art else None,
+        )
+        norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+        if norm_comps and norm_comps.intersection(seen_india_comps):
+            continue
+
+        india_selected.append(scored)
+        seen_india_comps.update(norm_comps)
+        if len(india_selected) == 5:
+            break
+
+    # Ensure International candidates deduplicate semantic / earnings duplicates
+    intl_selected: List[ScoredEvent] = []
+    for scored in intl_ranked:
+        ev = scored.event
+        cand_art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+        if not cand_art:
+            continue
+        is_dup = False
+        for ex in intl_selected:
+            ex_art = articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+            if ex_art and verifier.is_same_underlying_event(cand_art, ex_art, now_utc=run_reference_time)[0]:
+                is_dup = True
+                break
+        if is_dup:
+            continue
+        intl_selected.append(scored)
+        if len(intl_selected) == 5:
+            break
+
+    for rank, scored in enumerate(india_selected, 1):
+        scored.rank = rank
+    for rank, scored in enumerate(intl_selected, 1):
+        scored.rank = rank
+
+    candidate_pool.india_candidates = india_selected
+    candidate_pool.international_candidates = intl_selected
 
     domestic_pool = candidate_pool.domestic_candidates
     india_pool = candidate_pool.india_candidates
@@ -1352,7 +1538,7 @@ def run_pipeline(
         print(f"\n[{sec_name}] {ev.canonical_title}")
         print(f"  Tier:       {tier_str} (Confidence: {ev.verification_confidence:.1f}/100)")
         print(f"  Primary:    {prim_pub} ({prim_u})")
-        if ev.secondary_publisher:
+        if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED and ev.secondary_publisher:
             print(f"  Secondary:  {ev.secondary_publisher} ({ev.secondary_url})")
         elif ev.verification_reason:
             print(f"  Reason:     {ev.verification_reason}")
@@ -1413,28 +1599,32 @@ def run_pipeline(
             if (editorial_res.error_message or "").startswith(RATE_LIMITED_PREFIX):
                 log_exec(f"  -> RATE_LIMITED: {editorial_res.error_message}")
 
+        # Prepare deterministic Top 5 Domestic stories
+        dom_stories_selected = []
+        for s in candidate_pool.domestic_candidates[:5]:
+            ev = s.event
+            art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            src = ev.primary_publisher or (art.source_name if art else "The Hindu")
+            u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
+            dom_stories_selected.append(EditorialStorySelection(
+                section="domestic",
+                event_id=ev.id,
+                headline=ev.canonical_title,
+                source=src,
+                url=u,
+            ))
+
         selection_payload = None
         if editorial_res and editorial_res.success and editorial_res.selection:
             selection_payload = editorial_res.selection
+            # Explicitly guarantee Domestic stories are merged
+            if not getattr(selection_payload, "domestic_stories", None) or len(selection_payload.domestic_stories) < 5:
+                selection_payload.domestic_stories = dom_stories_selected
             log_exec(f"Stage 8 Summary:")
             log_exec(f"  Gemini selected: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
         else:
             err = editorial_res.error_message if editorial_res else "Unknown editorial error"
             log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
-            
-            dom_stories_selected = []
-            for s in candidate_pool.domestic_candidates[:5]:
-                ev = s.event
-                art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                src = ev.primary_publisher or (art.source_name if art else "The Hindu")
-                u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
-                dom_stories_selected.append(EditorialStorySelection(
-                    section="domestic",
-                    event_id=ev.id,
-                    headline=ev.canonical_title,
-                    source=src,
-                    url=u,
-                ))
             india_stories_selected = []
             for s in candidate_pool.india_candidates[:5]:
                 ev = s.event
@@ -1676,7 +1866,7 @@ def run_pipeline(
         for idx, story in enumerate(all_final, 1):
             ev = event_by_id.get(story.event_id)
             art1_id = ev.article_ids[0] if (ev and ev.article_ids) else None
-            art2_id = ev.article_ids[1] if (ev and len(ev.article_ids) > 1) else None
+            art2_id = ev.article_ids[1] if (ev and len(ev.article_ids) > 1 and ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED) else None
             art1 = articles_lookup.get(art1_id) if art1_id else None
             art2 = articles_lookup.get(art2_id) if art2_id else None
             orig = art1.metadata.get("original_url", story.url) if art1 else story.url
@@ -1698,7 +1888,7 @@ def run_pipeline(
                 print(f"    Publisher:         {art1.source_name}")
                 print(f"    URL:               {art1.url}")
                 print(f"    Date:              {art1.published_at.isoformat() if art1.published_at else 'N/A'}")
-            if art2:
+            if art2 and ev and ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED:
                 print(f"  SOURCE 2:")
                 print(f"    Publisher:         {art2.source_name}")
                 print(f"    URL:               {art2.url}")

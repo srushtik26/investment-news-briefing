@@ -19,13 +19,22 @@ def normalize_entity_name(name: Optional[str]) -> str:
     if not name:
         return "unspecified_entity"
     cleaned = name.lower().strip()
-    if cleaned in ("unspecified", "unknown", "n/a", "na", "none", "unspecified_entity", ""):
+    if cleaned in (
+        "unspecified", "unknown", "n/a", "na", "none", "unspecified_entity", "",
+        "ai", "revenue", "bank", "group", "technology", "tech", "energy", "green",
+        "jewellery", "jewellers", "properties", "property", "developer", "retail",
+    ):
         return "unspecified_entity"
+    # Normalize hyphens and dashes to underscores or empty string
+    cleaned = cleaned.replace("d-mart", "dmart").replace("d mart", "dmart")
     # Remove common corporate suffixes
-    cleaned = re.sub(r"\b(ltd|limited|inc|corp|corporation|plc|nv|sa|llc|pvt|co)\b", "", cleaned)
+    cleaned = re.sub(r"\b(ltd|limited|inc|corp|corporation|plc|nv|sa|llc|pvt|co|enterprises|enterprise)\b", "", cleaned)
     cleaned = re.sub(r"[^\w\s]", "", cleaned)
     cleaned = "_".join(cleaned.split())
-    if not cleaned:
+    if not cleaned or cleaned in (
+        "unspecified_entity", "ai", "revenue", "bank", "group", "technology",
+        "tech", "energy", "green", "jewellery", "jewellers", "retail",
+    ):
         return "unspecified_entity"
 
     KNOWN_ENTITY_ALIASES = {
@@ -34,6 +43,19 @@ def normalize_entity_name(name: Optional[str]) -> str:
         "state_bank_of_india": "sbi",
         "one97_communications": "paytm",
         "tata_consultancy_services": "tcs",
+        "dmart": "avenue_supermarts",
+        "d_mart": "avenue_supermarts",
+        "d_mart_retail": "avenue_supermarts",
+        "avenue_supermart": "avenue_supermarts",
+        "avenue_supermarts": "avenue_supermarts",
+        "reliance_jio": "reliance",
+        "reliance_retail": "reliance",
+        "reliance_industries": "reliance",
+        "hdfc": "hdfc_bank",
+        "icici": "icici_bank",
+        "kotak": "kotak_mahindra_bank",
+        "nvidias": "nvidia",
+        "nvidia": "nvidia",
     }
     return KNOWN_ENTITY_ALIASES.get(cleaned, cleaned)
 

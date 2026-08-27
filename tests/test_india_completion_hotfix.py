@@ -290,7 +290,7 @@ def test_five_india_plus_five_intl_generates_briefing():
         ScoredEvent(
             event=Event(
                 id=f"in_ev_{i}",
-                canonical_title=f"India Corporate Deal Event {i} for Rs 500 Crore",
+                canonical_title=f"Company IN {i} acquires logistics arm for Rs 500 Crore",
                 description=f"India deal description {i}",
                 article_ids=[f"art_in_{i}"],
                 event_category=NewsCategory.INDIA,
@@ -325,27 +325,61 @@ def test_five_india_plus_five_intl_generates_briefing():
         for i in range(5)
     ]
     
+    dom_scored = [
+        ScoredEvent(
+            event=Event(
+                id=f"dom_ev_{i}",
+                canonical_title=[
+                    "Supreme Court Constitution Bench rules on national tribunal appointments",
+                    "Cabinet approves Rs 10000 crore national semiconductor mission package",
+                    "Election Commission announces schedule for assembly elections",
+                    "ISRO successfully launches next generation navigation satellite",
+                    "Parliament passes landmark national digital data protection bill",
+                ][i],
+                description=f"Domestic policy description {i}",
+                article_ids=[f"art_dom_{i}"],
+                event_category=NewsCategory.DOMESTIC,
+                companies_involved=[],
+                financial_figures=[],
+                percentages=[],
+                verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+                primary_publisher="The Hindu",
+                primary_url=f"https://thehindu.com/dom-{i}",
+                secondary_publisher="Indian Express",
+                secondary_url=f"https://indianexpress.com/dom-{i}",
+            ),
+            score_breakdown=dummy_breakdown,
+            investment_score=90.0 - i,
+            rank=i + 1,
+        )
+        for i in range(5)
+    ]
+
     pool = RankedCandidatePool(
+        domestic_candidates=dom_scored,
         india_candidates=india_scored,
         international_candidates=intl_scored,
     )
     
     articles_lookup = {}
-    for s in india_scored + intl_scored:
+    for s in dom_scored + india_scored + intl_scored:
         ev = s.event
         aid = ev.article_ids[0]
-        comp = ev.companies_involved[0]
+        comp = ev.companies_involved[0] if ev.companies_involved else "Government"
+        src = ev.primary_publisher or ("The Hindu" if "dom" in aid else ("Reuters" if "intl" in aid else "Business Standard"))
+        u = ev.primary_url or (f"https://thehindu.com/{aid}" if "dom" in aid else (f"https://www.reuters.com/business/{aid}" if "intl" in aid else f"https://www.business-standard.com/{aid}"))
         articles_lookup[aid] = Article(
             id=aid,
             title=ev.canonical_title,
-            url=f"https://www.reuters.com/business/{aid}" if "intl" in aid else f"https://www.business-standard.com/{aid}",
-            source_name="Reuters" if "intl" in aid else "Business Standard",
+            url=u,
+            source_name=src,
             published_at=datetime.now(timezone.utc),
             date_verified=True,
+            category=ev.event_category,
             content_text=(
-                f"{comp} reported a major completed transaction today valued at substantial capital scale across key markets. "
-                "The corporate board approved all definitive filings across financial regulatory authorities following thorough due diligence, "
-                "positioning the business for expanded operational revenue growth and enhanced profitability metrics over the coming fiscal years."
+                f"{comp} reported national policy developments and strategic actions today across key national domains. "
+                "The relevant public authorities approved all definitive filings across regulatory bodies following thorough due diligence, "
+                "positioning the governance framework for expanded public outcomes over the coming years."
             ),
         )
     
@@ -353,7 +387,7 @@ def test_five_india_plus_five_intl_generates_briefing():
     payload = BriefingEditorialPayload.model_validate_json(raw_json)
     
     val_engine = FinalValidationEngine()
-    events_lookup = {s.event.id: s.event for s in india_scored + intl_scored}
+    events_lookup = {s.event.id: s.event for s in dom_scored + india_scored + intl_scored}
     
     report = val_engine.validate_briefing(
         payload=payload,
@@ -366,5 +400,6 @@ def test_five_india_plus_five_intl_generates_briefing():
     
     assert report.is_valid is True
     assert report.status == ValidationStatus.PASSED
+    assert len(payload.domestic_stories) == 5
     assert len(payload.india_stories) == 5
     assert len(payload.international_stories) == 5

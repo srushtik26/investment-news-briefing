@@ -471,3 +471,308 @@ def test_regression_test_k_organic_verify_event_domestic_false_match_and_valid_c
     assert event_valid.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED
     assert "Corroborated" in verif_res_valid.matching_details
 
+
+def test_regression_test_l_domestic_diversity_max_court_stories():
+    """TEST L: Candidate pool with 4 Court + 4 strong non-court stories yields at most 2 court stories in final Top 5."""
+    from app.ranking.models import ScoredEvent, ScoreBreakdown
+    from app.ranking.sorter import select_diverse_domestic_candidates
+    from app.verification.domestic_trending import classify_domestic_topic, DomesticTopic
+
+    breakdown = ScoreBreakdown(
+        financial_magnitude=80.0,
+        market_impact=80.0,
+        investor_relevance=80.0,
+        corporate_significance=80.0,
+        source_quality=80.0,
+        total_score=80.0,
+    )
+    articles_map = {}
+    candidates = []
+
+    # 4 Supreme Court / judiciary stories
+    court_titles = [
+        "Supreme Court quashes state notification on reservation quota",
+        "Supreme Court issues notice to Centre on environmental plea",
+        "High Court stays municipal demolition orders across capital",
+        "Chief Justice of India constitutes new constitution bench for hearing",
+    ]
+    for idx, title in enumerate(court_titles, 1):
+        aid = f"court_art_{idx}"
+        art = Article(
+            id=aid,
+            title=title,
+            url=f"https://thehindu.com/court-{idx}",
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"The court hearing was conducted on {title}.",
+        )
+        articles_map[aid] = art
+        ev = Event(
+            id=f"court_ev_{idx}",
+            canonical_title=title,
+            description=art.content_text,
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        candidates.append(ScoredEvent(event=ev, investment_score=95.0 - idx, score_breakdown=breakdown, rank=idx))
+
+    # 4 Strong non-court stories
+    non_court_titles = [
+        ("ISRO successfully launches new earth observation satellite mission", DomesticTopic.SCIENCE_ISRO_TECH),
+        ("Union Cabinet approves mega railway corridor across three states", DomesticTopic.INFRASTRUCTURE),
+        ("Major cyclone triggers red alert as NDRF deploys rescue teams", DomesticTopic.WEATHER_DISASTER),
+        ("Indian Army tests new indigenous missile defense system", DomesticTopic.DEFENCE_SECURITY),
+    ]
+    for idx, (title, expected_topic) in enumerate(non_court_titles, 1):
+        aid = f"non_court_art_{idx}"
+        art = Article(
+            id=aid,
+            title=title,
+            url=f"https://thehindu.com/national-{idx}",
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"National development: {title}.",
+        )
+        articles_map[aid] = art
+        ev = Event(
+            id=f"non_court_ev_{idx}",
+            canonical_title=title,
+            description=art.content_text,
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        candidates.append(ScoredEvent(event=ev, investment_score=85.0 - idx, score_breakdown=breakdown, rank=4 + idx))
+
+    selected = select_diverse_domestic_candidates(
+        domestic_candidates=candidates,
+        articles_lookup=articles_map,
+        target_count=5,
+        max_court_stories=2,
+    )
+
+    assert len(selected) == 5
+
+    # Check that maximum 2 stories are from COURT_JUDICIARY
+    court_selected = [
+        s for s in selected
+        if classify_domestic_topic(s.event.canonical_title) == DomesticTopic.COURT_JUDICIARY
+    ]
+    assert len(court_selected) <= 2
+    assert len(court_selected) == 2
+
+    # Check that at least 3 distinct topics are represented
+    distinct_topics = {
+        classify_domestic_topic(s.event.canonical_title)
+        for s in selected
+    }
+    assert len(distinct_topics) >= 3
+
+
+def test_regression_test_m_rajasthan_hc_transfer_dedup_one_slot():
+    """TEST M: Two articles covering the same Rajasthan HC judge transfer occupy only ONE Domestic slot."""
+    from app.ranking.models import ScoredEvent, ScoreBreakdown
+    from app.ranking.sorter import select_diverse_domestic_candidates
+
+    breakdown = ScoreBreakdown(
+        financial_magnitude=80.0,
+        market_impact=80.0,
+        investor_relevance=80.0,
+        corporate_significance=80.0,
+        source_quality=80.0,
+        total_score=80.0,
+    )
+    articles_map = {}
+
+    art1 = Article(
+        id="raj_1",
+        title="Supreme Court judge seeks transfer of Rajasthan High Court acting Chief Justice",
+        url="https://thehindu.com/sc-judge-seeks-rajasthan-hc-transfer",
+        source_name="The Hindu",
+        category=NewsCategory.DOMESTIC,
+        content_text="A Supreme Court judge has written to the CJI seeking the transfer of the acting Chief Justice of Rajasthan High Court.",
+    )
+    art2 = Article(
+        id="raj_2",
+        title="'Misuse of powers': Why a Supreme Court Justice wants a judge transferred",
+        url="https://indianexpress.com/sc-justice-wants-judge-transferred",
+        source_name="Indian Express",
+        category=NewsCategory.DOMESTIC,
+        content_text="Supreme Court justice cites misuse of powers in letter requesting Rajasthan High Court acting chief justice transfer.",
+    )
+    articles_map[art1.id] = art1
+    articles_map[art2.id] = art2
+
+    ev1 = Event(
+        id="ev_raj_1",
+        canonical_title=art1.title,
+        description=art1.content_text,
+        article_ids=[art1.id],
+        event_category=NewsCategory.DOMESTIC,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+    )
+    ev2 = Event(
+        id="ev_raj_2",
+        canonical_title=art2.title,
+        description=art2.content_text,
+        article_ids=[art2.id],
+        event_category=NewsCategory.DOMESTIC,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+    )
+
+    candidates = [
+        ScoredEvent(event=ev1, investment_score=90.0, score_breakdown=breakdown, rank=1),
+        ScoredEvent(event=ev2, investment_score=89.0, score_breakdown=breakdown, rank=2),
+    ]
+
+    # Add distinct non-court filler stories to reach 5
+    distinct_fillers = [
+        ("ISRO successfully launches new earth observation satellite", "https://thehindu.com/isro-sat"),
+        ("Union Cabinet approves semiconductor manufacturing package", "https://thehindu.com/cabinet-semi"),
+        ("Major cyclone triggers red alert as NDRF begins rescue", "https://thehindu.com/cyclone-alert"),
+        ("Indian Army tests indigenous air defence missile system", "https://thehindu.com/army-missile"),
+    ]
+    for i, (title, url) in enumerate(distinct_fillers, 3):
+        aid = f"fill_{i}"
+        art = Article(
+            id=aid,
+            title=title,
+            url=url,
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"National report: {title}.",
+        )
+        articles_map[aid] = art
+        ev = Event(
+            id=f"ev_fill_{i}",
+            canonical_title=art.title,
+            description=art.content_text,
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        candidates.append(ScoredEvent(event=ev, investment_score=80.0 - i, score_breakdown=breakdown, rank=i))
+
+    selected = select_diverse_domestic_candidates(
+        domestic_candidates=candidates,
+        articles_lookup=articles_map,
+        target_count=5,
+    )
+
+    # Exactly one Rajasthan HC transfer story must be present
+    raj_events_selected = [s for s in selected if "rajasthan" in s.event.canonical_title.lower() or "transferred" in s.event.canonical_title.lower()]
+    assert len(raj_events_selected) == 1
+    assert len(selected) == 5
+
+
+def test_regression_test_n_opinion_op_ed_path_rejection():
+    """TEST N: URL path with /opinion/ or /op-ed/ and commentary-only content is rejected."""
+    from app.verification.domestic_trending import DomesticTrendingEvaluator
+
+    evaluator = DomesticTrendingEvaluator()
+
+    art_opinion = Article(
+        id="art_op_1",
+        title="Supreme Court and the SIR exercise",
+        url="https://www.thehindu.com/opinion/op-ed/supreme-court-and-the-sir-exercise/article12345.ece",
+        source_name="The Hindu",
+        category=NewsCategory.DOMESTIC,
+        content_text="The recent discourse on the Special Investigation Report highlights the need for institutional introspection.",
+    )
+    ev_opinion = Event(
+        id="ev_op_1",
+        canonical_title=art_opinion.title,
+        description=art_opinion.content_text,
+        article_ids=[art_opinion.id],
+        event_category=NewsCategory.DOMESTIC,
+    )
+
+    is_elig, score, reason = evaluator.evaluate(ev_opinion, art_opinion)
+    assert not is_elig
+    assert "REJECT_NOISE" in reason or "Opinion" in reason or score < 60.0
+
+
+def test_regression_test_o_quality_precedence_over_diversity():
+    """TEST O: When only 5 qualified Domestic candidates exist (3 Court + 2 others), all 5 are selected without failure."""
+    from app.ranking.models import ScoredEvent, ScoreBreakdown
+    from app.ranking.sorter import select_diverse_domestic_candidates
+
+    breakdown = ScoreBreakdown(
+        financial_magnitude=80.0,
+        market_impact=80.0,
+        investor_relevance=80.0,
+        corporate_significance=80.0,
+        source_quality=80.0,
+        total_score=80.0,
+    )
+    articles_map = {}
+    candidates = []
+
+    # 3 distinct Court stories
+    court_titles = [
+        "Supreme Court quashes state reservation rule",
+        "High Court issues nationwide stay on tax penalty",
+        "Chief Justice of India bench hears national telecom dispute",
+    ]
+    for idx, title in enumerate(court_titles, 1):
+        aid = f"court_{idx}"
+        art = Article(
+            id=aid,
+            title=title,
+            url=f"https://thehindu.com/court-case-{idx}",
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"Details on {title}.",
+        )
+        articles_map[aid] = art
+        ev = Event(
+            id=f"ev_court_{idx}",
+            canonical_title=title,
+            description=art.content_text,
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        candidates.append(ScoredEvent(event=ev, investment_score=90.0 - idx, score_breakdown=breakdown, rank=idx))
+
+    # 2 non-court stories
+    other_titles = [
+        "ISRO launches solar exploration satellite",
+        "Union Cabinet clears national semiconductor mission funding",
+    ]
+    for idx, title in enumerate(other_titles, 1):
+        aid = f"other_{idx}"
+        art = Article(
+            id=aid,
+            title=title,
+            url=f"https://thehindu.com/other-{idx}",
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"Details on {title}.",
+        )
+        articles_map[aid] = art
+        ev = Event(
+            id=f"ev_other_{idx}",
+            canonical_title=title,
+            description=art.content_text,
+            article_ids=[aid],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        )
+        candidates.append(ScoredEvent(event=ev, investment_score=85.0 - idx, score_breakdown=breakdown, rank=3 + idx))
+
+    # Total 5 candidates available
+    assert len(candidates) == 5
+
+    selected = select_diverse_domestic_candidates(
+        domestic_candidates=candidates,
+        articles_lookup=articles_map,
+        target_count=5,
+        max_court_stories=2,
+    )
+
+    # Must preserve all 5 candidates (quality/sufficiency outranks diversity)
+    assert len(selected) == 5
+
+

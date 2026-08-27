@@ -105,26 +105,29 @@ class DeduplicationEngine:
 
             # CHECK 2: India Same-Company Restriction
             if category == "india":
-                norm_company = normalize_entity_name(company)
-                is_unspecified_company = norm_company in ("unspecified_entity", "unspecified", "unknown", "n_a", "na", "n/a", "none", "")
-                if not is_unspecified_company:
-                    if norm_company in selected_india_companies:
-                        logger.info(
-                            "Rejected India story (duplicate company '%s'): '%s'",
-                            company,
-                            story.get("headline", "")[:45],
-                        )
-                        rejection = {
-                            **story,
-                            "rejection_reason": f"Same company ('{company}') already selected in today's India section",
-                            "rejection_rule": "INDIA_SAME_COMPANY",
-                        }
-                        rejected_stories.append(rejection)
-                        continue
+                all_raw_companies = story.get("all_companies") or [company]
+                norm_companies = {
+                    normalize_entity_name(c) for c in all_raw_companies
+                    if normalize_entity_name(c) not in ("unspecified_entity", "unspecified", "unknown", "n_a", "na", "n/a", "none", "")
+                }
+                if norm_companies and norm_companies.intersection(selected_india_companies):
+                    logger.info(
+                        "Rejected India story (duplicate company in %s): '%s'",
+                        norm_companies,
+                        story.get("headline", "")[:45],
+                    )
+                    rejection = {
+                        **story,
+                        "rejection_reason": f"Same company ('{company}') already selected in today's India section",
+                        "rejection_rule": "INDIA_SAME_COMPANY",
+                    }
+                    rejected_stories.append(rejection)
+                    continue
 
-                    selected_india_companies.add(norm_company)
+                if norm_companies:
+                    selected_india_companies.update(norm_companies)
                 accepted_stories.append(story)
-                logger.debug("Accepted India story for company '%s'", company)
+                logger.debug("Accepted India story for companies '%s'", norm_companies)
 
             # CHECK 3: International Section (Allow multiple companies, prevent duplicate event)
             else:

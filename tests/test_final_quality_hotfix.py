@@ -76,7 +76,25 @@ def test_invalid_hub_rejected_at_stage_9():
         )
     ]
     
+    dom_stories = [
+        EditorialStorySelection(
+            section="domestic",
+            event_id=f"dom_{i}",
+            headline=[
+                "Supreme Court Constitution Bench rules on national tribunal appointments",
+                "Cabinet approves Rs 10000 crore national semiconductor mission package",
+                "Election Commission announces schedule for assembly elections",
+                "ISRO successfully launches next generation navigation satellite",
+                "Parliament passes landmark national digital data protection bill",
+            ][i],
+            source="The Hindu",
+            url=f"https://thehindu.com/dom-{i}",
+        )
+        for i in range(5)
+    ]
+    
     payload = BriefingEditorialPayload(
+        domestic_stories=dom_stories,
         india_stories=india_stories,
         international_stories=intl_stories,
     )
@@ -84,14 +102,18 @@ def test_invalid_hub_rejected_at_stage_9():
     events_lookup = {}
     articles_lookup = {}
     
-    for s in india_stories + intl_stories:
+    for s in dom_stories + india_stories + intl_stories:
         ev = Event(
             id=s.event_id,
             canonical_title=s.headline,
             description=s.headline,
             article_ids=[f"art_{s.event_id}"],
-            event_category=NewsCategory.INDIA if s.section == "india" else NewsCategory.INTERNATIONAL,
-            verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+            event_category=NewsCategory.DOMESTIC if s.section == "domestic" else (NewsCategory.INDIA if s.section == "india" else NewsCategory.INTERNATIONAL),
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED if s.section == "domestic" else VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+            primary_publisher=s.source,
+            primary_url=s.url,
+            secondary_publisher="Indian Express" if s.section == "domestic" else None,
+            secondary_url=f"https://indianexpress.com/dom-{s.event_id}" if s.section == "domestic" else None,
         )
         art = Article(
             id=f"art_{s.event_id}",
@@ -100,7 +122,8 @@ def test_invalid_hub_rejected_at_stage_9():
             source_name=s.source,
             published_at=datetime.now(timezone.utc),
             date_verified=True,
-            content_text=f"Content for {s.headline} with key numbers $100M and 15% revenue growth.",
+            content_text=f"Government national policy {s.headline} with key numbers $100M and 15% revenue growth.",
+            category=ev.event_category,
         )
         events_lookup[s.event_id] = ev
         articles_lookup[art.id] = art
@@ -284,23 +307,57 @@ def test_manual_seed_replaces_rejected_hub_and_maintains_5_plus_5():
         for i in range(5)
     ]
     
+    dom_scored = [
+        ScoredEvent(
+            event=Event(
+                id=f"dom_ev_{i}",
+                canonical_title=[
+                    "Supreme Court Constitution Bench rules on national tribunal appointments",
+                    "Cabinet approves Rs 10000 crore national semiconductor mission package",
+                    "Election Commission announces schedule for assembly elections",
+                    "ISRO successfully launches next generation navigation satellite",
+                    "Parliament passes landmark national digital data protection bill",
+                ][i],
+                description=f"Domestic policy description {i}",
+                article_ids=[f"art_dom_{i}"],
+                event_category=NewsCategory.DOMESTIC,
+                companies_involved=[],
+                financial_figures=[],
+                percentages=[],
+                verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+                primary_publisher="The Hindu",
+                primary_url=f"https://thehindu.com/dom-{i}",
+                secondary_publisher="Indian Express",
+                secondary_url=f"https://indianexpress.com/dom-{i}",
+            ),
+            score_breakdown=dummy_breakdown,
+            investment_score=90.0 - i,
+            rank=i + 1,
+        )
+        for i in range(5)
+    ]
+
     pool = RankedCandidatePool(
+        domestic_candidates=dom_scored,
         india_candidates=india_scored,
         international_candidates=intl_scored,
     )
     
     articles_lookup = {}
-    for s in india_scored + intl_scored:
+    for s in dom_scored + india_scored + intl_scored:
         ev = s.event
         aid = ev.article_ids[0]
-        comp_name = ev.companies_involved[0]
+        comp_name = ev.companies_involved[0] if ev.companies_involved else "Government"
+        src = ev.primary_publisher or ("The Hindu" if "dom" in aid else ("Reuters" if "intl" in aid else "Business Standard"))
+        u = ev.primary_url or (f"https://thehindu.com/{aid}" if "dom" in aid else (f"https://www.reuters.com/business/deals/{aid}" if "intl" in aid else f"https://www.business-standard.com/companies/{aid}"))
         articles_lookup[aid] = Article(
             id=aid,
             title=ev.canonical_title,
-            url=f"https://www.reuters.com/business/deals/{aid}" if "intl" in aid else f"https://www.business-standard.com/companies/{aid}",
-            source_name="Reuters" if "intl" in aid else "Business Standard",
+            url=u,
+            source_name=src,
             published_at=datetime.now(timezone.utc),
             date_verified=True,
+            category=ev.event_category,
             content_text=(
                 f"{comp_name} reported second-quarter financial results for the fiscal period with verified earnings and revenue growth. "
                 "The transaction is valued at $1.5 billion or Rs 500 crore, delivering substantial expansion across key operational markets. "
@@ -312,7 +369,7 @@ def test_manual_seed_replaces_rejected_hub_and_maintains_5_plus_5():
     payload = BriefingEditorialPayload.model_validate_json(raw_json)
     
     val_engine = FinalValidationEngine()
-    events_lookup = {s.event.id: s.event for s in india_scored + intl_scored}
+    events_lookup = {s.event.id: s.event for s in dom_scored + india_scored + intl_scored}
     
     report = val_engine.validate_briefing(
         payload=payload,
@@ -325,5 +382,6 @@ def test_manual_seed_replaces_rejected_hub_and_maintains_5_plus_5():
     
     assert report.is_valid is True
     assert report.status == ValidationStatus.PASSED
+    assert len(payload.domestic_stories) == 5
     assert len(payload.india_stories) == 5
     assert len(payload.international_stories) == 5
