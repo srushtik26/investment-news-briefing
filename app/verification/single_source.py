@@ -162,6 +162,9 @@ COMMENTARY_OPINION_PATTERNS = [
     r"\bexpert take\b",
     r"\brumou?r\b",
     r"\bspeculat(e|ion|ing)\b",
+    r"\b(one analyst (?:now )?thinks|analysts? thinks?|analysts? says?.*?\bcould\b|could hit|could reach|heading for|price target|wall street thinks|analysts? predicts?|analysts? expects? shares could|could become|is .* heading for)\b",
+    r"\b(stocks? to buy|best stocks? to buy|top stocks?|top stock picks?|stock picks?|dividend stocks?|portfolio boost|portfolio picks?|analyst recommends?|buy these stocks?|stocks? analysts? love|stocks? poised to rise|investment ideas?|portfolio ideas?|stocks? could give your portfolio a boost|these .* stocks could)\b",
+    r"\b(in (?:early |advanced )?talks (?:to|with|for)|in discussions (?:to|with|for)|eyeing (?:a )?(?:controlling )?stake|eyes? (?:a )?(?:controlling )?stake|mulls? (?:stake|acquisition|buying|sale)|exploring (?:acquisition|sale|buying|options|stake)|explores? (?:sale|acquisition|buying|stake)|report says talks|seeking to buy|weighs (?:bid|acquisition|sale|buying)|in talks to buy|in talks to acquire)\b",
     r"\bstock(s)? to buy\b",
     r"\btarget price\b",
     r"\bbrokerage call\b",
@@ -196,13 +199,21 @@ def is_valid_named_company_entity(comp: Optional[str]) -> bool:
     if not comp:
         return False
     c = comp.strip()
-    if len(c) < 2:
+    c_low = c.lower()
+    if len(c) < 2 or len(c) > 60:
         return False
     # Must contain at least one alphabetic character
     if not re.search(r"[a-zA-Z]", c):
         return False
-    c_low = c.lower()
-    if c_low in {"unspecified", "company", "india", "us", "u.s.", "usa", "global", "firm", "corp", "inc", "ltd"}:
+    # Generic stopwords / noise words
+    noise_tokens = {
+        "unspecified", "company", "companies", "india", "us", "u.s.", "usa", "global",
+        "firm", "corp", "inc", "ltd", "block deals", "block deal", "bulk deals", "bulk deal", "block", "bulk",
+        "quarterly results", "annual results", "financial results", "ai", "wall street",
+        "lost", "today", "shares", "stock", "stocks", "markets", "market", "deal", "deals", "stake",
+        "report", "news"
+    }
+    if c_low in noise_tokens:
         return False
     # Reject pure numbers: "20", "31", "2026", "1.7", "75"
     if re.fullmatch(r"[\d,\.]+", c_low):
@@ -242,8 +253,16 @@ def is_multi_event_roundup(title: str) -> bool:
 def is_commentary_or_rumour(title: str, text: Optional[str] = None) -> bool:
     """Detect commentary, opinion, rumours, or broker advice."""
     comb = (title + " " + (text[:300] if text else "")).lower()
+    has_completed_hard_event = bool(re.search(
+        r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+        comb,
+        re.IGNORECASE,
+    ))
+
     for pat in COMMENTARY_OPINION_PATTERNS:
         if re.search(pat, comb):
+            if has_completed_hard_event and any(spec in pat for spec in ("talks", "speculat", "likely", "rumou")):
+                continue
             return True
     return False
 
@@ -301,8 +320,29 @@ class SingleSourceEvaluator:
         if pub_time.tzinfo is None:
             pub_time = pub_time.replace(tzinfo=timezone.utc)
 
-        age_hours = max(0.0, (current_time - pub_time).total_seconds() / 3600.0)
+        # Check explicit structured event date in title
+        title_date_match = re.search(
+            r"(?:Quarterly\s+Results|Financial\s+Results|Annual\s+Results|Results|Board\s+Meeting)[,\s\-]+(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b",
+            title,
+            re.IGNORECASE,
+        )
         max_age = float(getattr(self.settings, "STORY_FRESHNESS_HOURS", 24.0))
+        if title_date_match:
+            date_str = title_date_match.group(1).strip()
+            try:
+                for m_full, m_short in [
+                    ("January", "Jan"), ("February", "Feb"), ("March", "Mar"), ("April", "Apr"),
+                    ("August", "Aug"), ("September", "Sep"), ("October", "Oct"), ("November", "Nov"), ("December", "Dec"),
+                ]:
+                    date_str = re.sub(rf"\b{m_full}\b", m_short, date_str, flags=re.IGNORECASE)
+                parsed_title_dt = datetime.strptime(date_str, "%d %b %Y").replace(tzinfo=timezone.utc)
+                explicit_age_hours = (current_time - parsed_title_dt).total_seconds() / 3600.0
+                if explicit_age_hours > max_age:
+                    return False, 0.0, f"REJECT: Stale explicit event date '{date_str}' ({explicit_age_hours:.1f}h > {max_age:.0f}h)"
+            except Exception:
+                pass
+
+        age_hours = max(0.0, (current_time - pub_time).total_seconds() / 3600.0)
         if age_hours > max_age:
             return False, 0.0, f"REJECT: Stale publication date ({age_hours:.1f}h > {max_age:.0f}h)"
 

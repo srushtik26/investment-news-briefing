@@ -58,6 +58,14 @@ MOJIBAKE_MAP = {
     "Γé╣": "₹",
     "ΓÇ¢": "'",
     "ΓÇó": "•",
+    "┬á": " ",
+    "\u252c\u00e1": " ",
+    "\u252c\u00a0": " ",
+    "\u252c\u00a1": " ",
+    "\u252c\xa1": " ",
+    "\u252c\u00ed": " ",
+    "\u252c": " ",
+    "\xa0": " ",
     "ΓÇ": "",
     # Windows-1252 / ISO-8859-1 decodings of UTF-8 byte sequences
     "â€™": "’",
@@ -191,10 +199,11 @@ class BriefingFormatter:
         """
         Deterministic text cleaner for display layer:
         1. HTML unescape (&amp; -> &, &#039; -> ', &quot; -> ", etc.)
-        2. Mojibake normalization pass 1 (ΓÇÖ -> ’, Γé╣ -> ₹, etc.)
+        2. Mojibake normalization pass 1 (longest sequences first)
         3. Unicode normalization (NFKC)
-        4. Mojibake normalization pass 2
-        5. Whitespace cleanup (collapse tabs/newlines and redundant spaces)
+        4. Mojibake normalization pass 2 (catches post-NFKC artifacts)
+        5. Display-only Indian currency normalization (Rs 4,300 crore -> ₹4,300 crore)
+        6. Whitespace cleanup (collapse tabs/newlines and redundant spaces)
         """
         if not text:
             return ""
@@ -202,8 +211,11 @@ class BriefingFormatter:
         # 1. HTML unescape
         cleaned = html.unescape(text)
 
+        # Sort replacement patterns longest-first to avoid partial substring collisions
+        sorted_patterns = sorted(MOJIBAKE_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+
         # 2. Mojibake normalization pass 1
-        for bad_seq, good_char in MOJIBAKE_MAP.items():
+        for bad_seq, good_char in sorted_patterns:
             if bad_seq in cleaned:
                 cleaned = cleaned.replace(bad_seq, good_char)
 
@@ -211,14 +223,22 @@ class BriefingFormatter:
         cleaned = unicodedata.normalize("NFKC", cleaned)
 
         # 4. Mojibake normalization pass 2 (catches any post-NFKC artifacts)
-        for bad_seq, good_char in MOJIBAKE_MAP.items():
+        for bad_seq, good_char in sorted_patterns:
             if bad_seq in cleaned:
                 cleaned = cleaned.replace(bad_seq, good_char)
 
-        # 5. Collapse tabs/newlines into space
+        # 5. Display-only Indian currency normalization: Rs 4,300 crore -> ₹4,300 crore
+        cleaned = re.sub(
+            r"\bRs\.?\s*(\d+(?:,\d+)*(?:\.\d+)?\s*(?:crore|cr|lakh|bn|billion|m|million))\b",
+            r"₹\1",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        # 6. Collapse tabs/newlines into space
         cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
 
-        # 6. Collapse repeated spaces and strip
+        # 7. Collapse repeated spaces and strip
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         return cleaned
@@ -336,18 +356,22 @@ class BriefingFormatter:
         return clean_src
 
     def _render_story(self, story: EditorialStorySelection, shorten_urls: bool = True) -> List[str]:
-        """Validate and render the three output lines for a single story."""
+        """Validate and render the output lines for a single story."""
         headline = self._validate_and_normalize_headline(story.headline)
         source = self._clean_source_name(story.source)
         url = story.url.strip()
         display_url = get_display_url(url) if shorten_urls else url
 
-        return [
-            f"*{headline}*",
-            f"Source: {source}",
-            display_url,
-            "",
-        ]
+        lines = [f"*{headline}*"]
+        if getattr(story, "summary", None):
+            clean_summary = self.clean_text(story.summary)
+            clean_summary = self._sanitize_inline(clean_summary)
+            if clean_summary:
+                lines.append(clean_summary)
+        lines.append(f"Source: {source}")
+        lines.append(display_url)
+        lines.append("")
+        return lines
 
     # Structural markdown patterns that must be REJECTED, not repaired.
     # Each tuple is (pattern, human-readable reason).

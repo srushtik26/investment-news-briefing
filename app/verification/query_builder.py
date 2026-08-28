@@ -16,9 +16,9 @@ from app.models.event import Event
 GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "wall street", "stock market", "share market", "markets", "investors",
     "shares", "stock", "stocks", "nse", "bse", "sensex", "nifty", "street",
-    "quarter", "quarterly", "results", "earnings", "annual report",
-    "ceo", "cfo", "managing director", "analysts", "sources", "deal", "deals",
-    "synthetic", "synthetic evs", "demand", "outlook", "turnaround", "trend",
+    "quarter", "quarterly", "results", "earnings", "annual report", "quarterly results", "annual results", "financial results",
+    "ceo", "cfo", "managing director", "analysts", "sources", "deal", "deals", "block deal", "block deals", "bulk deal", "bulk deals", "block", "bulk",
+    "synthetic", "synthetic evs", "demand", "outlook", "turnaround", "trend", "lost",
     "india", "company", "companies", "group", "business", "industry", "sector",
     "tyres", "ev", "evs", "sales", "report", "reports", "today", "live", "update",
     "updates", "page", "exclusive", "says", "said", "first", "second", "third",
@@ -28,8 +28,9 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "ani", "pti", "the economic times", "business standard", "livemint", "financial express",
     "moneycontrol", "ndtv", "the hindu", "indian express", "fortune", "guardian",
     "financial times", "wall street journal", "wsj", "ft",
-    "controlling stake", "majority stake", "minority stake", "stake", "block deal",
-    "stake sale", "acquisition", "transaction", "bulk deal", "promoter stake sale",
+    "controlling stake", "majority stake", "minority stake", "stake", "promoter stake",
+    "controlling", "majority", "minority", "promoter", "promoters",
+    "stake sale", "acquisition", "transaction", "promoter stake sale",
     "institutional stake sale", "equity", "completes acquisition", "completes",
     "ai", "revenue", "bank", "banking", "technology", "tech", "technologies",
     "chip", "chips", "centres", "data centres", "strong ai", "ai chip",
@@ -45,8 +46,11 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
 
 # Prefix tokens to strip from proper noun matches (e.g. 'Wall Street Walmart' -> 'Walmart')
 PREFIXES_TO_STRIP: List[str] = [
+    "block deals: ", "block deal: ", "bulk deals: ", "bulk deal: ", "block deals ", "block deal ", "bulk deals ", "bulk deal ",
+    "promoter ", "promoters ", "promoter's ", "promoters' ",
     "wall street ", "stock market ", "market ", "shares of ", "shares in ",
     "reports of ", "exclusive: ", "view: ", "update: ", "breaking: ",
+    "completes acquisition of controlling stake in ", "completes acquisition of majority stake in ",
     "completes acquisition of ", "acquires ", "buys ", "sale of ", "controlling stake in ",
     "strong ai chip demand powers ", "ai chip demand powers ",
 ]
@@ -75,8 +79,10 @@ class EventQueryBuilder:
     @classmethod
     def clean_entity(cls, candidate: str) -> Optional[str]:
         """Sanitize and validate an extracted entity candidate."""
+        if not candidate:
+            return None
         tok = candidate.strip().strip("'\".,;:()[]{}")
-        if not tok or len(tok) < 2:
+        if not tok or len(tok) < 2 or tok.lower() in GENERIC_ENTITY_BLACKLIST:
             return None
         numeric_units = {"b", "m", "cr", "crore", "billion", "million", "percent", "pct"}
         if all(
@@ -95,6 +101,15 @@ class EventQueryBuilder:
         # Strip possessive 's or '
         tok = re.sub(r"('s|’s|')$", "", tok).strip()
         tok_low = tok.lower()
+
+        # Strip trailing connector words / metric words
+        for trailing in (
+            " revenue and profit", " revenue and", " profit and", " results and",
+            " revenue", " profit", " net profit", " results", " shares", " stock", " deals", " deal", " stake",
+        ):
+            if tok_low.endswith(trailing):
+                tok = tok[:-len(trailing)].strip()
+                tok_low = tok.lower()
 
         # Strip reporting quarters/years from end of entity (e.g. 'Company X Q1' -> 'Company X')
         for period in (" q1", " q2", " q3", " q4", " fy24", " fy25", " fy26", " fy27"):
@@ -165,7 +180,7 @@ class EventQueryBuilder:
                 seen.add(c.lower())
 
         # Pre-split title by major transaction verbs and prepositions to isolate corporate entity phrases
-        split_pattern = r"(?:\s+(?:completes acquisition of|acquisition of|deal to buy|agrees to buy|to acquire|to buy|acquires|buys|sells|offloads|invests in|in|of|for|from|via|with|and|by)\s+)"
+        split_pattern = r"(?:\s+(?:completes acquisition of controlling stake in|completes acquisition of majority stake in|completes acquisition of minority stake in|completes acquisition of stake in|completes acquisition of|acquisition of controlling stake in|acquisition of majority stake in|acquisition of minority stake in|acquisition of stake in|acquisition of|deal to buy|agrees to buy|to acquire|to buy|acquires|buys|sells|offloads|invests in|in|of|for|from|via|with|and|by)\s+)"
         segments = re.split(split_pattern, title, flags=re.IGNORECASE)
 
         for seg in segments:
@@ -179,10 +194,12 @@ class EventQueryBuilder:
 
         # Check known major corporate entity keywords in title
         KNOWN_TITLE_ENTITIES = [
+            "Salesforce", "CrowdStrike", "Okta", "Snowflake", "Palantir", "Oracle",
             "Nvidia", "Broadcom", "Apple", "Microsoft", "Google", "Alphabet", "Amazon", "Tesla",
-            "Meta", "Intel", "AMD", "Qualcomm", "TSMC", "ASML", "Samsung", "Sony", "OpenAI",
+            "Meta", "Intel", "AMD", "Qualcomm", "TSMC", "ASML", "Samsung", "Sony", "OpenAI", "Anthropic", "Hugging Face",
             "Target", "Walmart", "Boeing", "Airbus", "Pfizer", "Moderna", "AstraZeneca", "Novartis",
             "BHP", "Rio Tinto", "Glencore", "Vale", "Shein", "nVent", "Peet", "Ingenia",
+            "General Atlantic", "Rubicon Research", "Ribbit Capital", "Temple", "Longevous", "Deepinder Goyal",
             "Reliance", "Tata", "Adani", "Infosys", "Wipro", "HDFC", "ICICI", "SBI", "ITC",
             "Maruti", "Mahindra", "Bajaj", "L&T", "KFin", "Piramal", "Welspun", "DMart",
             "Groww", "Honasa", "Inorbit", "Zerodha", "boAt", "Vikas Ecotech", "Juniper Green Energy",

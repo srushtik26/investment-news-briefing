@@ -44,6 +44,99 @@ RATE_LIMITED_PREFIX = "RATE_LIMITED:"
 _NOT_SET = object()
 
 
+INCOMPLETE_ENDINGS: Set[str] = {
+    "a", "an", "the", "and", "or", "but", "of", "for", "to", "in", "on", "at", "with", "from", "by", "as",
+    "its", "their", "his", "her", "this", "that", "major", "electric", "is", "was", "were", "are", "be",
+    "been", "has", "have", "had", "which", "who", "whom", "whose", "where", "when", "why", "how", "such",
+    "into", "onto", "under", "over", "about", "after", "before", "while", "during", "through", "between",
+    "among", "against"
+}
+
+
+def generate_deterministic_summary(
+    article: Optional[Article],
+    event: Optional[Any] = None,
+    headline: Optional[str] = None,
+) -> str:
+    """
+    Generate a concise, factual, neutral 1-sentence summary (target: 15-25 words, max 30 words).
+    Extracts a complete, grammatical factual sentence from the article content, cleans it, and ensures
+    it explains what happened without cut-off endings or speculation.
+    """
+    from app.formatting.formatter import BriefingFormatter
+
+    raw_title = (headline or (article.title if article else "") or (getattr(event, "canonical_title", "") if event else "")).strip()
+    clean_title = BriefingFormatter.clean_text(raw_title)
+    body = (article.content_text if article and article.content_text else (getattr(event, "description", "") if event else "")).strip()
+
+    cleaned_body = BriefingFormatter.clean_text(body)
+    # Normalize malformed sentence boundaries such as "six billion dollars.SoftBank" -> "six billion dollars. SoftBank"
+    cleaned_body = re.sub(r"([a-z0-9])\.([A-Z])", r"\1. \2", cleaned_body)
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_body) if len(s.strip().split()) >= 4]
+    boilerplate = (
+        "click here", "subscribe", "all rights reserved", "read more", "photo:", "image:",
+        "advertisement", "sign up", "follow us", "share price today", "for more details",
+        "live updates", "stay tuned", "download app", "also read", "copyright"
+    )
+    valid_sentences = [s for s in sentences if not any(b in s.lower() for b in boilerplate)]
+
+    def is_grammatically_complete(s: str) -> bool:
+        words = s.split()
+        if len(words) < 6 or len(words) > 30:
+            return False
+        last_word = re.sub(r"[^\w]", "", words[-1]).lower()
+        if last_word in INCOMPLETE_ENDINGS:
+            return False
+        if re.search(r"\b[a-z0-9]+\.[A-Z]", s):
+            return False
+        return True
+
+    title_keywords = {w.lower() for w in re.findall(r"\b\w{3,}\b", clean_title)}
+    best_candidate: Optional[str] = None
+    best_score = -1
+
+    for idx, s in enumerate(valid_sentences[:6]):
+        # Strip common journalistic attribution prefixes
+        cleaned_s = re.sub(r"^(According to reports|Reports indicate that|It is reported that|Sources said that|In a statement|On Thursday|On Friday|On Wednesday|On Tuesday|On Monday)[,\s]+", "", s, flags=re.IGNORECASE).strip()
+        if not cleaned_s.endswith((".", "!", "?")):
+            cleaned_s += "."
+
+        words = cleaned_s.split()
+        if is_grammatically_complete(cleaned_s):
+            overlap = len({w.lower() for w in re.findall(r"\b\w{3,}\b", cleaned_s)} & title_keywords)
+            score = overlap * 10 - idx * 2
+            if score > best_score:
+                best_score = score
+                best_candidate = cleaned_s
+        elif len(words) > 30:
+            # Try splitting at logical clause boundaries (comma, semicolon, dash)
+            clauses = re.split(r"[,;—–]\s+(?:as|which|while|after|following|marking|amid|where|with)\s+", cleaned_s, flags=re.IGNORECASE)
+            if len(clauses) > 1:
+                first_clause = clauses[0].strip().rstrip(",;:-—– ") + "."
+                if is_grammatically_complete(first_clause):
+                    overlap = len({w.lower() for w in re.findall(r"\b\w{3,}\b", first_clause)} & title_keywords)
+                    score = overlap * 10 - idx * 2 - 1
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = first_clause
+
+    if best_candidate and is_grammatically_complete(best_candidate):
+        return BriefingFormatter.clean_text(best_candidate)
+
+    # Fallback to headline-derived complete declarative sentence if no body sentence is complete
+    fallback = clean_title.rstrip(" .!?:;-—") + "."
+    if is_grammatically_complete(fallback):
+        return BriefingFormatter.clean_text(fallback)
+
+    # Clean truncated headline fallback guaranteed to not end in incomplete token
+    h_words = clean_title.rstrip(" .!?:;-—").split()
+    while h_words and (re.sub(r"[^\w]", "", h_words[-1]).lower() in INCOMPLETE_ENDINGS or len(h_words) > 28):
+        h_words.pop()
+    final_fallback = (" ".join(h_words) if h_words else clean_title).rstrip(" ,;:-—") + "."
+    return BriefingFormatter.clean_text(final_fallback)
+
+
 class GeminiEditorialEngine:
     """
     Coordinates final editorial curation, headline synthesis, and URL validation via Gemini.
@@ -60,7 +153,7 @@ class GeminiEditorialEngine:
     regardless of any GEMINI_API_KEY in the environment. Useful in tests.
     """
 
-    # Seconds to wait after the first 429 before the single retry
+    MAX_ATTEMPTS = 2
     RATE_LIMIT_BACKOFF_SECONDS = 30
 
     def __init__(
@@ -120,7 +213,6 @@ class GeminiEditorialEngine:
             + ranked_pool.india_candidates
             + ranked_pool.international_candidates
         )
-        # FIX 5: DO NOT CALL EDITORIAL GEMINI WITH ZERO STORIES
         if len(all_candidate_scored) == 0:
             logger.warning("Zero candidate events in pool. Skipping Gemini Editorial call to preserve API quota.")
             return EditorialResult(
@@ -130,21 +222,25 @@ class GeminiEditorialEngine:
                 raw_response=None,
             )
 
-        # Build candidate validation manifests across all sections (Domestic, India, International)
         valid_events_map: Dict[str, ScoredEvent] = {}
-        valid_urls_map: Dict[str, str] = {}  # url -> event_id
+        for scored in (getattr(ranked_pool, "domestic_candidates", []) or []):
+            valid_events_map[scored.event.id] = scored
+        for scored in ranked_pool.india_candidates:
+            valid_events_map[scored.event.id] = scored
+        for scored in ranked_pool.international_candidates:
+            valid_events_map[scored.event.id] = scored
 
-        for scored in all_candidate_scored:
+        valid_urls_map: Dict[str, str] = {}
+        for scored in valid_events_map.values():
             e = scored.event
-            valid_events_map[e.id] = scored
             for art_id in e.article_ids:
                 if art_id in articles_map:
-                    valid_urls_map[articles_map[art_id].url] = e.id
+                    valid_urls_map[articles_map[art_id].url] = art_id
 
-        max_attempts = 2
-        last_error: Optional[str] = None
-        raw_text: Optional[str] = None
-        consecutive_429s: int = 0
+        max_attempts = self.MAX_ATTEMPTS
+        last_error = ""
+        raw_text = ""
+        consecutive_429s = 0
 
         for attempt in range(1, max_attempts + 1):
             logger.debug("Executing editorial selection call (attempt %d/%d)", attempt, max_attempts)
@@ -165,14 +261,24 @@ class GeminiEditorialEngine:
                         art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                         src = e.primary_publisher or (art.source_name if art else "The Hindu")
                         u = e.primary_url or (art.url if art else f"https://example.com/dom-{e.id}")
+                        sum_text = generate_deterministic_summary(art, e, e.canonical_title)
                         dom_stories.append(EditorialStorySelection(
                             section="domestic",
                             event_id=e.id,
                             headline=e.canonical_title,
+                            summary=sum_text,
                             source=src,
                             url=u,
                         ))
                     payload.domestic_stories = dom_stories
+
+                # Populate missing summaries for any section if needed
+                for story in (payload.domestic_stories + payload.india_stories + payload.international_stories):
+                    if not getattr(story, "summary", None):
+                        scored = valid_events_map.get(story.event_id)
+                        ev = scored.event if scored else None
+                        art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
+                        story.summary = generate_deterministic_summary(art, ev, story.headline)
 
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)
@@ -403,11 +509,13 @@ class GeminiEditorialEngine:
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Business Standard"
             url = art.url if art else f"https://example.com/domestic-{e.id}"
+            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
 
             domestic_selected.append({
                 "section": "domestic",
                 "event_id": e.id,
                 "headline": e.canonical_title,
+                "summary": sum_text,
                 "source": source_name,
                 "url": url,
             })
@@ -438,11 +546,13 @@ class GeminiEditorialEngine:
                 seen_india_comps.add(normalize_entity_name(comp))
 
             url = art.url if art else f"https://example.com/india-{e.id}"
+            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
 
             india_selected.append({
                 "section": "india",
                 "event_id": e.id,
                 "headline": e.canonical_title,
+                "summary": sum_text,
                 "source": source_name,
                 "url": url,
             })
@@ -459,10 +569,12 @@ class GeminiEditorialEngine:
                 art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                 source_name = art.source_name if art else "Business Standard"
                 url = art.url if art else f"https://example.com/india-{e.id}"
+                sum_text = generate_deterministic_summary(art, e, e.canonical_title)
                 india_selected.append({
                     "section": "india",
                     "event_id": e.id,
                     "headline": e.canonical_title,
+                    "summary": sum_text,
                     "source": source_name,
                     "url": url,
                 })
@@ -474,11 +586,13 @@ class GeminiEditorialEngine:
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Reuters"
             url = art.url if art else f"https://example.com/intl-{e.id}"
+            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
 
             intl_selected.append({
                 "section": "international",
                 "event_id": e.id,
                 "headline": e.canonical_title,
+                "summary": sum_text,
                 "source": source_name,
                 "url": url,
             })
@@ -488,5 +602,3 @@ class GeminiEditorialEngine:
             "india_stories": india_selected[:5],
             "international_stories": intl_selected[:5],
         })
-
-

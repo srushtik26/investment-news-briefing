@@ -26,7 +26,10 @@ PUBLISHER_ENTITY_BLACKLIST: Set[str] = {
 GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
     "the", "a", "an", "this", "that", "these", "those",
     "market", "markets", "investors", "revenue", "profit", "gold",
-    "options", "shares", "stocks", "ceo", "company",
+    "options", "shares", "stocks", "stock", "ceo", "cfo", "company", "companies",
+    "block deals", "block deal", "bulk deals", "bulk deal", "block", "bulk", "promoter stake sale",
+    "quarterly results", "annual results", "financial results", "ai", "wall street",
+    "today", "deals", "deal", "lost", "stake",
 }
 
 

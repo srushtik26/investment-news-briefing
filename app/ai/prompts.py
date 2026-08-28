@@ -24,6 +24,9 @@ CRITICAL EDITORIAL RULES:
 6. HEADLINE SYNTHESIS: Generate a concise, punchy, institutional headline for each selected event.
    - The headline MUST contain important figures/numbers where meaningful (e.g., 'HDFC Bank Q1 Net Profit Surges 18% YoY to ₹16,175 Cr', 'Rio Tinto Agrees $6.7B Acquisition of Arcadium Lithium').
    - Keep headlines factual, professional, and free of hype.
+7. ONE-LINE FACTUAL SUMMARY: Provide exactly one concise sentence (target: 15-25 words, max 30 words) for the 'summary' field.
+   - Strictly factual and neutral explaining what happened with key numbers.
+   - No bullets, no markdown, no speculation, no filler.
 
 JSON OUTPUT SCHEMA:
 {
@@ -32,6 +35,7 @@ JSON OUTPUT SCHEMA:
       "section": "india",
       "event_id": "event_id_from_input",
       "headline": "Concise headline with key numbers",
+      "summary": "One-line factual summary explaining what happened and key figures.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }
@@ -41,6 +45,7 @@ JSON OUTPUT SCHEMA:
       "section": "international",
       "event_id": "event_id_from_input",
       "headline": "Concise headline with key numbers",
+      "summary": "One-line factual summary explaining what happened and key figures.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }

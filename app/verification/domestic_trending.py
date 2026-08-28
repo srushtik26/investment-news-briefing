@@ -220,6 +220,10 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     r"\b(opinion:|editorial:|column:|view:|analysis:|why we must|the need for|it is time to|op-ed|guest column|opinion piece|editorial board)\b",
     r"^(?:opinion|editorial|op-ed|column|analysis|view)\s*[:|-]",
     r"\b(and the (?:sir|citizenship|election|constitution) exercise)\b",
+
+    # Rhetorical questions, debate framing & commentary
+    r"\b(boom or bust\??|bane or boon\??|threat or opportunity\??)\b",
+    r"\b(pros and cons of|myth or reality\??|need of the hour\??|what lies ahead for)\b",
 ]
 
 # National Significance Markers
@@ -231,11 +235,18 @@ NATIONAL_SIGNIFICANCE_PATTERNS: List[str] = [
     # Defence & National Security
     r"\b(indian army|indian navy|indian air force|iaf|drdo|defence acquisition|missile test|combat aircraft|ins |lac|loc|security forces|bsf|crpf|anti-terror|nia)\b",
     # Science, Space & Technology
-    r"\b(isro|chandrayaan|gaganyaan|aditya-l1|satellite launch|pslv|gslv|quantum mission|supercomputer|ai mission|iit|aiims|drdo)\b",
+    r"\b(isro|chandrayaan|gaganyaan|aditya-l1|satellite launch|pslv|gslv|quantum mission|supercomputer|ai mission|iit\s+(?:director|research|breakthrough|innovation|campus|ai)|aiims\s+(?:director|research|breakthrough|expansion)|drdo)\b",
     # Environment, Disasters & Weather
     r"\b(cyclone|landslide|flood|earthquake|imd alert|heatwave|monsoon forecast|red alert|rescue operation|ndrf)\b",
     # Health, Education & Public Policy
     r"\b(national education policy|nep|ncert|ugc|neet|ayushman bharat|vaccination drive|icmr|who alert|public health mission|food security)\b",
+]
+
+# Local Municipal & Civic Patterns (ordinary local scope without national impact)
+LOCAL_MUNICIPAL_PATTERNS: List[str] = [
+    r"\b(municipal corporation|civic body|city corporation|nagar nigam|municipality|ward council|district administration)\b",
+    r"\b(bulk water supply|water supply scheme|sewage treatment plant|water pipeline|drainage project|civic project|local road repair|desilting work|pothole|waterlogging in (?:city|ward))\b",
+    r"\b(?:civic|municipal|district)\s+(?:officials?|authorities|project|scheme|body|inspection|engineers?)\b",
 ]
 
 
@@ -276,6 +287,15 @@ class DomesticTrendingEvaluator:
                 ))
                 if not has_hard_action or is_explicit_opinion:
                     return True, "Opinion/Op-ed URL path without concrete breaking event"
+
+        # 2. Check rhetorical questions / debate framing without concrete action verbs
+        if "?" in title:
+            has_action = bool(re.search(
+                r"\b(approves?|clears?|orders?|rules?|directs?|launches?|inaugurates?|passes?|issues?|announces?|arrests?|bans?|quashes?|stays?|hears?|rejects?)\b",
+                title.lower()
+            ))
+            if not has_action:
+                return True, "Rhetorical question / commentary framing without concrete action event"
 
         comb = f"{title} {(text or '')[:300]}".lower()
         for pat in DOMESTIC_NOISE_PATTERNS:
@@ -357,6 +377,19 @@ class DomesticTrendingEvaluator:
         # C. National Significance
         comb_text = f"{title} {body[:400]}".lower()
         has_national_sig = any(re.search(pat, comb_text) for pat in NATIONAL_SIGNIFICANCE_PATTERNS)
+
+        # Check local municipal scope: local civic/municipal updates do not receive national significance
+        # unless they have overriding national/state judicial, cabinet, disaster, or strategic infrastructure impact
+        is_city_url = bool(re.search(r"/(?:city|cities)/[a-z0-9_-]+", url.lower()))
+        is_local_scope = any(re.search(pat, comb_text) for pat in LOCAL_MUNICIPAL_PATTERNS)
+        has_overriding_national_event = bool(re.search(
+            r"\b(supreme court|high court|chief justice|cji|union cabinet|cabinet approves|prime minister|narendra modi|parliament|lok sabha|rajya sabha|bill passed|election commission|ec|eci|bullet train|vande bharat|national highway|expressway|nuclear plant|solar park|isro|gaganyaan|chandrayaan|satellite launch|indian army|indian navy|indian air force|drdo|missile test|cyclone|landslide|earthquake|imd alert|red alert|ndrf|cbi|nia|anti-terror|national education policy|ayushman bharat)\b",
+            comb_text
+        ))
+
+        if (is_city_url or is_local_scope) and not has_overriding_national_event:
+            has_national_sig = False
+
         if has_national_sig:
             score += 20.0
             reasons.append("national_significance(+20)")

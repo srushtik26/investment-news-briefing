@@ -487,6 +487,7 @@ class FinalValidationEngine:
         # -------------------------------------------------------------
         # CHECK 20: Final format is exactly correct
         # -------------------------------------------------------------
+        mojibake_tokens = ("ΓÇ", "Γé", "┬á", "┬")
         for story in all_stories:
             if not story.headline or len(story.headline) < 10 or not story.source or not story.url:
                 check_results.append(ValidationCheckResult(
@@ -496,6 +497,92 @@ class FinalValidationEngine:
                     failure_reason=f"Story has malformed formatting: headline='{story.headline}', source='{story.source}'",
                     failed_story_id=story.event_id,
                 ))
+            elif any(tok in story.headline or tok in story.source for tok in mojibake_tokens):
+                check_results.append(ValidationCheckResult(
+                    check_id=20,
+                    check_name="Final format is exactly correct",
+                    passed=False,
+                    failure_reason=f"Story contains unresolved mojibake tokens in headline or source: '{story.headline}'",
+                    failed_story_id=story.event_id,
+                ))
+            elif getattr(story, "summary", None):
+                sum_text = story.summary.strip()
+                if "\n" in sum_text:
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains embedded newlines (must be one single line): '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif "http://" in sum_text or "https://" in sum_text:
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains URL: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif re.search(r"^[-•*]\s+", sum_text):
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains leading markdown bullet: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif sum_text.lower() == story.headline.strip().lower():
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary is identical to headline: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif any(tok in sum_text for tok in mojibake_tokens):
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains unresolved mojibake tokens: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif len(sum_text.split()) > 30:
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary exceeds maximum 30 words ({len(sum_text.split())} words): '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif not sum_text.endswith((".", "!", "?", '"', "'")):
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary does not end with valid sentence punctuation: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif re.sub(r"[^\w]", "", sum_text.split()[-1]).lower() in {
+                    "a", "an", "the", "and", "or", "but", "of", "for", "to", "in", "on", "at", "with", "from",
+                    "by", "as", "its", "their", "his", "her", "this", "that", "major", "electric", "is", "was",
+                    "were", "are", "be", "been", "has", "have", "had", "which", "who", "whom", "whose", "where"
+                }:
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary ends with incomplete grammatical token: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif re.search(r"\b[a-z0-9]+\.[A-Z]", sum_text):
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains unspaced joined sentence artifact: '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
 
         # Fill in passed check entries for checks that did not fail
         failed_ids = {r.check_id for r in check_results if not r.passed}

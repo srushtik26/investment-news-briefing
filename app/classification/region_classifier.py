@@ -95,9 +95,10 @@ class EventRegionClassifier:
 
     # Major Global / International Companies & Entities
     INTERNATIONAL_ENTITIES: List[str] = [
-        # Big Tech & AI
+        # Big Tech, Enterprise Software, Cybersecurity & AI
+        r"\b(salesforce|crowdstrike|okta|snowflake|palantir|oracle|ibm|cisco|dell|hp|servicenow|adobe|uber|airbnb|spotify)\b",
         r"\b(apple|microsoft|google|alphabet|meta|facebook|amazon|nvidia|tesla)\b",
-        r"\b(openai|anthropic|stripe|openrouter|mistral|deepmind|arm holdings|arm)\b",
+        r"\b(openai|anthropic|stripe|openrouter|mistral|deepmind|arm holdings|arm|hugging face)\b",
         r"\b(tsmc|asml|intel|amd|qualcomm|broadcom|micron|samsung|sony|alibaba|tencent|bytedance)\b",
         
         # Global Finance, Sponsors, Sports Franchises & Private Equity
@@ -183,7 +184,6 @@ class EventRegionClassifier:
         title_lower = (title or "").lower()
         companies_text = " ".join(companies or []).lower()
         figures_text = " ".join(financial_figures or []).lower()
-        title_and_entities = f"{title_lower} {companies_text}"
 
         # 1. Check Global Regulators / Macro Policy
         for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY:
@@ -191,23 +191,35 @@ class EventRegionClassifier:
             if m:
                 return NewsCategory.INTERNATIONAL, f"Global regulatory / macro policy match: '{m.group(0)}'"
 
-        # 2. Entity Matches in Title or Companies Involved
+        # 2. Entity Matches: Prioritize Headline title matches over secondary company mentions
         indian_entity_matches = [
-            re.search(pat, title_and_entities).group(0)
+            re.search(pat, title_lower).group(0)
             for pat in self.INDIAN_ENTITIES
-            if re.search(pat, title_and_entities)
+            if re.search(pat, title_lower)
+        ] or [
+            re.search(pat, companies_text).group(0)
+            for pat in self.INDIAN_ENTITIES
+            if re.search(pat, companies_text)
         ]
 
         intl_entity_matches = [
-            re.search(pat, title_and_entities).group(0)
+            re.search(pat, title_lower).group(0)
             for pat in self.INTERNATIONAL_ENTITIES
-            if re.search(pat, title_and_entities)
+            if re.search(pat, title_lower)
+        ] or [
+            re.search(pat, companies_text).group(0)
+            for pat in self.INTERNATIONAL_ENTITIES
+            if re.search(pat, companies_text)
         ]
 
         sponsor_matches = [
-            re.search(pat, title_and_entities).group(0)
+            re.search(pat, title_lower).group(0)
             for pat in self.FINANCIAL_SPONSORS
-            if re.search(pat, title_and_entities)
+            if re.search(pat, title_lower)
+        ] or [
+            re.search(pat, companies_text).group(0)
+            for pat in self.FINANCIAL_SPONSORS
+            if re.search(pat, companies_text)
         ]
 
         # 3. Currency and Unit Signals

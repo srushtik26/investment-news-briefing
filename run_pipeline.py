@@ -1599,6 +1599,8 @@ def run_pipeline(
             if (editorial_res.error_message or "").startswith(RATE_LIMITED_PREFIX):
                 log_exec(f"  -> RATE_LIMITED: {editorial_res.error_message}")
 
+        from app.ai.editor import generate_deterministic_summary
+
         # Prepare deterministic Top 5 Domestic stories
         dom_stories_selected = []
         for s in candidate_pool.domestic_candidates[:5]:
@@ -1606,10 +1608,12 @@ def run_pipeline(
             art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             src = ev.primary_publisher or (art.source_name if art else "The Hindu")
             u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
+            sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
             dom_stories_selected.append(EditorialStorySelection(
                 section="domestic",
                 event_id=ev.id,
                 headline=ev.canonical_title,
+                summary=sum_text,
                 source=src,
                 url=u,
             ))
@@ -1631,10 +1635,12 @@ def run_pipeline(
                 art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 src = ev.primary_publisher or (art.source_name if art else "Business Standard")
                 u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
+                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
                 india_stories_selected.append(EditorialStorySelection(
                     section="india",
                     event_id=ev.id,
                     headline=ev.canonical_title,
+                    summary=sum_text,
                     source=src,
                     url=u,
                 ))
@@ -1644,10 +1650,12 @@ def run_pipeline(
                 art = articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 src = ev.primary_publisher or (art.source_name if art else "Reuters")
                 u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
+                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
                 intl_stories_selected.append(EditorialStorySelection(
                     section="international",
                     event_id=ev.id,
                     headline=ev.canonical_title,
+                    summary=sum_text,
                     source=src,
                     url=u,
                 ))
@@ -1656,6 +1664,13 @@ def run_pipeline(
                 india_stories=india_stories_selected,
                 international_stories=intl_stories_selected,
             )
+
+        # Guarantee every story in final selection payload has a non-empty summary
+        for story in (selection_payload.domestic_stories + selection_payload.india_stories + selection_payload.international_stories):
+            if not getattr(story, "summary", None):
+                ev = events_lookup.get(story.event_id)
+                art = articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+                story.summary = generate_deterministic_summary(art, ev, story.headline)
 
         with open(data_dir / "final_15_stories.json", "w", encoding="utf-8") as f:
             json.dump({

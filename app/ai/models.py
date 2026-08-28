@@ -41,6 +41,10 @@ class EditorialStorySelection(BaseModel):
         ...,
         description="Exact unedited URL of the verified source article",
     )
+    summary: Optional[str] = Field(
+        default=None,
+        description="One-line factual summary of the story (15-25 words, strictly factual)",
+    )
 
     @field_validator("section")
     @classmethod

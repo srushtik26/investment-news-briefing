@@ -113,6 +113,41 @@ class DateFilterRule(BaseFilterRule):
         # 3. Determine allowable lookback window (Strictly 24 hours)
         allowed_hours = max_age_hours if max_age_hours is not None else self.max_age_hours
 
+        # 4. Check explicit structured event date in title (e.g. 'AVENIQUE LIMITED Quarterly Results, 18 Feb 2019 - BSE 3.65')
+        title_date_match = re.search(
+            r"(?:Quarterly\s+Results|Financial\s+Results|Annual\s+Results|Results|Board\s+Meeting)[,\s\-]+(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b",
+            article.title or "",
+            re.IGNORECASE,
+        )
+        if title_date_match:
+            date_str = title_date_match.group(1).strip()
+            try:
+                for m_full, m_short in [
+                    ("January", "Jan"), ("February", "Feb"), ("March", "Mar"), ("April", "Apr"),
+                    ("August", "Aug"), ("September", "Sep"), ("October", "Oct"), ("November", "Nov"), ("December", "Dec"),
+                ]:
+                    date_str = re.sub(rf"\b{m_full}\b", m_short, date_str, flags=re.IGNORECASE)
+                parsed_title_dt = datetime.strptime(date_str, "%d %b %Y").replace(tzinfo=timezone.utc)
+                # If explicit date is a previous date older than pub_time day or older than allowed window
+                if parsed_title_dt.date() == pub_time.date():
+                    explicit_age_hours = age_hours
+                else:
+                    explicit_age_hours = (current_time - parsed_title_dt).total_seconds() / 3600.0
+                if explicit_age_hours > allowed_hours and (current_time.date() - parsed_title_dt.date()).days > (allowed_hours / 24.0):
+                    logger.debug(
+                        "DATE REJECT | TITLE: '%s' | EXPLICIT EVENT AGE: %.1fh | RULE: DATE | REASON: Stale explicit event date (%s)",
+                        article.title[:60], explicit_age_hours, date_str,
+                    )
+                    return FilterResult(
+                        is_accepted=False,
+                        article_url=article.url,
+                        article_title=article.title,
+                        rule_failed=self.rule_name,
+                        rejection_reason=f"Stale explicit event date '{date_str}' in title ({explicit_age_hours:.1f}h old > {allowed_hours:.0f}h limit)",
+                    )
+            except Exception:
+                pass
+
         age_seconds = (current_time - pub_time).total_seconds()
         age_hours = max(0.0, age_seconds / 3600.0)
         freshness_score, freshness_bucket = self._freshness_score(age_hours)
@@ -225,10 +260,6 @@ class SourceFilterRule(BaseFilterRule):
         "bloomberg.com",
         "ft.com",
         "wsj.com",
-        "bseindia.com",
-        "nseindia.com",
-        "sebi.gov.in",
-        "rbi.org.in",
         "sec.gov",
         "federalreserve.gov",
         "ecb.europa.eu",
@@ -236,6 +267,10 @@ class SourceFilterRule(BaseFilterRule):
         "businesswire.com",
         "globenewswire.com",
         "prnewswire.com",
+        "bseindia.com",
+        "nseindia.com",
+        "sebi.gov.in",
+        "rbi.org.in",
     }
 
     @property
@@ -378,6 +413,14 @@ class StoryTypeFilterRule(BaseFilterRule):
             r"\b(upgrades?|downgrades?|initiates? coverage|reiterates?|brokerage firm|brokerage|buy rating|sell rating|hold rating|underperform rating|outperform rating)\b",
         ),
         (
+            "analyst_speculation",
+            r"\b(one analyst (?:now )?thinks|analysts? thinks?|analysts? says?.*?\bcould\b|could hit|could reach|heading for|price target|wall street thinks|analysts? predicts?|analysts? expects? shares could|could become|is .* heading for)\b",
+        ),
+        (
+            "investment_advice_and_stock_picks",
+            r"\b(stocks? to buy|best stocks? to buy|top stocks?|top stock picks?|stock picks?|dividend stocks?|portfolio boost|portfolio picks?|analyst recommends?|buy these stocks?|stocks? analysts? love|stocks? poised to rise|investment ideas?|portfolio ideas?|stocks? could give your portfolio a boost|these .* stocks could)\b",
+        ),
+        (
             "price_target",
             r"\b(target price|price target|sees target|ups target to|cuts target to|target price of|target price rs|share target price|target of rs|target of \$)\b",
         ),
@@ -404,10 +447,13 @@ class StoryTypeFilterRule(BaseFilterRule):
         (
             "earnings_preview",
             r"\b(earnings preview|preview.*earnings|what to expect|watch ahead|faces? (?:a )?big test.*earnings|analysts? expect.*earnings)\b",
-        ),
-        (
+        ),        (
             "speculative_transaction",
             r"\b(likely|may|might|could)\s+(?:to\s+)?(?:consider\s+)?(?:acquire|acquiring|buy|buying|purchase|purchasing|merge|merging|take\s*over)\b|\b(considering\s+(?:acquiring|acquisition|buying|buyout|takeover))\b",
+        ),
+        (
+            "speculative_deal_talks",
+            r"\b(in (?:early |advanced )?talks (?:to|with|for)|in discussions (?:to|with|for)|eyeing (?:a )?(?:controlling )?stake|eyes? (?:a )?(?:controlling )?stake|mulls? (?:stake|acquisition|buying|sale)|exploring (?:acquisition|sale|buying|options|stake)|explores? (?:sale|acquisition|buying|stake)|report says talks|seeking to buy|weighs (?:bid|acquisition|sale|buying)|in talks to buy|in talks to acquire)\b",
         ),
         (
             "ipo_intraday",
@@ -419,7 +465,7 @@ class StoryTypeFilterRule(BaseFilterRule):
     ACCEPT_EVENT_PATTERNS: List[Tuple[str, str]] = [
         (
             "earnings_figures",
-            r"\b(net profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|margin|surges|jumps|rises \d+%|falls \d+%|reports profit of|profit rises|profit falls|revenue rises|revenue falls|profit jumps|profit drops|earnings beat|earnings miss|₹\s*[\d,]+|rs\.?\s*[\d,]+|\$\s*[\d,]+|crore|billion|million|quarterly results|annual results|net income|operating income|gross profit|comparable sales|same-store sales)\b",
+            r"\b(net profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|margin|surges|jumps|rises \d+%|falls \d+%|reports profit of|profit rises|profit falls|revenue rises|revenue falls|profit jumps|profit drops|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|beats? expectations|tops? estimates|tops? expectations|₹\s*[\d,]+|rs\.?\s*[\d,]+|\$\s*[\d,]+|crore|billion|million|quarterly results|annual results|net income|operating income|gross profit|comparable sales|same-store sales)\b",
         ),
         (
             "acquisitions_mergers",
@@ -451,7 +497,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "regulatory_actions",
-            r"\b(rbi\b.*\b(penalty|fine|order|ban)|sebi\b.*\b(order|penalty|ban)|cci\b.*\b(approves?|order)|antitrust|sec charges|doj lawsuit|eu fine|penalty order|monetary penalty|regulatory penalty|tribunal order|regulatory violations)\b",
+            r"\b(penalty order|monetary penalty|nclt approves|sebi order|rbi penalty|antitrust probe|regulatory fine)\b",
         ),
         (
             "government_policy",
@@ -499,6 +545,23 @@ class StoryTypeFilterRule(BaseFilterRule):
             match = re.search(regex_pattern, eval_text, re.IGNORECASE)
             if match:
                 matched_str = match.group(0)
+
+                # EXCEPTION: If the story matches speculative transaction/deal talks, but ALSO contains
+                # an actual completed hard business event (e.g. block deal, earnings beat, signed acquisition, order win),
+                # allow the concrete completed event to survive.
+                if pattern_name in ("speculative_transaction", "speculative_deal_talks"):
+                    has_completed_hard_event = bool(re.search(
+                        r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                        eval_text,
+                        re.IGNORECASE,
+                    ))
+                    if has_completed_hard_event:
+                        logger.debug(
+                            "STORY_TYPE ALLOW_OVERRIDE | TITLE: '%s' | REASON: Concrete completed hard event present despite secondary speculative talks phrasing",
+                            article.title[:60],
+                        )
+                        continue
+
                 logger.debug(
                     "STORY_TYPE REJECT | TITLE: '%s' | PUBLISHER: %s | RULE: %s | REASON: Noise '%s' (match: '%s')",
                     article.title[:60], article.source_name, pattern_name, pattern_name, matched_str
