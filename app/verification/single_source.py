@@ -297,6 +297,7 @@ class SingleSourceEvaluator:
         event: Event,
         primary_article: Article,
         now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
     ) -> Tuple[bool, float, str]:
         """
         Evaluate if a single-source event achieves HIGH_CONFIDENCE_SINGLE_SOURCE tier.
@@ -312,7 +313,7 @@ class SingleSourceEvaluator:
         body = primary_article.content_text or ""
         source = primary_article.source_name or ""
 
-        # 1. Date Freshness Rule D: strictly <= 24h
+        # 1. Date Freshness Rule D: strictly <= max_age (default: 24h, or active fallback horizon)
         if not primary_article.published_at:
             return False, 0.0, "REJECT: Missing publication timestamp"
 
@@ -326,7 +327,7 @@ class SingleSourceEvaluator:
             title,
             re.IGNORECASE,
         )
-        max_age = float(getattr(self.settings, "STORY_FRESHNESS_HOURS", 24.0))
+        max_age = max_age_hours if max_age_hours is not None else float(getattr(self.settings, "STORY_FRESHNESS_HOURS", 24.0))
         if title_date_match:
             date_str = title_date_match.group(1).strip()
             try:

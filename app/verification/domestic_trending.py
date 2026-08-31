@@ -310,6 +310,7 @@ class DomesticTrendingEvaluator:
         primary_article: Optional[Article] = None,
         now_utc: Optional[datetime] = None,
         discovery_mentions: int = 1,
+        max_age_hours: Optional[float] = None,
     ) -> Tuple[bool, float, str]:
         """
         Evaluate domestic candidate event for quality and trending significance.
@@ -345,13 +346,14 @@ class DomesticTrendingEvaluator:
         reasons: List[str] = []
 
         # A. Freshness
+        max_age = max_age_hours if max_age_hours is not None else 24.0
         pub_time = getattr(primary_article, "published_at", None) if primary_article else None
         if pub_time:
             if pub_time.tzinfo is None:
                 pub_time = pub_time.replace(tzinfo=timezone.utc)
             age_hours = max(0.0, (now - pub_time).total_seconds() / 3600.0)
-            if age_hours > 24.0:
-                return False, 0.0, f"REJECT_STALE: {age_hours:.1f}h old (>24h limit)"
+            if age_hours > max_age:
+                return False, 0.0, f"REJECT_STALE: {age_hours:.1f}h old (>{max_age:.0f}h limit)"
             if age_hours <= 6.0:
                 score += 25.0
                 reasons.append("fresh_6h(+25)")

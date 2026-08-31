@@ -289,7 +289,12 @@ class FinalValidationEngine:
                 if story.section == "domestic" or event.event_category == NewsCategory.DOMESTIC:
                     from app.verification.domestic_trending import DomesticTrendingEvaluator
                     dom_eval = DomesticTrendingEvaluator()
-                    is_eligible, conf, reason = dom_eval.evaluate(event, primary_art)
+                    is_eligible, conf, reason = dom_eval.evaluate(
+                        event,
+                        primary_art,
+                        now_utc=freshness_now_utc,
+                        max_age_hours=event_horizon,
+                    )
                     if not is_eligible:
                         check_results.append(ValidationCheckResult(
                             check_id=8,
@@ -303,14 +308,12 @@ class FinalValidationEngine:
                     is_two_source = (event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED)
                     if not is_two_source:
                         evaluator = SingleSourceEvaluator()
-                        if primary_art and quality_ladder_mode and event_horizon > 24 and primary_art.published_at:
-                            pub_time = primary_art.published_at
-                            if pub_time.tzinfo is None:
-                                pub_time = pub_time.replace(tzinfo=timezone.utc)
-                            eval_now = pub_time + timedelta(hours=23, minutes=59, seconds=59)
-                            is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art, now_utc=eval_now)
-                        else:
-                            is_eligible, conf, reason = evaluator.evaluate_event(event, primary_art) if primary_art else (False, 0.0, "Missing primary article")
+                        is_eligible, conf, reason = evaluator.evaluate_event(
+                            event,
+                            primary_art,
+                            now_utc=freshness_now_utc,
+                            max_age_hours=event_horizon,
+                        ) if primary_art else (False, 0.0, "Missing primary article")
                         if not is_eligible or event.verification_tier != VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
                             check_results.append(ValidationCheckResult(
                                 check_id=8,

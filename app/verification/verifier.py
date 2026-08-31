@@ -200,7 +200,13 @@ class TwoSourceVerifier:
                     return "q4"
         return None
 
-    def is_same_underlying_event(self, art1: Article, art2: Article, now_utc: Optional[datetime] = None) -> Tuple[bool, float, str]:
+    def is_same_underlying_event(
+        self,
+        art1: Article,
+        art2: Article,
+        now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
+    ) -> Tuple[bool, float, str]:
         """
         Determine if two articles refer to the exact same corporate/economic event.
         Enforces:
@@ -211,6 +217,7 @@ class TwoSourceVerifier:
         Args:
             now_utc: Optional immutable reference time for freshness checks. Defaults to
                      datetime.now(timezone.utc) when None (preserves backwards compatibility).
+            max_age_hours: Optional max freshness horizon in hours (defaults to STORY_FRESHNESS_HOURS, i.e. 24.0).
         """
         t1 = art1.title.lower()
         t2 = art2.title.lower()
@@ -225,10 +232,10 @@ class TwoSourceVerifier:
             if re.search(r"\b(stock price|stock quote|share price today|market data|company profile|ticker quote)\b", t_low) and not any(action in t_low for action in ("buys", "acquires", "acquisition", "profit", "merger", "results", "quarterly")):
                 return False, 0.0, f"NON_ARTICLE_URL: {label} article title indicates a generic stock price/quote page ('{art.title[:45]}')"
 
-        # Step 0b: 24-hour freshness policy verification for both sources
+        # Step 0b: Freshness policy verification for both sources (default 24h, or active fallback horizon)
         from config import get_settings
         settings = get_settings()
-        max_freshness_hours = getattr(settings, "STORY_FRESHNESS_HOURS", 24.0)
+        max_freshness_hours = max_age_hours if max_age_hours is not None else getattr(settings, "STORY_FRESHNESS_HOURS", 24.0)
         # Use provided immutable reference time; fall back to datetime.now() only if not supplied.
         current_utc = now_utc if now_utc is not None else datetime.now(timezone.utc)
         for art, label in ((art1, "Primary"), (art2, "Secondary")):
@@ -487,6 +494,7 @@ class TwoSourceVerifier:
         event: Event,
         articles: List[Article],
         now_utc: Optional[datetime] = None,
+        max_age_hours: Optional[float] = None,
     ) -> EventSourceVerification:
         """
         Verify an event using its linked candidate articles.
@@ -495,6 +503,7 @@ class TwoSourceVerifier:
             event: Event model instance.
             articles: List of Article models linked to this event.
             now_utc: Optional immutable reference timestamp for freshness verification.
+            max_age_hours: Optional max freshness horizon in hours (defaults to 24h).
 
         Returns:
             EventSourceVerification detailing independence and verification outcome.
@@ -530,7 +539,9 @@ class TwoSourceVerifier:
                 art2.category = NewsCategory.DOMESTIC
 
         # 2. Check if both articles refer to the same event
-        is_same_event, event_score, event_msg = self.is_same_underlying_event(art1, art2, now_utc=now_utc)
+        is_same_event, event_score, event_msg = self.is_same_underlying_event(
+            art1, art2, now_utc=now_utc, max_age_hours=max_age_hours
+        )
         if not is_same_event:
             event.secondary_publisher = None
             event.secondary_url = None

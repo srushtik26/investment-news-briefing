@@ -128,11 +128,11 @@ def evaluate_single_source_for_horizon(
     horizon_hours: float = 24.0,
     now_utc: Optional[datetime] = None,
 ) -> Tuple[bool, float, str]:
-    """Apply unchanged single-source rules enforcing <=24h freshness."""
+    """Apply unchanged single-source rules enforcing <=horizon_hours freshness."""
     age_hours = get_article_age_hours(article, now_utc=now_utc)
     if age_hours is None or age_hours > horizon_hours:
         return False, 0.0, f"REJECT: Stale publication date ({age_hours if age_hours is not None else 'unknown'}h > {horizon_hours:.0f}h)"
-    return evaluator.evaluate_event(event, article, now_utc=now_utc)
+    return evaluator.evaluate_event(event, article, now_utc=now_utc, max_age_hours=horizon_hours)
 
 
 def ladder_quality_key(event: Event, article: Article) -> Tuple[int, float, float]:
@@ -875,7 +875,7 @@ def run_pipeline(
         """Count unique eligible events belonging to a section category."""
         return len(get_final_selectable_unique_events(category=category))
 
-    def process_candidate_item(cand: Any, cand_section: str) -> Optional[Event]:
+    def process_candidate_item(cand: Any, cand_section: str, active_horizon: float = 24.0) -> Optional[Event]:
         nonlocal organic_second_sources_found
         u_norm = cand.url.strip().lower().rstrip("/")
         if u_norm in seen_urls:
@@ -889,9 +889,8 @@ def run_pipeline(
                 pub_time = pub_time.replace(tzinfo=timezone.utc)
             now_utc = datetime.now(timezone.utc)
             age_hours = max(0.0, (now_utc - pub_time).total_seconds() / 3600.0)
-            max_freshness_hours = getattr(get_settings(), "STORY_FRESHNESS_HOURS", 24.0)
-            if age_hours > max_freshness_hours:
-                log_exec(f"  [Candidate] STALE_PRE_REJECT: '{cand.title[:50]}' ({age_hours:.1f}h old > {max_freshness_hours:.0f}h limit)")
+            if age_hours > active_horizon:
+                log_exec(f"  [Candidate] STALE_PRE_REJECT: '{cand.title[:50]}' ({age_hours:.1f}h old > {active_horizon:.0f}h limit)")
                 return None
 
         from app.models.entity_sanitizer import normalize_publisher_name
@@ -930,11 +929,13 @@ def run_pipeline(
         articles_lookup[art.id] = art
 
         if cand_section == "domestic":
-            filt_res = domestic_filter_engine.filter_article(art)
+            filt_res = domestic_filter_engine.filter_article(art, max_age_hours=active_horizon)
         else:
-            filt_res = business_filter_engine.filter_article(art)
+            filt_res = business_filter_engine.filter_article(art, max_age_hours=active_horizon)
 
         if not filt_res.is_accepted:
+            if filt_res.rule_failed == "DATE":
+                date_deferred_articles.append(art)
             return None
 
         class_res = classifier.classify(art)
@@ -965,7 +966,7 @@ def run_pipeline(
         existing_event = next(
             (e for e in (verified_events + high_confidence_single_candidates + single_source_events) if e.article_ids and
              verifier.is_same_underlying_event(
-                 articles_lookup.get(e.article_ids[0], art), art, now_utc=run_reference_time
+                 articles_lookup.get(e.article_ids[0], art), art, now_utc=run_reference_time, max_age_hours=active_horizon
               )[0]),
             None
         )
@@ -973,9 +974,11 @@ def run_pipeline(
             if art.id not in existing_event.article_ids:
                 existing_event.article_ids.append(art.id)
                 ev_arts = [articles_lookup[i] for i in existing_event.article_ids if i in articles_lookup]
-                rv = verifier.verify_event(existing_event, ev_arts, now_utc=run_reference_time)
+                rv = verifier.verify_event(existing_event, ev_arts, now_utc=run_reference_time, max_age_hours=active_horizon)
                 if rv.is_verified:
                     existing_event.event_category = reg_clf.classify_event(existing_event, ev_arts)
+                    existing_event.metadata = getattr(existing_event, "metadata", {}) or {}
+                    existing_event.metadata["fallback_horizon_hours"] = max(existing_event.metadata.get("fallback_horizon_hours", 24.0), active_horizon)
                     if existing_event not in verified_events:
                         verified_events.append(existing_event)
                         organic_second_sources_found += 1
@@ -991,9 +994,9 @@ def run_pipeline(
             event.event_category = reg_clf.classify_event(event, [art])
             if not is_multi_event_roundup(event.canonical_title):
                 if event.event_category == NewsCategory.DOMESTIC:
-                    is_elig, conf, rsn = domestic_evaluator.evaluate(event, art)
+                    is_elig, conf, rsn = domestic_evaluator.evaluate(event, art, now_utc=run_reference_time, max_age_hours=active_horizon)
                 else:
-                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art)
+                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(event, art, now_utc=run_reference_time, max_age_hours=active_horizon)
 
                 if is_elig:
                     event.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
@@ -1005,6 +1008,8 @@ def run_pipeline(
                     event.secondary_url = None
                     event.article_ids = [art.id]
                     event.verification_reason = rsn
+                    event.metadata = getattr(event, "metadata", {}) or {}
+                    event.metadata["fallback_horizon_hours"] = active_horizon
                     if event not in high_confidence_single_candidates and event not in verified_events:
                         high_confidence_single_candidates.append(event)
                         prefix = f"[{event.event_category.value.upper()}_QUALIFIED]"
@@ -1244,34 +1249,318 @@ def run_pipeline(
 
         expansion_pass += 1
 
-    # SerpAPI Secondary Discovery (Fix 8) — ONLY if International < 5 after RSS discovery
-    intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
-    if intl_unique_count < 5:
-        serp_key = getattr(get_settings(), "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
-        if serp_key and serp_key.strip():
-            log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5. Searching SerpAPI for NEW International events...")
-            from app.verification.serpapi_corroborator import SerpAPICorroborator
-            serp_corrob = SerpAPICorroborator(extractor=extractor, api_key=serp_key)
-            SERP_DISCOVERY_QUERIES = [
-                "today company earnings",
-                "today acquisition",
-                "today company financial results",
-                "today funding",
-                "today corporate guidance",
-            ]
-            for sq in SERP_DISCOVERY_QUERIES:
-                if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
-                    log_exec(f"[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
-                    break
-                try:
-                    serp_items = serp_corrob.discover(sq)
-                    for sit in serp_items:
-                        process_candidate_item(sit, "international")
-                        if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
-                            log_exec(f"[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
+    # =========================================================================
+    # PER-SECTION QUALITY FALLBACK LADDER (24h -> 36h -> 48h -> 72h)
+    # =========================================================================
+    def reconsider_date_deferred_candidates(target_cat: NewsCategory, active_horizon: float) -> int:
+        added = 0
+        cand_arts = [
+            a for a in date_deferred_articles
+            if (target_cat == NewsCategory.DOMESTIC and a.category == NewsCategory.DOMESTIC) or
+               (target_cat == NewsCategory.INDIA and a.category == NewsCategory.INDIA) or
+               (target_cat == NewsCategory.INTERNATIONAL and a.category not in (NewsCategory.DOMESTIC, NewsCategory.INDIA))
+        ]
+        for art in cand_arts:
+            age_h = get_article_age_hours(art, now_utc=run_reference_time)
+            if age_h is None or age_h > active_horizon:
+                continue
+
+            engine = domestic_filter_engine if target_cat == NewsCategory.DOMESTIC else business_filter_engine
+            filt = engine.filter_article(art, now_utc=run_reference_time, max_age_hours=active_horizon)
+            if not filt.is_accepted:
+                continue
+
+            c = class_map.get(art.id)
+            if not c:
+                class_res = classifier.classify(art)
+                if not class_res.success or not class_res.classification:
+                    continue
+                c = class_res.classification
+                class_map[art.id] = c
+
+            if target_cat != NewsCategory.DOMESTIC and not c.is_hard_business_event:
+                continue
+
+            existing_fb_event = next((ev for ev in fallback_events if ev.article_ids and ev.article_ids[0] == art.id), None)
+            if not existing_fb_event:
+                classified_companies = populate_event_companies(art, c.company_names)
+                existing_fb_event = Event(
+                    canonical_title=art.title,
+                    article_ids=[art.id],
+                    event_category=target_cat,
+                    description=art.content_text[:300] if art.content_text else "",
+                    companies_involved=classified_companies,
+                    financial_figures=c.financial_numbers,
+                    percentages=c.percentages,
+                )
+                fallback_events.append(existing_fb_event)
+
+            ev = existing_fb_event
+            ev.event_category = reg_clf.classify_event(ev, [art])
+            if is_multi_event_roundup(ev.canonical_title):
+                continue
+
+            matched = next(
+                (e for e in (verified_events + high_confidence_single_candidates + single_source_events)
+                 if e.article_ids and e.id != ev.id and
+                 verifier.is_same_underlying_event(
+                     articles_lookup.get(e.article_ids[0], art), art, now_utc=run_reference_time, max_age_hours=active_horizon
+                 )[0]),
+                None
+            )
+            if matched:
+                if art.id not in matched.article_ids:
+                    matched.article_ids.append(art.id)
+                    ev_arts = [articles_lookup[i] for i in matched.article_ids if i in articles_lookup]
+                    rv = verifier.verify_event(matched, ev_arts, now_utc=run_reference_time, max_age_hours=active_horizon)
+                    if rv.is_verified:
+                        matched.event_category = reg_clf.classify_event(matched, ev_arts)
+                        matched.metadata = getattr(matched, "metadata", {}) or {}
+                        matched.metadata["fallback_horizon_hours"] = max(matched.metadata.get("fallback_horizon_hours", 24.0), active_horizon)
+                        if matched not in verified_events:
+                            verified_events.append(matched)
+                        if matched in high_confidence_single_candidates:
+                            high_confidence_single_candidates.remove(matched)
+                        added += 1
+            else:
+                if ev.event_category == NewsCategory.DOMESTIC:
+                    is_elig, conf, rsn = domestic_evaluator.evaluate(ev, art, now_utc=run_reference_time, max_age_hours=active_horizon)
+                else:
+                    is_elig, conf, rsn = single_source_evaluator.evaluate_event(ev, art, now_utc=run_reference_time, max_age_hours=active_horizon)
+
+                if is_elig:
+                    ev.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
+                    ev.verification_confidence = conf
+                    ev.single_source_confidence_score = conf
+                    ev.primary_publisher = art.source_name
+                    ev.primary_url = art.url
+                    ev.secondary_publisher = None
+                    ev.secondary_url = None
+                    ev.article_ids = [art.id]
+                    ev.verification_reason = rsn
+                    ev.metadata = getattr(ev, "metadata", {}) or {}
+                    ev.metadata["fallback_horizon_hours"] = active_horizon
+                    if ev not in high_confidence_single_candidates and ev not in verified_events:
+                        high_confidence_single_candidates.append(ev)
+                        added += 1
+                        prefix = f"[{ev.event_category.value.upper()}_QUALIFIED_{int(active_horizon)}H]"
+                        log_exec(f"    {prefix} {ev.canonical_title[:55]} | {rsn}")
+        return added
+
+    # Re-sync categories for verified and candidate events
+    for e in verified_events:
+        e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+        e.event_category = reg_clf.classify_event(e, e_arts)
+    for e in high_confidence_single_candidates:
+        e_arts = [articles_lookup[aid] for aid in e.article_ids if aid in articles_lookup]
+        e.event_category = reg_clf.classify_event(e, e_arts)
+
+    dom_unique_count   = len(get_final_selectable_unique_events(NewsCategory.DOMESTIC))
+    india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+    intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
+
+    # Freezing state: once 5 is reached, section is frozen
+    dom_frozen = (dom_unique_count >= 5)
+    india_frozen = (india_unique_count >= 5)
+    intl_frozen = (intl_unique_count >= 5)
+
+    FALLBACK_HORIZONS = [36.0, 48.0, 72.0]
+
+    for horizon in FALLBACK_HORIZONS:
+        if dom_frozen and india_frozen and intl_frozen:
+            break
+
+        tag = "[FALLBACK_36H]" if horizon == 36.0 else ("[FALLBACK_48H]" if horizon == 48.0 else "[EMERGENCY_72H]")
+
+        # 1. India Fallback
+        if not india_frozen:
+            log_exec(f"{tag} India deficient ({india_unique_count}/5) — expanding horizon to {int(horizon)}h")
+            reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon)
+            india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+            if india_unique_count < 5:
+                unseen_india = [c for c in india_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
+                for c in unseen_india[:15]:
+                    process_candidate_item(c, "india", active_horizon=horizon)
+                    if count_unique_section_events(NewsCategory.INDIA) >= 5:
+                        break
+                india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+
+            if india_unique_count < 5 and (MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count() > 0):
+                for s_group in [
+                    "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com)",
+                    "(site:businesstoday.in OR site:financialexpress.com OR site:thehindubusinessline.com)",
+                    "(site:economictimes.indiatimes.com OR site:ndtvprofit.com)",
+                ]:
+                    if india_unique_count >= 5 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        break
+                    for tmpl in [
+                        'quarterly results net profit revenue crore',
+                        'acquires acquisition deal buyout stake',
+                        'block deal stake sale crore',
+                        'raises funds equity funding crore',
+                    ]:
+                        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
                             break
-                except Exception as e:
-                    log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
+                        query_str = f"{tmpl} {s_group}"
+                        q_norm = f"{query_str.lower().strip()}_{int(horizon)}"
+                        if q_norm in executed_final_mile_queries:
+                            continue
+                        executed_final_mile_queries.add(q_norm)
+                        items = discovery_service.provider.discover(query=query_str, country="India", max_results=10)
+                        increment_corroboration_count(1)
+                        corroboration_searches += 1
+                        rss_india_used += 1
+                        for it in items:
+                            u = it.url.strip()
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
+                                process_candidate_item(it, "india", active_horizon=horizon)
+                                if count_unique_section_events(NewsCategory.INDIA) >= 5:
+                                    break
+                        india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+                        if india_unique_count >= 5:
+                            break
+
+            india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+            if india_unique_count >= 5:
+                india_frozen = True
+                log_exec(f"[FALLBACK_SUCCESS] India reached {india_unique_count}/5 at {int(horizon)}h")
+
+        # 2. International Fallback
+        if not intl_frozen:
+            log_exec(f"{tag} International deficient ({intl_unique_count}/5) — expanding horizon to {int(horizon)}h")
+            reconsider_date_deferred_candidates(NewsCategory.INTERNATIONAL, horizon)
+            intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+            if intl_unique_count < 5:
+                unseen_intl = [c for c in intl_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
+                for c in unseen_intl[:15]:
+                    process_candidate_item(c, "international", active_horizon=horizon)
+                    if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                        break
+                intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+
+            if intl_unique_count < 5 and (MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count() > 0):
+                for s_group in [
+                    "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com)",
+                    "(site:cnbc.com OR site:apnews.com OR site:bbc.com)",
+                    "(site:marketwatch.com OR site:fortune.com OR site:theguardian.com)",
+                    "(site:bloomberg.com OR site:reuters.com OR site:finance.yahoo.com)",
+                ]:
+                    if intl_unique_count >= 5 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        break
+                    for tmpl in [
+                        '"reports quarterly results"',
+                        '"reports financial results"',
+                        '"announces acquisition"',
+                        '"acquires"',
+                        '"raises financing"',
+                    ]:
+                        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                            break
+                        query_str = f"{tmpl} {s_group}"
+                        q_norm = f"{query_str.lower().strip()}_{int(horizon)}"
+                        if q_norm in executed_final_mile_queries:
+                            continue
+                        executed_final_mile_queries.add(q_norm)
+                        items = discovery_service.provider.discover(query=query_str, country="US", max_results=10)
+                        increment_corroboration_count(1)
+                        corroboration_searches += 1
+                        rss_international_used += 1
+                        for it in items:
+                            u = it.url.strip()
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in seen_urls:
+                                process_candidate_item(it, "international", active_horizon=horizon)
+                                if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                                    break
+                        intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+                        if intl_unique_count >= 5:
+                            break
+
+            # SerpAPI Discovery for International at active horizon
+            intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+            if intl_unique_count < 5:
+                serp_key = getattr(get_settings(), "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
+                if serp_key and serp_key.strip():
+                    from app.verification.serpapi_corroborator import (
+                        SerpAPICorroborator,
+                        get_serpapi_count,
+                        MAX_SERPAPI_SEARCHES_PER_RUN,
+                    )
+                    serp_corrob = SerpAPICorroborator(extractor=extractor, api_key=serp_key)
+                    if get_serpapi_count() < MAX_SERPAPI_SEARCHES_PER_RUN:
+                        log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching SerpAPI (budget: {get_serpapi_count()}/{MAX_SERPAPI_SEARCHES_PER_RUN})...")
+                        if horizon <= 36.0:
+                            SERP_DISCOVERY_QUERIES = [
+                                "today company earnings",
+                                "today acquisition",
+                                "today company financial results",
+                            ]
+                        elif horizon <= 48.0:
+                            SERP_DISCOVERY_QUERIES = [
+                                "company earnings results",
+                                "company acquisition deal",
+                                "company funding round",
+                            ]
+                        else:
+                            SERP_DISCOVERY_QUERIES = [
+                                "company quarterly earnings results",
+                                "acquisition merger agreement",
+                                "company financial guidance",
+                            ]
+                        for sq in SERP_DISCOVERY_QUERIES:
+                            if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                                log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
+                                break
+                            if get_serpapi_count() >= MAX_SERPAPI_SEARCHES_PER_RUN:
+                                break
+                            try:
+                                serp_items = serp_corrob.discover(sq, active_horizon=horizon)
+                                for sit in serp_items:
+                                    process_candidate_item(sit, "international", active_horizon=horizon)
+                                    if count_unique_section_events(NewsCategory.INTERNATIONAL) >= 5:
+                                        log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
+                                        break
+                            except Exception as e:
+                                log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
+
+            intl_unique_count = count_unique_section_events(NewsCategory.INTERNATIONAL)
+            if intl_unique_count >= 5:
+                intl_frozen = True
+                log_exec(f"[FALLBACK_SUCCESS] International reached {intl_unique_count}/5 at {int(horizon)}h")
+
+        # 3. Domestic Fallback (only if not frozen and < 5)
+        if not dom_frozen and dom_unique_count < 5:
+            log_exec(f"{tag} Domestic deficient ({dom_unique_count}/5) — expanding horizon to {int(horizon)}h")
+            reconsider_date_deferred_candidates(NewsCategory.DOMESTIC, horizon)
+            dom_unique_count = len(get_final_selectable_unique_events(NewsCategory.DOMESTIC))
+            if dom_unique_count < 5:
+                unseen_dom = [c for c in domestic_reserve_pool if c.url.strip().lower().rstrip("/") not in seen_urls]
+                for c in unseen_dom[:15]:
+                    process_candidate_item(c, "domestic", active_horizon=horizon)
+                    if len(get_final_selectable_unique_events(NewsCategory.DOMESTIC)) >= 5:
+                        break
+            dom_unique_count = len(get_final_selectable_unique_events(NewsCategory.DOMESTIC))
+            if dom_unique_count >= 5:
+                dom_frozen = True
+                log_exec(f"[FALLBACK_SUCCESS] Domestic reached {dom_unique_count}/5 at {int(horizon)}h")
+
+        # Re-check section freezing
+        dom_unique_count   = len(get_final_selectable_unique_events(NewsCategory.DOMESTIC))
+        india_unique_count = count_unique_section_events(NewsCategory.INDIA)
+        intl_unique_count  = count_unique_section_events(NewsCategory.INTERNATIONAL)
+        if dom_unique_count >= 5:
+            dom_frozen = True
+        if india_unique_count >= 5:
+            india_frozen = True
+        if intl_unique_count >= 5:
+            intl_frozen = True
+
+    # Check terminal exhaustion
+    if india_unique_count < 5:
+        log_exec(f"[EXHAUSTED] India remained {india_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
+    if intl_unique_count < 5:
+        log_exec(f"[EXHAUSTED] International remained {intl_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
+    if dom_unique_count < 5:
+        log_exec(f"[EXHAUSTED] Domestic remained {dom_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
 
     # Reclassify and update categories
     for e in verified_events:

@@ -31,6 +31,8 @@ from app.verification.verifier import TwoSourceVerifier
 
 logger = get_logger("verification.serpapi_corroborator")
 
+MAX_SERPAPI_SEARCHES_PER_RUN: int = getattr(get_settings(), "MAX_SERPAPI_SEARCHES_PER_RUN", 8)
+
 # Module-level run counters and query cache
 _run_serpapi_count = 0
 _serpapi_candidates_returned_total = 0
@@ -69,6 +71,17 @@ def get_serpapi_rejection_reasons() -> Dict[str, int]:
     return dict(_serpapi_rejection_counts)
 
 
+def get_serpapi_time_window(horizon_hours: float) -> Optional[str]:
+    """Map freshness horizon hours to SerpAPI / Google News tbs parameter."""
+    if horizon_hours <= 36.0:
+        return "qdr:d"
+    elif horizon_hours <= 48.0:
+        return "qdr:d2"
+    elif horizon_hours <= 72.0:
+        return "qdr:d3"
+    return "qdr:d3"
+
+
 class SerpAPICorroborator:
     """
     Optional secondary corroboration provider using SerpAPI Google News search engine.
@@ -100,12 +113,34 @@ class SerpAPICorroborator:
         from app.verification.query_builder import EventQueryBuilder
         return EventQueryBuilder.build_anchor_query(article, event=event)
 
-    def _search_serpapi(self, query: str) -> List[dict]:
+    def _search_serpapi(
+        self,
+        query: str,
+        active_horizon: float = 24.0,
+        time_window: Optional[str] = None,
+    ) -> List[dict]:
         """
         Execute Google News search via SerpAPI and return raw candidate dictionaries.
         Searches the high-precision query broadly without restrictive site OR clauses.
+        Cache keys are horizon-aware: (query, active_horizon).
         """
         global _run_serpapi_count, _serpapi_query_cache, _serpapi_candidates_returned_total
+
+        full_query = query.strip()
+        eff_horizon = round(float(active_horizon), 1)
+        cache_key = (full_query, eff_horizon)
+
+        # Horizon-aware cache check
+        if cache_key in _serpapi_query_cache:
+            logger.info("SERPAPI QUERY USED (cached, %.0fh): '%s'", eff_horizon, full_query[:80])
+            candidates = _serpapi_query_cache[cache_key]
+            logger.info("SERPAPI CANDIDATES FOUND (cached): %d", len(candidates))
+            return candidates
+
+        # Backwards-compatible fallback check for legacy string key at <=36h
+        if full_query in _serpapi_query_cache and eff_horizon <= 36.0:
+            logger.info("SERPAPI QUERY USED (cached legacy, %.0fh): '%s'", eff_horizon, full_query[:80])
+            return _serpapi_query_cache[full_query]
 
         if not self.has_api_key:
             logger.debug("SerpAPI skipped: no API key configured")
@@ -115,29 +150,25 @@ class SerpAPICorroborator:
             logger.info("SerpAPI budget exhausted (%d/%d). Skipping search.", _run_serpapi_count, self.max_searches)
             return []
 
-        full_query = query.strip()
-
-        # Cache check
-        if full_query in _serpapi_query_cache:
-            logger.info("SERPAPI QUERY USED (cached): '%s'", full_query[:80])
-            candidates = _serpapi_query_cache[full_query]
-            logger.info("SERPAPI CANDIDATES FOUND (cached): %d", len(candidates))
-            return candidates
+        if time_window is None:
+            time_window = get_serpapi_time_window(eff_horizon)
 
         params = {
             "engine": "google_news",
             "q": full_query,
             "api_key": self.api_key,
         }
+        if time_window:
+            params["tbs"] = time_window
 
         try:
-            logger.info("SERPAPI QUERY USED: '%s'", full_query[:80])
+            logger.info("SERPAPI QUERY USED (%.0fh, tbs=%s): '%s'", eff_horizon, time_window, full_query[:80])
             response = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
             _run_serpapi_count += 1
 
             if response.status_code != 200:
                 logger.warning("SerpAPI request returned HTTP %d: %s", response.status_code, response.text[:100])
-                _serpapi_query_cache[full_query] = []
+                _serpapi_query_cache[cache_key] = []
                 return []
 
             data = response.json()
@@ -158,21 +189,23 @@ class SerpAPICorroborator:
 
             logger.info("SERPAPI CANDIDATES FOUND: %d", len(parsed_results))
             _serpapi_candidates_returned_total += len(parsed_results)
-            _serpapi_query_cache[full_query] = parsed_results
+            _serpapi_query_cache[cache_key] = parsed_results
+            if full_query not in _serpapi_query_cache:
+                _serpapi_query_cache[full_query] = parsed_results
             return parsed_results
 
         except Exception as exc:
             logger.warning("SerpAPI request failed: %s", exc)
-            _serpapi_query_cache[full_query] = []
+            _serpapi_query_cache[cache_key] = []
             return []
 
-    def discover(self, query: str) -> List[Any]:
+    def discover(self, query: str, active_horizon: float = 24.0) -> List[Any]:
         """
         Execute Google News search via SerpAPI for discovery, returning DiscoveredArticle objects.
         Consumes from the same global MAX_SERPAPI_SEARCHES_PER_RUN budget.
         """
         from app.discovery.models import DiscoveredArticle
-        raw_items = self._search_serpapi(query)
+        raw_items = self._search_serpapi(query, active_horizon=active_horizon)
         discovered = []
         for item in raw_items:
             try:

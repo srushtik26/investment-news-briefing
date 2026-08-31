@@ -1,0 +1,63 @@
+name: Daily Investment Briefing Automation
+
+on:
+  schedule:
+    # Primary scheduled run: 06:40 AM IST (01:10 UTC)
+    # Cron format (UTC): Minute Hour Day-of-month Month Day-of-week
+    - cron: '10 1 * * *'
+    # Recovery run: 06:55 AM IST (01:25 UTC)
+    - cron: '25 1 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: daily-briefing-execution
+  cancel-in-progress: false
+
+jobs:
+  run-daily-briefing:
+    name: Generate & Deliver Daily Briefing
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Get current date (UTC / IST)
+        id: current-date
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Restore delivery state cache (Idempotency)
+        uses: actions/cache@v4
+        with:
+          path: data/last_email_date.txt
+          key: daily-email-state-${{ steps.current-date.outputs.date }}
+
+      - name: Execute daily briefing pipeline and email delivery
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT || secrets.GMAIL_RECIPIENTS }}
+          GMAIL_RECIPIENTS: ${{ secrets.GMAIL_RECIPIENTS || secrets.GMAIL_RECIPIENT }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python run_daily.py
+
+      - name: Save delivery state cache (if email sent successfully)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/last_email_date.txt
+          key: daily-email-state-${{ steps.current-date.outputs.date }}
