@@ -60,81 +60,26 @@ def generate_deterministic_summary(
 ) -> str:
     """
     Generate a concise, factual, neutral 1-sentence summary (target: 15-25 words, max 30 words).
-    Extracts a complete, grammatical factual sentence from the article content, cleans it, and ensures
-    it explains what happened without cut-off endings or speculation.
+    Uses grounded sentence selection from the article body validated against headline concepts.
+    If no body sentence passes grounding, generates a clean structured declarative fallback.
     """
     from app.formatting.formatter import BriefingFormatter
+    from app.ai.summary_grounding import (
+        select_grounded_summary_sentence,
+        build_structured_fallback_summary,
+    )
 
     raw_title = (headline or (article.title if article else "") or (getattr(event, "canonical_title", "") if event else "")).strip()
     clean_title = BriefingFormatter.clean_text(raw_title)
-    body = (article.content_text if article and article.content_text else (getattr(event, "description", "") if event else "")).strip()
 
-    cleaned_body = BriefingFormatter.clean_text(body)
-    # Normalize malformed sentence boundaries such as "six billion dollars.SoftBank" -> "six billion dollars. SoftBank"
-    cleaned_body = re.sub(r"([a-z0-9])\.([A-Z])", r"\1. \2", cleaned_body)
+    if article and article.content_text:
+        grounded_sentence = select_grounded_summary_sentence(article, clean_title, event=event)
+        if grounded_sentence:
+            return BriefingFormatter.clean_text(grounded_sentence)
 
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_body) if len(s.strip().split()) >= 4]
-    boilerplate = (
-        "click here", "subscribe", "all rights reserved", "read more", "photo:", "image:",
-        "advertisement", "sign up", "follow us", "share price today", "for more details",
-        "live updates", "stay tuned", "download app", "also read", "copyright"
-    )
-    valid_sentences = [s for s in sentences if not any(b in s.lower() for b in boilerplate)]
-
-    def is_grammatically_complete(s: str) -> bool:
-        words = s.split()
-        if len(words) < 6 or len(words) > 30:
-            return False
-        last_word = re.sub(r"[^\w]", "", words[-1]).lower()
-        if last_word in INCOMPLETE_ENDINGS:
-            return False
-        if re.search(r"\b[a-z0-9]+\.[A-Z]", s):
-            return False
-        return True
-
-    title_keywords = {w.lower() for w in re.findall(r"\b\w{3,}\b", clean_title)}
-    best_candidate: Optional[str] = None
-    best_score = -1
-
-    for idx, s in enumerate(valid_sentences[:6]):
-        # Strip common journalistic attribution prefixes
-        cleaned_s = re.sub(r"^(According to reports|Reports indicate that|It is reported that|Sources said that|In a statement|On Thursday|On Friday|On Wednesday|On Tuesday|On Monday)[,\s]+", "", s, flags=re.IGNORECASE).strip()
-        if not cleaned_s.endswith((".", "!", "?")):
-            cleaned_s += "."
-
-        words = cleaned_s.split()
-        if is_grammatically_complete(cleaned_s):
-            overlap = len({w.lower() for w in re.findall(r"\b\w{3,}\b", cleaned_s)} & title_keywords)
-            score = overlap * 10 - idx * 2
-            if score > best_score:
-                best_score = score
-                best_candidate = cleaned_s
-        elif len(words) > 30:
-            # Try splitting at logical clause boundaries (comma, semicolon, dash)
-            clauses = re.split(r"[,;—–]\s+(?:as|which|while|after|following|marking|amid|where|with)\s+", cleaned_s, flags=re.IGNORECASE)
-            if len(clauses) > 1:
-                first_clause = clauses[0].strip().rstrip(",;:-—– ") + "."
-                if is_grammatically_complete(first_clause):
-                    overlap = len({w.lower() for w in re.findall(r"\b\w{3,}\b", first_clause)} & title_keywords)
-                    score = overlap * 10 - idx * 2 - 1
-                    if score > best_score:
-                        best_score = score
-                        best_candidate = first_clause
-
-    if best_candidate and is_grammatically_complete(best_candidate):
-        return BriefingFormatter.clean_text(best_candidate)
-
-    # Fallback to headline-derived complete declarative sentence if no body sentence is complete
-    fallback = clean_title.rstrip(" .!?:;-—") + "."
-    if is_grammatically_complete(fallback):
-        return BriefingFormatter.clean_text(fallback)
-
-    # Clean truncated headline fallback guaranteed to not end in incomplete token
-    h_words = clean_title.rstrip(" .!?:;-—").split()
-    while h_words and (re.sub(r"[^\w]", "", h_words[-1]).lower() in INCOMPLETE_ENDINGS or len(h_words) > 28):
-        h_words.pop()
-    final_fallback = (" ".join(h_words) if h_words else clean_title).rstrip(" ,;:-—") + "."
-    return BriefingFormatter.clean_text(final_fallback)
+    # Use deterministic structured fallback
+    fallback = build_structured_fallback_summary(clean_title, event=event, article=article)
+    return BriefingFormatter.clean_text(fallback)
 
 
 class GeminiEditorialEngine:
@@ -272,13 +217,19 @@ class GeminiEditorialEngine:
                         ))
                     payload.domestic_stories = dom_stories
 
-                # Populate missing summaries for any section if needed
+                # Validate summary grounding for every story (guarantees zero summary hallucination/mismatch)
+                from app.ai.summary_grounding import validate_summary_grounding
                 for story in (payload.domestic_stories + payload.india_stories + payload.international_stories):
+                    scored = valid_events_map.get(story.event_id)
+                    ev = scored.event if scored else None
+                    art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
                     if not getattr(story, "summary", None):
-                        scored = valid_events_map.get(story.event_id)
-                        ev = scored.event if scored else None
-                        art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
                         story.summary = generate_deterministic_summary(art, ev, story.headline)
+                    else:
+                        is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
+                        if not is_grounded:
+                            logger.warning("Summary grounding failed for '%s' (%s) — replacing with grounded fallback", story.headline, g_reason)
+                            story.summary = generate_deterministic_summary(art, ev, story.headline)
 
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)

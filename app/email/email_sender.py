@@ -83,12 +83,13 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
     def get_section_key(raw_line: str) -> Optional[str]:
         cleaned = re.sub(r"^[\*\s_━\-#]+|[\*\s_━\-#]+$", "", raw_line).strip()
         u = cleaned.upper()
-        if "INDIA BUSINESS" in u:
-            return "INDIA"
-        if "DOMESTIC" in u:
-            return "DOMESTIC"
-        if "INTERNATIONAL" in u:
-            return "INTERNATIONAL"
+        if len(cleaned.split()) <= 8 and (cleaned.isupper() or any(k in u for k in ("VERIFIED", "HEADLINES", "DEVELOPMENTS", "SECTION"))):
+            if "INDIA BUSINESS" in u:
+                return "INDIA"
+            if "DOMESTIC" in u:
+                return "DOMESTIC"
+            if "INTERNATIONAL" in u:
+                return "INTERNATIONAL"
         return None
 
     sections: List[Dict[str, Any]] = []
@@ -99,9 +100,11 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
     current_summary_parts: List[str] = []
     current_source: Optional[str] = None
     current_url: Optional[str] = None
+    current_secondary_source: Optional[str] = None
+    current_secondary_url: Optional[str] = None
 
     def flush_story() -> None:
-        nonlocal current_headline, current_summary_parts, current_source, current_url
+        nonlocal current_headline, current_summary_parts, current_source, current_url, current_secondary_source, current_secondary_url
         if current_headline:
             summary = " ".join(current_summary_parts).strip()
             if summary.lower().startswith("summary:"):
@@ -111,11 +114,15 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
                 "summary": summary,
                 "source": current_source or "Verified Source",
                 "url": current_url or "",
+                "secondary_source": current_secondary_source,
+                "secondary_url": current_secondary_url,
             })
         current_headline = None
         current_summary_parts = []
         current_source = None
         current_url = None
+        current_secondary_source = None
+        current_secondary_url = None
 
     def flush_section() -> None:
         nonlocal current_sec_key, current_stories
@@ -148,6 +155,11 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
         if not current_sec_key:
             continue
 
+        # Check for Also verified by line
+        if line.lower().startswith("also verified by:"):
+            current_secondary_source = line.split(":", 1)[1].strip()
+            continue
+
         # Check for Source line
         if line.lower().startswith("source:"):
             current_source = line.split(":", 1)[1].strip()
@@ -156,8 +168,12 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
         # Check for URL line
         url_match = re.search(r"https?://\S+", line)
         if url_match and (line.startswith("http") or line.lower().startswith("url:")):
-            current_url = url_match.group(0).rstrip(")>].,;")
-            flush_story()
+            url_str = url_match.group(0).rstrip(")>].,;")
+            if current_url is None:
+                current_url = url_str
+            else:
+                current_secondary_url = url_str
+                flush_story()
             continue
 
         # Check for Headline line:
@@ -234,6 +250,18 @@ def generate_briefing_html(parsed: Dict[str, Any]) -> str:
                     f'Read full article &rarr;</a>'
                 )
 
+            sec_source = s.get("secondary_source")
+            sec_url = s.get("secondary_url")
+            secondary_block = ""
+            if sec_source and sec_url:
+                escaped_sec_src = html.escape(sec_source.strip())
+                escaped_sec_url = html.escape(sec_url.strip(), quote=True)
+                secondary_block = (
+                    f'<div style="margin-top: 6px; font-size: 12px; color: #64748b;">'
+                    f'Also verified by <a href="{escaped_sec_url}" target="_blank" style="color: #2563eb; text-decoration: none; font-weight: 600;">{escaped_sec_src} &rarr;</a>'
+                    f'</div>'
+                )
+
             stories_html.append(f"""
               <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
                 <div style="font-size: 16px; font-weight: 700; color: #0f172a; line-height: 1.4; margin-bottom: 8px;">
@@ -242,10 +270,11 @@ def generate_briefing_html(parsed: Dict[str, Any]) -> str:
                 {summary_block}
                 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top: 10px; border-top: 1px solid #f3f4f6; padding-top: 10px;">
                   <tr>
-                    <td align="left" style="font-size: 13px; color: #6b7280;">
+                    <td align="left" style="font-size: 13px; color: #6b7280; vertical-align: top;">
                       Source: <strong style="color: #1f2937; font-weight: 600;">{clean_source}</strong>
+                      {secondary_block}
                     </td>
-                    <td align="right" style="font-size: 13px;">
+                    <td align="right" style="font-size: 13px; vertical-align: top;">
                       {url_button}
                     </td>
                   </tr>

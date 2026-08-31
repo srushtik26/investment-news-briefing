@@ -277,6 +277,103 @@ class SourceFilterRule(BaseFilterRule):
     def rule_name(self) -> str:
         return "SOURCE"
 
+    @classmethod
+    def is_first_party_primary(cls, article: Article) -> Tuple[bool, str]:
+        """
+        Check if an unwhitelisted source qualifies as a FIRST_PARTY_PRIMARY candidate.
+        A first-party source may proceed past SourceFilter ONLY when ALL 6 conditions are met:
+        1. URL/domain clearly belongs to the named company/entity in the event.
+        2. Page is clearly a newsroom / investor-relations / press-release / financial-results page.
+        3. Event is a concrete HARD event (acquisition, earnings, funding, regulatory, contract, guidance, financing).
+        4. Article extraction succeeds with sufficient content (>= 50 words).
+        5. Date is verified and inside active horizon.
+        6. It is NOT commentary, opinion, analyst rating, preview or rumor.
+        """
+        if not article or not article.url:
+            return False, "Missing article or URL"
+
+        netloc = urlparse(article.url).netloc.lower().split(":")[0]
+        parts = [p for p in netloc.split(".") if p]
+        if len(parts) < 2:
+            return False, "Invalid domain structure"
+
+        # 4. Article extraction content check
+        words = (article.content_text or "").strip().split()
+        if len(words) < 50:
+            return False, f"Insufficient extracted content ({len(words)} words < 50)"
+
+        # 5. Date verified
+        if not getattr(article, "date_verified", False) or not article.published_at:
+            return False, "Unverified publication date"
+
+        # 1. URL/domain clearly belongs to the named company/entity in the event
+        generic_tlds = {"com", "org", "net", "io", "co", "in", "ai", "gov", "edu", "uk", "us", "de", "fr", "jp", "cn"}
+        generic_sub = {"www", "corporate", "newsroom", "ir", "investor", "investors", "press", "news", "media", "about"}
+        domain_tokens = [p for p in parts if p not in generic_tlds and p not in generic_sub]
+        if not domain_tokens:
+            return False, "No distinct entity token found in domain"
+
+        title_lower = (article.title or "").lower()
+        title_norm = re.sub(r"[^a-z0-9]", "", title_lower)
+        text_prefix_norm = re.sub(r"[^a-z0-9]", "", (article.content_text or "")[:350].lower())
+
+        matches_entity = False
+        matched_tok = ""
+        for tok in domain_tokens:
+            core_tok = re.sub(r"(news|corp|group)$", "", tok)
+            for candidate_t in {tok, core_tok}:
+                if len(candidate_t) >= 3 and (candidate_t in title_norm or candidate_t in text_prefix_norm):
+                    matches_entity = True
+                    matched_tok = candidate_t
+                    break
+            if matches_entity:
+                break
+
+        if not matches_entity:
+            return False, f"Domain tokens {domain_tokens} not found in article entity/title"
+
+        # 2. Page is clearly a newsroom / investor-relations / press-release / financial-results page
+        subdomain_prefix = parts[0] if len(parts) > 2 else ""
+        url_path = urlparse(article.url).path.lower()
+        valid_subdomains = {"newsroom", "corporate", "ir", "investor", "investors", "press", "news", "media"}
+        valid_path_segments = [
+            "/news/", "/newsroom/", "/press-releases/", "/press/", "/investor-relations/",
+            "/investors/", "/financial-results/", "/earnings/", "/news-releases/",
+            "/announcements/", "/releases/", "/media/", "/sec-filings/", "/filings/",
+        ]
+        is_newsroom_page = (
+            any(sub in subdomain_prefix for sub in valid_subdomains) or
+            any(seg in url_path for seg in valid_path_segments) or
+            bool(re.search(r"/(news|press|releases?|investor|earnings|financials?)/", url_path))
+        )
+        prohibited_path_segments = ["/products/", "/pricing/", "/features/", "/promo/", "/shop/", "/store/", "/solutions/", "/careers/"]
+        if any(p in url_path for p in prohibited_path_segments):
+            return False, "Promotional or product marketing page"
+        if not is_newsroom_page:
+            return False, "Not a recognized newsroom, investor-relations, or press release page"
+
+        # 6. Check NOT commentary, opinion, analyst rating, preview or rumor
+        story_rule = StoryTypeFilterRule()
+        full_text = f"{article.title} {article.content_text or ''}"
+        for noise_cat, pattern in story_rule.REJECT_NOISE_PATTERNS:
+            if re.search(pattern, article.title or "", re.IGNORECASE) or re.search(pattern, full_text[:400], re.IGNORECASE):
+                return False, f"Matched noise pattern: {noise_cat}"
+
+        # 3. Event is a concrete HARD event
+        HARD_EVENT_PATTERNS = [
+            r"\b(?:agrees? to acquire|completes? acquisition|definitive agreement to acquire|to acquire|acquires?|merger agreement|to merge with|completes? merger|buyout of)\b",
+            r"\b(?:quarterly results|financial results|earnings|net income|net profit|revenue of|q[1-4] results|operating profit|reports .*? results)\b",
+            r"\b(?:funding round|series [a-g]|raises? \$?\d+|completed financing|growth equity round)\b",
+            r"\b(?:regulatory approval|antitrust clearance|fda approval|sec approval|clears acquisition|clears merger)\b",
+            r"\b(?:awarded contract|secures? \$?\d+.*?contract|signs? \$?\d+.*?agreement|order win|contract award)\b",
+            r"\b(?:guidance|full-year outlook|raises outlook|lowers outlook|forecasts? revenue|outlook update)\b",
+            r"\b(?:completed financing|credit facility|debt offering|notes offering|closes \$?\d+.*?(?:financing|offering))\b",
+        ]
+        if not any(re.search(pat, full_text, re.IGNORECASE) for pat in HARD_EVENT_PATTERNS):
+            return False, "Not a recognized concrete hard business event"
+
+        return True, f"Legitimate first-party corporate event for entity '{matched_tok}'"
+
     def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
         source_name = (article.source_name or "").strip().lower()
         netloc = urlparse(article.url).netloc.lower()
@@ -288,6 +385,19 @@ class SourceFilterRule(BaseFilterRule):
         domain_valid = any(d in netloc for d in self.ALLOWED_DOMAINS)
 
         if not name_valid and not domain_valid:
+            is_fp, fp_reason = self.is_first_party_primary(article)
+            if is_fp:
+                if not article.metadata:
+                    object.__setattr__(article, "metadata", {})
+                article.metadata["source_class"] = "FIRST_PARTY_PRIMARY"
+                logger.info("[FIRST_PARTY_PRIMARY_ALLOWED] '%s' (%s) - %s", (article.title or "")[:60], netloc, fp_reason)
+                print(f"[FIRST_PARTY_PRIMARY_ALLOWED] {(article.title or '')[:60]} ({netloc})")
+                return FilterResult(
+                    is_accepted=True,
+                    article_url=article.url,
+                    article_title=article.title,
+                )
+
             return FilterResult(
                 is_accepted=False,
                 article_url=article.url,
@@ -357,6 +467,10 @@ class URLFilterRule(BaseFilterRule):
             if not path.startswith("/story/"):
                 return False, "NON_ARTICLE_URL: MarketWatch non-article pattern — URL must be a direct article path (/story/...)"
 
+        # Direct rejection for dedicated advice and opinion column paths
+        if re.search(r"/(opinion/columns?|personal-finance/(?:advice|tips)|wealth/(?:advice|planning)|advice/)", path):
+            return False, "NON_ARTICLE_URL: Dedicated opinion columns / personal advice path is a non-article pattern"
+
         # 1. Check Path Patterns
         for pat in cls.REJECT_PATH_PATTERNS:
             if re.search(pat, path):
@@ -385,11 +499,82 @@ class URLFilterRule(BaseFilterRule):
                 matched_patterns=[reason],
             )
 
+        # Check URL path noise patterns: /opinion/, /columns/, /editorial/, /comment/, /analysis/, /personal-finance/, /wealth/, /advice/
+        # when there is no independently identifiable hard business event in title or body.
+        opinion_path_match = re.search(r"/(opinion|columns?|editorial|comment|analysis|personal-finance|wealth|advice)/", (article.url or "").lower())
+        if opinion_path_match:
+            eval_text = f"{article.title} {(article.content_text or '')[:300]}".lower()
+            has_hard_event = bool(re.search(
+                r"\b(net profit|revenue rises|revenue falls|profit rises|profit falls|q[1-4] results|earnings beat|beats estimates|acquires?|acquisition|buyout|merger|bags order|secures contract|order win|raises funds|funding round|qip|rights issue|files for ipo|share buyback|dividend|penalty order|antitrust fine)\b",
+                eval_text
+            ))
+            if not has_hard_event:
+                return FilterResult(
+                    is_accepted=False,
+                    article_url=article.url,
+                    article_title=article.title,
+                    rule_failed=self.rule_name,
+                    rejection_reason=f"URL path '{opinion_path_match.group(0)}' is opinion/commentary/advice without an identifiable hard business event",
+                    matched_patterns=[opinion_path_match.group(0)],
+                )
+
         return FilterResult(
             is_accepted=True,
             article_url=article.url,
             article_title=article.title,
         )
+
+
+def is_generic_headline(title: str) -> Tuple[bool, str]:
+    """
+    Evaluate if a headline is an umbrella/index/generic title lacking a named entity and concrete action.
+    Examples that fail:
+        'Company Announcements'
+        'Latest News'
+        'Market Updates'
+        'Business News'
+        'Corporate Announcements'
+        'Stock Market Live'
+        'Today's News'
+        'News Updates'
+    Examples that pass:
+        'BYD profit falls 18% as China competition intensifies'
+        'KNR Constructions bags ₹158 crore EPC order from GHMC'
+    """
+    if not title or not title.strip():
+        return True, "Empty title"
+
+    t_clean = title.strip()
+    t_lower = t_clean.lower()
+
+    GENERIC_TITLES = {
+        "company announcement", "company announcements",
+        "corporate announcement", "corporate announcements",
+        "latest news", "market update", "market updates",
+        "business news", "stock market live", "today's news",
+        "todays news", "news update", "news updates",
+        "top news", "headlines today", "morning bell",
+        "closing bell", "market live", "live market updates",
+        "live updates", "daily brief", "business roundup",
+        "announcements", "financial news", "world news",
+    }
+
+    normalized = re.sub(r"[^\w\s]", "", t_lower).strip()
+    if normalized in GENERIC_TITLES:
+        return True, f"Headline '{title}' is an umbrella/generic index phrase"
+
+    for g in GENERIC_TITLES:
+        if normalized == g or normalized.startswith(g + " ") or normalized.endswith(" " + g):
+            if len(normalized.split()) <= len(g.split()) + 1:
+                return True, f"Headline '{title}' is a generic index title"
+
+    words = t_clean.split()
+    if len(words) <= 3 and not re.search(r"[\$₹\d%]", t_clean):
+        has_action = bool(re.search(r"\b(buys|acquired?|profit|loss|rises|falls|jumps|drops|wins|bags|files|hikes|cuts|merges|deal)\b", t_lower))
+        if not has_action:
+            return True, f"Headline '{title}' is too short and lacks a concrete action/event"
+
+    return False, "Valid specific headline"
 
 
 class StoryTypeFilterRule(BaseFilterRule):
@@ -405,12 +590,16 @@ class StoryTypeFilterRule(BaseFilterRule):
     # NOISE REJECTION PATTERNS
     REJECT_NOISE_PATTERNS: List[Tuple[str, str]] = [
         (
+            "personal_finance_and_advice",
+            r"\b(what next\?|deciding what to do after|financial freedom|retirement planning|saving for retirement|do you own\??|what should investors do|how should you invest|money habits|wealth creation tips|smart money moves)\b",
+        ),
+        (
             "opinion_editorial",
             r"\b(opinion|editorial|column|view|analysis|commentary|our take|expert view)\s*:|\b(why we think|opinion column|editorial view)\b",
         ),
         (
             "analyst_rating",
-            r"\b(upgrades?|downgrades?|initiates? coverage|reiterates?|brokerage firm|brokerage|buy rating|sell rating|hold rating|underperform rating|outperform rating)\b",
+            r"\b(upgrades?|downgrades?|initiates? coverage|reiterates?|buy rating|sell rating|hold rating|underperform rating|outperform rating|brokerages?\s+(?:upgrades?|downgrades?|raises?|cuts?|sees?|initiates?|reiterates?|targets?|price target))\b",
         ),
         (
             "analyst_speculation",
@@ -449,11 +638,11 @@ class StoryTypeFilterRule(BaseFilterRule):
             r"\b(earnings preview|preview.*earnings|what to expect|watch ahead|faces? (?:a )?big test.*earnings|analysts? expect.*earnings)\b",
         ),        (
             "speculative_transaction",
-            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:consider\s+)?(?:acquire|acquiring|buy|buying|purchase|purchasing|merge|merging|take\s*over)\b|\b(considering\s+(?:acquiring|acquisition|buying|buyout|takeover))\b",
+            r"\b(likely|may|might|could)\s+(?:to\s+)?(?:consider\s+)?(?:acquire|acquiring|buy|buying|purchase|purchasing|merge|merging|take\s*over)\b|\b(considering\s+(?:acquiring|acquisition|buying|buyout|takeover|sale|merger))\b|\b(could acquire|may acquire|exploring sale|reportedly negotiating)\b",
         ),
         (
             "speculative_deal_talks",
-            r"\b(in (?:early |advanced )?talks (?:to|with|for)|in discussions (?:to|with|for)|eyeing (?:a )?(?:controlling )?stake|eyes? (?:a )?(?:controlling )?stake|mulls? (?:stake|acquisition|buying|sale)|exploring (?:acquisition|sale|buying|options|stake)|explores? (?:sale|acquisition|buying|stake)|report says talks|seeking to buy|weighs (?:bid|acquisition|sale|buying)|in talks to buy|in talks to acquire)\b",
+            r"\b(in talks|in (?:early |advanced )?talks (?:to|with|for)?|in discussions (?:to|with|for)|eyeing (?:a )?(?:controlling )?stake|eyes? (?:a )?(?:controlling )?stake|mulls? (?:stake|acquisition|buying|sale)|exploring (?:acquisition|sale|buying|options|stake)|explores? (?:sale|acquisition|buying|stake)|report says talks|seeking to buy|weighs (?:bid|acquisition|sale|buying)|in talks to buy|in talks to acquire|nears? (?:[$\w\s\.]*?)deal|nears? (?:acquisition|buyout|merger)|close to (?:deal|buying|acquiring|merger|acquisition)|reportedly (?:negotiating|in talks|close to|exploring|considering))\b",
         ),
         (
             "ipo_intraday",
@@ -538,6 +727,22 @@ class StoryTypeFilterRule(BaseFilterRule):
         return "STORY_TYPE"
 
     def evaluate(self, article: Article, now_utc: Optional[datetime] = None) -> FilterResult:
+        # Check for generic umbrella/index headline
+        is_gen, gen_reason = is_generic_headline(article.title or "")
+        if is_gen:
+            logger.debug(
+                "STORY_TYPE REJECT | TITLE: '%s' | REASON: %s",
+                article.title[:60], gen_reason
+            )
+            return FilterResult(
+                is_accepted=False,
+                article_url=article.url,
+                article_title=article.title,
+                rule_failed=self.rule_name,
+                rejection_reason=f"Generic headline rejected: {gen_reason}",
+                matched_patterns=["generic_headline", gen_reason],
+            )
+
         eval_text = f"{article.title} {article.content_text[:500]}".lower()
 
         # 1. Check for Rejection / Noise Patterns First

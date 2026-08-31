@@ -336,48 +336,89 @@ class TwoSourceVerifier:
                 "cji", "ruling", "plea", "verdict", "quashes", "stays", "case", "matter", "law",
                 "legal", "public", "delhi", "centre", "central", "probes", "probed", "investigation",
                 "hearing", "notice", "notices", "pleas", "judiciary", "judges", "directs", "seeks",
-                "why", "how", "what", "who", "when", "wants", "powers", "misuse", "calls", "held"
+                "why", "how", "what", "who", "when", "wants", "powers", "misuse", "calls", "held",
+                "action", "actions", "lawyers", "lawyer", "advocate", "advocates",
+                "bar", "illegal", "students", "student", "dissent", "punishing", "punish", "punished",
+                "jurist", "jurists", "distinguished", "appoint", "appointed", "appointment", "collegium",
+                "panel", "official", "officials", "authorities", "today", "yesterday", "tomorrow",
+                "new", "first", "last", "major", "big", "key", "day", "days", "week", "year",
+                "across", "capital", "system", "systems", "mega", "mission", "missions", "all",
+                "corridor", "two", "three", "four", "five", "national"
             }
-            def _stem_topic_word(w: str) -> str:
-                w = w.lower()
-                # Suffix normalizations (transferred -> transfer, transferring -> transfer, judges -> judge)
-                w = re.sub(r"(?:ing|ed|es|s|tion|ment)$", "", w)
-                return w
-
-            # Extract specific topic keywords from titles
-            raw_w1 = [w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
-            raw_w2 = [w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
-            
-            w1_stemmed = {_stem_topic_word(w) for w in raw_w1 if len(_stem_topic_word(w)) >= 3}
-            w2_stemmed = {_stem_topic_word(w) for w in raw_w2 if len(_stem_topic_word(w)) >= 3}
-            
-            topic_overlap = w1_stemmed.intersection(w2_stemmed)
-
-            # Check if there is specific geographic or named entity overlap (e.g. rajasthan, manipur, kashmir, etc.)
             geo_entities = {
                 "rajasthan", "gujarat", "maharashtra", "kerala", "karnataka", "tamil", "nadu", "bengal",
                 "bihar", "punjab", "haryana", "assam", "odisha", "uttarakhand", "jharkhand", "chhattisgarh",
                 "telangana", "andhra", "goa", "kashmir", "ladakh", "manipur", "nagaland", "mizoram", "tripura",
-                "meghalaya", "sikkim", "mumbai", "kolkata", "chennai", "bengaluru", "hyderabad", "ahmedabad", "jaipur"
+                "meghalaya", "sikkim", "mumbai", "kolkata", "chennai", "bengaluru", "hyderabad", "ahmedabad",
+                "jaipur", "allahabad", "prayagraj", "lucknow", "bastar", "sambhal", "varanasi", "ayodhya",
+                "patna", "bhopal", "chandigarh", "shimla", "srinagar", "jammu", "imphal", "guwahati", "pune"
             }
-            shared_geo = {w for w in (set(raw_w1).intersection(set(raw_w2))) if w in geo_entities}
 
-            # If shared named geography + at least 1 shared topic stem (e.g. rajasthan + transfer)
-            # or >= 2 shared specific topic stems
-            if len(topic_overlap) >= 2 or (shared_geo and len(topic_overlap) >= 1):
+            # 1. Geographic compatibility check (title + opening body)
+            full_t1 = f"{t1} {(art1.content_text or '')[:250].lower()}"
+            full_t2 = f"{t2} {(art2.content_text or '')[:250].lower()}"
+            geo1 = {w for w in re.findall(r"[a-zA-Z]+", full_t1) if w in geo_entities}
+            geo2 = {w for w in re.findall(r"[a-zA-Z]+", full_t2) if w in geo_entities}
+            if geo1 and geo2 and not geo1.intersection(geo2):
+                return False, 0.0, f"DOMESTIC_GEO_MISMATCH: Distinct local geographic regions ('{list(geo1)}' vs '{list(geo2)}')"
+
+            # 2. Specific domestic action/event categorization
+            DOMESTIC_ACTION_TYPES = {
+                "DEMOLITION": [r"\b(bulldozer|demolition|demolish|demolished|unauthorized structures?|illegal structures?|illegal chambers?|anti-encroachment)\b"],
+                "CRIME_TERROR": [r"\b(massacre|naxal|terror|blast|bombing|encounter|lynching|murder|attack)\b"],
+                "EXAM_EDUCATION": [r"\b(neet|paper leak|ugc|cuet|nta|examination|board exam)\b"],
+                "SPACE_TECH": [r"\b(isro|satellite|launch|gslv|pslv|chandrayaan|gaganyaan)\b"],
+                "DEFENCE_SECURITY": [r"\b(missile|army|navy|air force|drdo|warfare|artillery)\b"],
+                "JUDICIAL_APPOINTMENT": [r"\b(appoint(?:ed|s|ment)? (?:of )?judge|collegium|distinguished jurist|elevation of judge)\b"],
+                "PROTEST_STUDENT": [r"\b(student protest|student dissent|campus violence|punishing student)\b"],
+                "ELECTION": [r"\b(election commission|assembly polls?|lok sabha polls?|bypolls?|voting)\b"],
+                "RELIGIOUS_SITE_SURVEY": [r"\b(survey of|shahi jama masjid|gyanvapi|sambhal|shrine)\b"],
+            }
+            act1_types = {k for k, pats in DOMESTIC_ACTION_TYPES.items() if any(re.search(p, t1) for p in pats)}
+            act2_types = {k for k, pats in DOMESTIC_ACTION_TYPES.items() if any(re.search(p, t2) for p in pats)}
+            if act1_types and act2_types and not act1_types.intersection(act2_types):
+                return False, 0.0, f"DOMESTIC_ACTION_MISMATCH: Incompatible event actions ({list(act1_types)} vs {list(act2_types)})"
+
+            def _stem_topic_word(w: str) -> str:
+                w = w.lower()
+                w = re.sub(r"(?:ing|ed|es|s|tion|ment)$", "", w)
+                return w
+
+            raw_w1 = [w for w in re.findall(r"[a-zA-Z0-9]+", t1) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
+            raw_w2 = [w for w in re.findall(r"[a-zA-Z0-9]+", t2) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 3]
+
+            w1_stemmed = {_stem_topic_word(w) for w in raw_w1 if len(_stem_topic_word(w)) >= 3}
+            w2_stemmed = {_stem_topic_word(w) for w in raw_w2 if len(_stem_topic_word(w)) >= 3}
+
+            topic_overlap = w1_stemmed.intersection(w2_stemmed)
+
+            # Check root prefixes (e.g. 'fraud' matches 'fraudulent')
+            root_overlap = set()
+            for w1 in raw_w1:
+                for w2 in raw_w2:
+                    if w1 != w2 and len(w1) >= 5 and len(w2) >= 5 and (w1.startswith(w2[:5]) or w2.startswith(w1[:5])):
+                        root_overlap.add(_stem_topic_word(min(w1, w2, key=len)))
+
+            combined_overlap = topic_overlap.union(root_overlap)
+            shared_geo = geo1.intersection(geo2)
+            shared_action = act1_types.intersection(act2_types)
+
+            # Check if there is meaningful overlap in principal entity/action/facts
+            is_valid_domestic_match = False
+            if shared_action and (shared_geo or len(combined_overlap) >= 2):
+                is_valid_domestic_match = True
+            elif shared_geo and len(combined_overlap) >= 1:
+                is_valid_domestic_match = True
+            elif len(combined_overlap) >= 2 and title_similarity >= 0.2:
+                is_valid_domestic_match = True
+            elif len(combined_overlap) >= 3:
+                is_valid_domestic_match = True
+
+            if is_valid_domestic_match:
                 score = max(title_similarity, 0.85)
-                return True, score, f"DOMESTIC_EVENT_MATCH: Shared specific topics ({list(topic_overlap)})"
+                return True, score, f"DOMESTIC_EVENT_MATCH: Corroborated domestic event (topics={list(combined_overlap)}, geo={list(shared_geo)}, action={list(shared_action)})"
 
-            # Check body text overlap for candidate matches with high headline concept similarity
-            if (art1.content_text and art2.content_text):
-                b1_words = {_stem_topic_word(w) for w in re.findall(r"[a-zA-Z0-9]+", art1.content_text.lower()[:300]) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 4}
-                b2_words = {_stem_topic_word(w) for w in re.findall(r"[a-zA-Z0-9]+", art2.content_text.lower()[:300]) if w not in GENERIC_DOMESTIC_WORDS and len(w) >= 4}
-                body_topic_overlap = w1_stemmed.intersection(b2_words).union(w2_stemmed.intersection(b1_words))
-                if len(body_topic_overlap) >= 2 and (topic_overlap or shared_geo):
-                    score = max(title_similarity, 0.80)
-                    return True, score, f"DOMESTIC_EVENT_MATCH: Cross title-body topic overlap ({list(body_topic_overlap)})"
-
-            return False, 0.0, f"DOMESTIC_TOPIC_MISMATCH: Insufficient specific subject/topic overlap for domestic events ({list(topic_overlap)})"
+            return False, 0.0, f"DOMESTIC_TOPIC_MISMATCH: Insufficient principal entity/action overlap for domestic events ({list(combined_overlap)})"
 
         has_shared_entity = bool(shared_entities or shared_major)
         if not has_shared_entity:
@@ -578,6 +619,48 @@ class TwoSourceVerifier:
                 article_urls=[art1.url],
                 matching_details=f"Both articles originate from the same publisher/media group ('{group1}').",
             )
+
+        # 3b. Check First-Party Primary Source Corroboration
+        is_fp1 = (art1.metadata or {}).get("source_class") == "FIRST_PARTY_PRIMARY"
+        is_fp2 = (art2.metadata or {}).get("source_class") == "FIRST_PARTY_PRIMARY"
+        if is_fp1 and is_fp2:
+            event.secondary_publisher = None
+            event.secondary_url = None
+            if len(event.article_ids) > 1:
+                event.article_ids = [event.article_ids[0]]
+            return EventSourceVerification(
+                event_id=event.id,
+                primary_source=art1.source_name,
+                secondary_source=None,
+                source_count=1,
+                is_independent=False,
+                verification_status=VerificationStatus.REJECTED_SAME_PUBLISHER,
+                confidence_score=0.4,
+                article_urls=[art1.url],
+                matching_details="Both articles are first-party primary corporate sources; independent approved corroboration required.",
+            )
+        if is_fp1 or is_fp2:
+            other_art = art2 if is_fp1 else art1
+            from app.filtering.rules import SourceFilterRule
+            other_netloc = urlparse(other_art.url).netloc.lower()
+            other_src = (other_art.source_name or "").lower()
+            is_approved = any(allowed in other_src for allowed in SourceFilterRule.ALLOWED_SOURCES) or any(d in other_netloc for d in SourceFilterRule.ALLOWED_DOMAINS)
+            if not is_approved:
+                event.secondary_publisher = None
+                event.secondary_url = None
+                if len(event.article_ids) > 1:
+                    event.article_ids = [event.article_ids[0]]
+                return EventSourceVerification(
+                    event_id=event.id,
+                    primary_source=art1.source_name,
+                    secondary_source=None,
+                    source_count=1,
+                    is_independent=False,
+                    verification_status=VerificationStatus.REJECTED_SAME_PUBLISHER,
+                    confidence_score=0.4,
+                    article_urls=[art1.url],
+                    matching_details="First-party primary source requires corroboration from an approved publisher or regulatory filing.",
+                )
 
         # 4. Check for Syndicated / Verbatim Wire Repetition
         is_syndicated, synd_reason = self.is_syndicated_republication(art1, art2)

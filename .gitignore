@@ -38,6 +38,8 @@ data/*.sqlite3
 # Log files
 logs/*.log
 *.log
+pipeline_*_live.txt
+pipeline_*_test.txt
 
 # Unit test / coverage reports
 .pytest_cache/

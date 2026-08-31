@@ -313,6 +313,10 @@ class SingleSourceEvaluator:
         body = primary_article.content_text or ""
         source = primary_article.source_name or ""
 
+        # First-party primary sources require independent approved corroboration
+        if (primary_article.metadata or {}).get("source_class") == "FIRST_PARTY_PRIMARY":
+            return False, 0.0, "REJECT: First-party primary source requires independent corroboration"
+
         # 1. Date Freshness Rule D: strictly <= max_age (default: 24h, or active fallback horizon)
         if not primary_article.published_at:
             return False, 0.0, "REJECT: Missing publication timestamp"

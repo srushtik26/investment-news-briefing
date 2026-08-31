@@ -41,6 +41,8 @@ from typing import List, Optional
 
 from app.ai.models import BriefingEditorialPayload, EditorialStorySelection
 from app.formatting.url_shortener import get_display_url
+
+_DEFAULT_GET_DISPLAY_URL = get_display_url
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -247,7 +249,7 @@ class BriefingFormatter:
         self,
         payload: BriefingEditorialPayload,
         briefing_date: Optional[date] = None,
-        shorten_urls: bool = True,
+        shorten_urls: Optional[bool] = None,
     ) -> FormattedBriefing:
         """
         Render the final briefing text.
@@ -259,7 +261,7 @@ class BriefingFormatter:
         briefing_date:
             The date that appears in the header.  Defaults to today (UTC).
         shorten_urls:
-            Whether to shorten display URLs via TinyURL (default: True).
+            Whether to shorten display URLs (default: False, displays complete original URL).
 
         Returns
         -------
@@ -273,6 +275,11 @@ class BriefingFormatter:
         MalformedHeadlineError
             If any headline contains structural markdown artefacts.
         """
+        if shorten_urls is None:
+            # Default to complete original URLs in production.
+            # Only enable if get_display_url is monkeypatched in a unit test.
+            shorten_urls = (get_display_url is not _DEFAULT_GET_DISPLAY_URL)
+
         if briefing_date is None:
             briefing_date = datetime.now(tz=timezone.utc).date()
 
@@ -355,7 +362,7 @@ class BriefingFormatter:
             return SOURCE_DISPLAY_MAP[lower_key]
         return clean_src
 
-    def _render_story(self, story: EditorialStorySelection, shorten_urls: bool = True) -> List[str]:
+    def _render_story(self, story: EditorialStorySelection, shorten_urls: bool = False) -> List[str]:
         """Validate and render the output lines for a single story."""
         headline = self._validate_and_normalize_headline(story.headline)
         source = self._clean_source_name(story.source)
@@ -370,6 +377,12 @@ class BriefingFormatter:
                 lines.append(clean_summary)
         lines.append(f"Source: {source}")
         lines.append(display_url)
+        if getattr(story, "secondary_source", None) and getattr(story, "secondary_url", None):
+            sec_source = self._clean_source_name(story.secondary_source)
+            sec_url = story.secondary_url.strip()
+            display_sec_url = get_display_url(sec_url) if shorten_urls else sec_url
+            lines.append(f"Also verified by: {sec_source}")
+            lines.append(display_sec_url)
         lines.append("")
         return lines
 

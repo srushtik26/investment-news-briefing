@@ -5,7 +5,8 @@ Sorts verified events separately for India and International sections,
 and selects the top 8–10 scored candidates for each pool.
 """
 
-from typing import List, Optional
+import re
+from typing import List, Optional, Tuple
 
 from app.logging_config import get_logger
 from app.models.enums import NewsCategory
@@ -153,7 +154,7 @@ def select_diverse_domestic_candidates(
         if not is_duplicate:
             deduped.append(scored)
 
-    # Step 2: Classify Topics
+    # Step 2: Classify Topics and Apply Domestic Quality Adjustment
     from app.verification.domestic_trending import classify_domestic_topic, DomesticTopic
     
     candidate_topics = []
@@ -165,14 +166,29 @@ def select_diverse_domestic_candidates(
         topic = classify_domestic_topic(title, body)
         ev.metadata = getattr(ev, "metadata", {}) or {}
         ev.metadata["domestic_topic"] = topic.value
-        candidate_topics.append((scored, topic))
+
+        # Domestic quality weighting: boost national policy/Supreme Court/defence/space, penalize state assembly session filler
+        t_low = title.lower()
+        quality_adjustment = 0.0
+        if re.search(r"\b(\d+\s+questions|\d+\s+bills|monsoon session|winter session|budget session|assembly session agenda)\b", t_low):
+            quality_adjustment -= 25.0
+        elif re.search(r"\b(supreme court|constitution bench|cji|union cabinet|isro|defence|indigenous missile|satellite)\b", t_low):
+            quality_adjustment += 10.0
+
+        candidate_topics.append((scored, topic, quality_adjustment))
+
+    # Sort candidates by (adjusted_score, rank)
+    candidate_topics.sort(
+        key=lambda x: (x[0].investment_score + x[2]),
+        reverse=True,
+    )
 
     # Step 3: Pass 1 — Diversity-aware Selection
     selected: List[ScoredEvent] = []
     selected_topic_counts: dict[DomesticTopic, int] = {}
     remaining_pool: List[ScoredEvent] = []
 
-    for scored, topic in candidate_topics:
+    for scored, topic, _ in candidate_topics:
         court_count = selected_topic_counts.get(DomesticTopic.COURT_JUDICIARY, 0)
         topic_count = selected_topic_counts.get(topic, 0)
 
@@ -205,3 +221,156 @@ def select_diverse_domestic_candidates(
         scored.rank = rank
 
     return selected
+
+
+def select_diverse_topic_candidates(
+    candidates: List[ScoredEvent],
+    articles_lookup: Optional[dict] = None,
+    target_count: int = 5,
+    max_per_topic: int = 2,
+) -> List[ScoredEvent]:
+    """
+    Select candidate stories enforcing soft business topic diversity.
+
+    PASS 1: Take the highest-quality story from each distinct topic bucket.
+    PASS 2: If fewer than target_count (5) distinct topics exist, allow up to
+            max_per_topic (2) stories from already-used topics.
+    PASS 3 (Quality Backfill): If still under target_count, backfill from remaining
+            candidates in quality order so the section NEVER drops below target_count.
+    """
+    if not candidates:
+        return []
+
+    articles_map = articles_lookup or {}
+    from app.ranking.topic_classifier import classify_topic_bucket
+
+    candidate_with_topics: List[Tuple[ScoredEvent, str]] = []
+    for scored in candidates:
+        ev = scored.event
+        meta = getattr(ev, "metadata", {}) or {}
+        topic = meta.get("topic_bucket")
+        if not topic:
+            art = articles_map.get(ev.article_ids[0]) if ev.article_ids else None
+            title = ev.canonical_title or (art.title if art else "")
+            body = (art.content_text if art else "") or ev.description or ""
+            topic = classify_topic_bucket(headline=title, body=body)
+            ev.metadata = getattr(ev, "metadata", {}) or {}
+            ev.metadata["topic_bucket"] = topic
+        candidate_with_topics.append((scored, topic))
+
+    selected: List[ScoredEvent] = []
+    selected_topics: dict[str, int] = {}
+    deferred_pool: List[Tuple[ScoredEvent, str]] = []
+
+    # Pass 1: One story per distinct topic bucket
+    for scored, topic in candidate_with_topics:
+        if topic not in selected_topics:
+            selected.append(scored)
+            selected_topics[topic] = 1
+            if len(selected) == target_count:
+                break
+        else:
+            deferred_pool.append((scored, topic))
+
+    # Pass 2: Allow up to max_per_topic (default 2)
+    if len(selected) < target_count:
+        still_deferred: List[ScoredEvent] = []
+        for scored, topic in deferred_pool:
+            if selected_topics.get(topic, 0) < max_per_topic:
+                selected.append(scored)
+                selected_topics[topic] = selected_topics.get(topic, 0) + 1
+                if len(selected) == target_count:
+                    break
+            else:
+                still_deferred.append(scored)
+
+        # Pass 3: Backfill from remaining candidates in quality order if still under target_count
+        if len(selected) < target_count:
+            for scored in still_deferred:
+                if scored not in selected:
+                    selected.append(scored)
+                    if len(selected) == target_count:
+                        break
+
+    # Re-assign ranks 1..N
+    for rank, scored in enumerate(selected, 1):
+        scored.rank = rank
+
+    return selected
+
+
+def select_diverse_publisher_candidates(
+    candidates: List[ScoredEvent],
+    articles_lookup: Optional[dict] = None,
+    target_count: int = 5,
+    max_per_publisher: int = 2,
+) -> List[ScoredEvent]:
+    """
+    Apply a SOFT publisher-diversity preference to ranked candidates within a section.
+
+    Target:
+        Prefer maximum 2 stories from the same publisher within each section
+        WHEN equally qualified alternatives exist.
+
+    Important:
+        This is NOT a hard cap.
+        If only 5 legitimate stories exist and 3 come from one publisher, keep all 5.
+        Never replace a strong hard event with a weaker story merely for diversity.
+
+    Ranking preference order:
+        1. hard-event quality
+        2. verification tier
+        3. freshness
+        4. relevance
+        5. publisher diversity (tie-breaker / secondary ranking preference)
+    """
+    if not candidates:
+        return []
+
+    articles_map = articles_lookup or {}
+
+    def _get_publisher_key(scored: ScoredEvent) -> str:
+        ev = scored.event
+        art = articles_map.get(ev.article_ids[0]) if ev.article_ids else None
+        pub = ev.primary_publisher or (art.source_name if art else "")
+        p_clean = pub.lower().replace("www.", "").strip()
+        for brand in (
+            "business standard", "times of india", "economic times", "cnbc",
+            "reuters", "bloomberg", "the hindu", "mint", "livemint",
+            "financial express", "moneycontrol", "ndtv", "indian express",
+            "ap news", "ap", "bbc", "fortune", "marketwatch", "wall street journal", "wsj"
+        ):
+            if brand in p_clean:
+                return brand
+        return p_clean or "unknown_publisher"
+
+    selected: List[ScoredEvent] = []
+    publisher_counts: dict[str, int] = {}
+    deferred_pool: List[ScoredEvent] = []
+
+    # Pass 1: Select candidates respecting max_per_publisher
+    for scored in candidates:
+        pub_key = _get_publisher_key(scored)
+        count = publisher_counts.get(pub_key, 0)
+        if count < max_per_publisher:
+            selected.append(scored)
+            publisher_counts[pub_key] = count + 1
+            if len(selected) == target_count:
+                break
+        else:
+            deferred_pool.append(scored)
+
+    # Pass 2: Backfill from deferred candidates in quality order if target_count not yet met
+    if len(selected) < target_count:
+        for scored in deferred_pool:
+            if scored not in selected:
+                selected.append(scored)
+                if len(selected) == target_count:
+                    break
+
+    # Re-assign ranks 1..N
+    for rank, scored in enumerate(selected, 1):
+        scored.rank = rank
+
+    return selected
+

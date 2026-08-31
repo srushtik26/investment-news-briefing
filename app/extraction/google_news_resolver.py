@@ -48,6 +48,11 @@ class GoogleNewsURLResolver:
         settings = get_settings()
         self.timeout = timeout_seconds or settings.REQUEST_TIMEOUT_SECONDS
         self.user_agent = user_agent or settings.USER_AGENT
+        self.resolution_cache: dict[str, ResolutionResult] = {}
+
+    def reset_resolution_cache(self) -> None:
+        """Clear resolution cache for a new run."""
+        self.resolution_cache.clear()
 
     @staticmethod
     def _is_valid_publisher_url(url: str) -> bool:
@@ -110,8 +115,19 @@ class GoogleNewsURLResolver:
         """
         Resolve input URL to direct publisher URL.
         If non-Google URL, returns input URL unchanged.
+        Checks and updates per-run resolution cache.
         """
         clean_url = url.strip()
+        if clean_url in self.resolution_cache:
+            from app.utils.performance_metrics import PipelineMetrics
+            PipelineMetrics.get_instance().increment("google_resolution_cache_hits")
+            return self.resolution_cache[clean_url]
+
+        result = self._resolve_uncached(clean_url)
+        self.resolution_cache[clean_url] = result
+        return result
+
+    def _resolve_uncached(self, clean_url: str) -> ResolutionResult:
         if not self.is_google_news_url(clean_url):
             return ResolutionResult(
                 original_url=clean_url,

@@ -45,6 +45,14 @@ class EditorialStorySelection(BaseModel):
         default=None,
         description="One-line factual summary of the story (15-25 words, strictly factual)",
     )
+    secondary_source: Optional[str] = Field(
+        default=None,
+        description="Secondary publisher name if two-source verified",
+    )
+    secondary_url: Optional[str] = Field(
+        default=None,
+        description="Secondary article URL if two-source verified",
+    )
 
     @field_validator("section")
     @classmethod
