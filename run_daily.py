@@ -114,7 +114,6 @@ def run_daily_briefing(
             pipeline_exit_code = run_pipeline(
                 max_india=max_india,
                 max_international=max_international,
-                max_domestic=max_domestic,
             )
         except Exception as e:
             logger.error("PIPELINE_EXECUTION_CRASH: Unhandled exception during run_pipeline: %s", e)
