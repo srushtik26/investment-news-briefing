@@ -1,272 +1,362 @@
-# 📰 Automated Investment Committee News Briefing System
+# Automated Investment Committee News Briefing System
 
-> **A production-ready, hybrid AI + Deterministic Python pipeline delivering zero-hallucination, strictly verified daily intelligence across 3 independent sections (5 India Business + 5 Domestic + 5 International Business = 15 Stories Total) with one-line factual summaries and shortened URLs for Investment Committees, Fund Managers, and C-Suite Executives.**
-
----
-
-## 💡 What is This Project?
-
-In institutional investment and executive decision-making, missing a major market event or national policy shift is costly, but acting on unverified rumors, stale coverage, or clickbait commentary is catastrophic. 
-
-This system automatically scans global, Indian financial, and Indian national media, extracts hard corporate actions and significant national developments, enforces rigorous **freshness evaluation** with clock-drift protection, validates events via a **Tier-1 Quality Verification Ladder** (Two-Source Independent Verification, High-Confidence Single-Source Gate $\ge 80/100$, or Domestic Trending Evaluator $\ge 60/100$), deduplicates across past briefings, generates concise **one-line factual summaries**, shortens display URLs, and synthesizes a pristine, structured **15-story executive briefing** validated against 20 deterministic gatekeeping rules.
+> **A production-ready, hybrid AI and deterministic Python intelligence pipeline that delivers verified daily executive intelligence across three independent sections: 5 India Business + 5 Domestic + 5 International Business (15 stories total). Features grounded factual summaries and direct canonical article URLs for Investment Committees, Fund Managers, and Corporate Executives.**
 
 ---
 
-## 🏛️ The Three Briefing Sections (Strictly Ordered & Separated)
+## Project Status
 
-The briefing delivers exactly 15 verified stories in canonical presentation order:
+| Dimension | Current Production State |
+|---|---|
+| **Production Pipeline** | **Operational** (Structured modular pipeline under `app/pipeline/`) |
+| **Section Yield** | **Validated 5 India + 5 Domestic + 5 International (15 Total)** |
+| **Final Quality Validation** | **20/20 Deterministic Integrity Checks Passing** |
+| **Automated Test Suite** | **689 passing tests** (0 failures, full local & CI regression coverage) |
+| **GitHub Actions Automation** | **Manual & scheduled production runs validated** |
+| **Automated Email Delivery** | **Validated via Gmail SMTP SSL** |
+| **Automated Schedule** | **Daily at 06:40 AM IST (Primary) and 06:55 AM IST (Recovery)** |
 
-| # | Section | Target | Coverage & Criteria |
+---
+
+## What is This Project?
+
+In institutional investment and executive leadership, acting on unverified rumors, stale coverage, or clickbait commentary introduces severe risk. Conversely, manual news monitoring across fragmented outlets is time-prohibitive.
+
+This automated intelligence system:
+1. Discovers candidate coverage across global, Indian financial, and Indian national media outlets.
+2. Extracts clean article text and validates publication timestamps with clock-drift protection.
+3. Applies deterministic hard filters to reject speculative deal talks, commentary, opinions, and stale dates.
+4. Classifies business events using Gemini AI and strict event schemas.
+5. Verifies occurrences using a multi-tiered Quality Verification Ladder (independent two-source corroboration, high-confidence single-source evaluation, or domestic trending assessment).
+6. Deduplicates against a 3-day SQLite lookback history to prevent repetition across days.
+7. Ranks candidate pools deterministically using composite investment-relevance scoring.
+8. Synthesizes grounded one-line factual summaries with complete grammatical structure.
+9. Audits output through a 20-rule deterministic gatekeeper before delivering the final briefing via Gmail SMTP.
+
+---
+
+## Output Contract & The Three Briefing Sections
+
+The briefing strictly enforces a **15-story daily quota (5 / 5 / 5)** across three mutually exclusive sections. India Business and Domestic stories are never merged.
+
+| # | Section | Quota | Scope & Inclusion Criteria |
 |---|---|---|---|
-| 1 | **INDIA BUSINESS** | **5 Stories** | Hard Corporate Events: Listed Indian companies, quarterly earnings with verified figures, M&A / block deals / stake sales, IPO / DRHP filings, Capex, SEBI / RBI / CCI regulatory enforcement, Indian currency signals (₹, crore, lakh). |
-| 2 | **DOMESTIC** | **5 Stories** | General Trending National News: Supreme Court / High Court verdicts, Union Cabinet decisions, Parliament legislation, Defence & national security, Space & ISRO missions, Strategic national infrastructure, Disaster & weather alerts, Public health & education. Evaluated via `DomesticTrendingEvaluator` (filters local municipal trivia). |
-| 3 | **INTERNATIONAL BUSINESS** | **5 Stories** | Global Corporate & Macro: Global earnings reports, cross-border M&A, Central banks (Federal Reserve, ECB, BOJ), Big Tech & AI developments, global commodity & supply chain events. |
-
-**Total Final Briefing Output: Exactly 15 Stories (5 + 5 + 5).**
+| 1 | **INDIA BUSINESS** | **5 Stories** | Hard Indian corporate actions: listed companies, earnings with concrete metrics, completed M&A/stake sales, IPO/DRHP filings, capex, and regulatory enforcement (SEBI, RBI, CCI). Evaluated via two-source verification or single-source score $\ge 80/100$. |
+| 2 | **DOMESTIC** | **5 Stories** | Significant Indian national public affairs: Supreme Court and High Court verdicts, Union Cabinet decisions, parliamentary legislation, national security, space missions, infrastructure, and national alerts. Evaluated via `DomesticTrendingEvaluator` ($\ge 60/100$) to reject municipal civic trivia. |
+| 3 | **INTERNATIONAL BUSINESS** | **5 Stories** | Major non-Indian commercial and macroeconomic developments: global earnings, multinational M&A, central bank rate actions (Federal Reserve, ECB, BOJ), enterprise technology/AI developments, and supply-chain shifts. |
 
 ---
 
-## ⚡ Key Highlights & Architecture
+## Canonical Briefing Format
 
-### 🧠 The Core Philosophy
-**"Deterministic Python handles data integrity, verification gates, and rules; AI handles deep understanding, classification, and structured editorial synthesis."**
+The briefing uses full canonical article URLs preserved from original publishers (no shortened URLs). When independent dual-source verification succeeds, the secondary corroborating source is rendered.
+
+```text
+*INVESTMENT COMMITTEE BRIEFING*
+*31 August 2026*
+
+*TOP 5 INDIA BUSINESS HEADLINES*
+
+*Reliance Retail Acquires 100% Stake in Technology Platform for Rs 500 Crore*
+Reliance Retail completed the full buyout of the enterprise retail software developer to bolster its digital fulfillment stack.
+Source: Business Standard
+https://www.business-standard.com/companies/news/reliance-retail-deal-example-12345.html
+Also verified by: The Economic Times
+https://economictimes.indiatimes.com/industry/services/retail/reliance-retail-deal-example/articleshow/98765432.cms
+
+*Tata Motors Q1 Net Profit Rises 15% to Rs 3500 Crore on Commercial Vehicle Margin Expansion*
+Tata Motors reported a 15 percent year-over-year increase in quarterly net income driven by operational efficiency in domestic commercial fleets.
+Source: The Financial Express
+https://www.financialexpress.com/auto/tata-motors-q1-earnings-example-34567.html
+
+...
+
+*TOP 5 DOMESTIC HEADLINES*
+
+*Supreme Court Directs High Courts to Formulate Standard Guidelines for Virtual Hearings*
+A three-judge bench mandated uniform procedural protocols across all state jurisdictions to preserve public access to judicial records.
+Source: The Hindu
+https://www.thehindu.com/news/national/supreme-court-virtual-hearing-guidelines-example.html
+
+...
+
+*TOP 5 INTERNATIONAL BUSINESS HEADLINES*
+
+*Nvidia Signs Definitive Agreement to Acquire Run:ai for $700 Million*
+Nvidia concluded negotiations to purchase the workload orchestration developer in an all-cash transaction to optimize GPU cluster utilization.
+Source: Reuters
+https://www.reuters.com/technology/nvidia-runai-acquisition-example-56789.html
+Also verified by: CNBC
+https://www.cnbc.com/2026/08/31/nvidia-buys-runai-deal-example.html
+```
+
+---
+
+## Pipeline Architecture & Modular Flow
+
+The architecture decouples orchestration into focused modules located under `app/pipeline/`, while `run_pipeline.py` serves as the public entry-point and backward-compatible wrapper.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                                   PIPELINE FLOW                                        │
+│                                 PIPELINE FLOW                                          │
 └────────────────────────────────────────────────────────────────────────────────────────┘
-  1. Discovery      ► Continuous RSS candidate reserve pool (40 Domestic + 40 India + 40 Intl)
-  2. Extraction     ► Real-time URL resolution, Trafilatura/BS4 extraction & date validation
-  3. Filtering      ► Hard deterministic rejection of commentary, opinion, noise, stale dates & rumors
-  4. Pre-Ranking    ► Entity & numerical density scoring to prioritize Tier-1 events
-  5. AI Classify    ► Gemini AI identifies event types, entities & quantified figures
-  6. Verification   ► Two-Source Verification + Single-Source Gate (≥80) + Domestic Trending (≥60)
-  7. Expansion      ► Automated multi-pass reserve processing with independent section freezing
-  8. Deduplication  ► 3-day SQLite lookback history & per-company exclusivity rules
-  9. Relevance      ► Multi-factor scoring (Financial Scale + Market Impact + Freshness)
- 10. Quality Ladder ► Section-specific quality horizons (24h strict / 36h / 48h / 72h emergency)
- 11. Editorial      ► Factual 1-line summary synthesis (Gemini with deterministic offline fallback)
- 12. 20-Check Audit ► 20-rule deterministic validation engine guarantees flawless output
- 13. URL Shortening ► Async TinyURL display shortening with fallback to direct canonical URLs
- 14. Formatter      ► Executive formatting for Email, WhatsApp, and Markdown delivery
+  1. Discovery Reserves   ► Multi-query Google News RSS reserve pool (Domestic, India, Intl)
+  2. Resolution & Fetch   ► Batch URL resolution and HTML extraction with per-run caching
+  3. Hard Filtering       ► Deterministic gate for whitelist sources, dates, and noise rejection
+  4. Pre-Ranking          ► Financial and entity density prioritization before AI stages
+  5. Event Classification ► Gemini AI structured classification into hard business schemas
+  6. Quality Verification ► Quality Ladder: Two-Source, Single-Source (≥80), Domestic (≥60)
+  7. Secondary Enrichment ► RSS-based second-source corroboration for top single-source items
+  8. History Deduplication► 3-day SQLite lookback history to ensure multi-day story novelty
+  9. Relevance Ranking    ► 5-factor mathematical score (Magnitude, Market, Investor, Corp, Freshness)
+ 10. Fallback Ladder      ► Section horizons (Strict 24h → 36h → 48h → Emergency 72h)
+ 11. Editorial Curation   ► Grounded 1-line summary synthesis with deterministic fallback
+ 12. Final 20-Check Audit ► 20-rule deterministic gatekeeper validates all constraints
+ 13. Output Delivery      ► Generates plain text and HTML briefing delivered via Gmail SMTP
 ```
 
----
+### Module Responsibilities (`app/pipeline/`)
 
-## 🎯 Key Engineering Innovations
-
-### 1. 🛡️ Quality Ladder Verification Model
-* **Tier 1 — Two-Source Independent Verification**: Pairs matching articles from independent publisher families (excluding syndicated wire copy and same-parent media groups).
-* **Tier 2 — High-Confidence Single-Source Gate**: Evaluates single-publisher business reports using a strict 100-point deterministic rubric (requires trusted publisher pedigree, recognized hard corporate action, named corporate entity, and quantified metric facts $\ge 80/100$).
-* **Tier 3 — Domestic Trending Evaluator**: Assesses national public affairs on a 100-point scale ($\ge 60/100$) filtering out political reaction noise, gossip, and local municipal civic updates without requiring commercial balance sheet data.
-* **Section-Aware Quality Horizons**: Dynamically maps quality levels (`STRICT_SUCCESS`, `FALLBACK_SUCCESS_24H`, `FALLBACK_SUCCESS_36H`, `FALLBACK_SUCCESS_48H`, `EMERGENCY_SUCCESS_72H`) to story freshness windows.
-
-### 2. 📝 Complete One-Line Factual Summaries
-* Every story includes a single-line factual summary ($\le 30$ words) capturing the core transaction or event details with exact figures.
-* **Grammatical Completeness Guarantee**: Uses sentence boundary normalization (`word.CapitalizedWord` $\to$ `word. CapitalizedWord`) and an `INCOMPLETE_ENDINGS` guard to eliminate cut-off fragments or dangling prepositions/conjunctions.
-* **Zero Quota Dependency**: High-precision deterministic fallback engine generates complete summaries with zero extra Gemini API calls.
-
-### 3. 🔗 Short Display URLs (TinyURL Integration)
-* Display URLs in the final briefing are shortened via TinyURL (e.g. `https://tinyurl.com/xxxxx`) for sleek executive presentation across mobile and email.
-* Full canonical direct URLs are preserved internally throughout verification, deduplication, and SQLite history tracking.
-
-### 4. 🛑 20-Check Deterministic Final Validation Engine
-* Validates every generated briefing against 20 strict programmatic checks before delivery:
-  1. Section story counts (strictly 5 India Business + 5 Domestic + 5 International Business).
-  2. Section presentation ordering (India Business $\to$ Domestic $\to$ International Business).
-  3. Headline and publisher authenticity.
-  4. Non-article and hub URL rejection.
-  5. Publication date freshness against section-specific horizon.
-  6. No cross-section duplicate events or same-company repeats in India section.
-  7. Summary validation (single line, $\le 30$ words, no markdown bullets, no URLs, no mojibake, grammatically complete ending).
-
-### 5. 🔍 Multi-Pass Active Corroboration & Reserve Pool Expansion
-* **Reserve Pool Processing**: 120 discovery reserve candidates (40 Domestic, 40 India, 40 International) processed incrementally until all 3 sections achieve 5/5 sufficiency.
-* **Independent Section Freezing**: Once a section hits 5 quality candidates, it is frozen to preserve search budgets.
-* **SerpAPI Production Cap**: Strictly capped at **8 searches per run** (`MAX_SERPAPI_SEARCHES_PER_RUN = 8`).
-
-### 6. 🌐 Robust Region Provenance & Content Quality Filtering
-* **Stale Explicit Date Filtering**: Extracts and verifies structured dates in titles/tables (e.g. `18 Feb 2019`), rejecting stale quarterly reports.
-* **Speculative Deal Talks Gate**: Rejects prospective discussions (`in talks to buy`, `eyeing stake`, `mulls acquisition`) while preserving verified completed block deals and signed agreements.
-* **Local Municipal vs National Scope**: Distinguishes local civic works from national public affairs.
+| Module | Role |
+|---|---|
+| `runner.py` | Orchestrates the end-to-end execution lifecycle and metric logging. |
+| `context.py` | Manages shared state, runtime timers, pools, and service dependencies. |
+| `discovery_stage.py` | Fetches balanced reserve pools across Domestic, India, and International. |
+| `candidate_processing.py` | Coordinates bounded concurrent extraction and date/entity extraction. |
+| `fallback_manager.py` | Manages quality level horizons (24h to 72h) and SerpAPI fallback budget. |
+| `enrichment.py` | Searches Google News RSS to corroborates top single-source candidates. |
+| `selection.py` | Executes cross-section and SQLite deduplication, ranking, and story selection. |
+| `reporting.py` | Renders candidate audits, final story audits, and execution logs. |
 
 ---
 
-## 📁 Repository Structure
+## Quality Verification Ladder & Fallback Horizons
+
+To maintain uncompromising editorial standards during slow news cycles or weekend sessions, the pipeline utilizes a deterministic **Quality Ladder**:
+
+### Verification Tiers
+1. **Tier 1 — Two-Source Independent Verification**: Pairs matching stories from separate publishing groups (excluding syndicated wire duplicates, republishers, and same-parent corporate media groups).
+2. **Tier 2 — High-Confidence Single-Source Gate**: Requires single-publisher business reports to achieve a score $\ge 80/100$ based on trusted source pedigree, named corporate entity, recognized transaction action, and quantified monetary figures.
+3. **Tier 3 — Domestic Trending Evaluator**: Evaluates national public affairs ($\ge 60/100$) focusing on governance, constitutional courts, and defense developments without requiring balance-sheet metrics.
+
+### Quality Horizons
+When initial 24-hour candidate reserves do not yield 5 verified stories for a section, the system steps down through explicit quality horizons without relaxing filtering rules:
+- `STRICT_SUCCESS` (0–24 hours)
+- `FALLBACK_SUCCESS_24H` (24 hours)
+- `FALLBACK_SUCCESS_36H` (Up to 36 hours)
+- `FALLBACK_SUCCESS_48H` (Up to 48 hours)
+- `EMERGENCY_SUCCESS_72H` (Up to 72 hours)
+- Anything beyond 72 hours terminates as `DATA_UNAVAILABLE` rather than admitting stale or low-quality articles.
+
+---
+
+## Performance Architecture & Optimizations
+
+The pipeline incorporates production-grade performance safeguards:
+- **Bounded Concurrency**: Thread pool bounded to 5 concurrent workers for HTTP fetches to prevent socket exhaustion and rate-limiting.
+- **Dual-Tier Extraction Caching**: In-memory per-run cache tracks successful extractions and avoids repeating failed 404/403/timeout URLs.
+- **Google News URL Resolution Cache**: Pre-resolves and caches Google News redirect paths to prevent redundant HTTP redirect hops.
+- **Domain Circuit Breaker**: Identifies degraded domains after consecutive 401/403 failures (e.g., paywalled endpoints) and skips remaining URLs on that domain during the run.
+- **Cheap Pre-Extraction Filtering**: Rejects invalid URL formats, degraded domains, and obvious non-article URLs before initiating network requests.
+- **Targeted Second-Source Enrichment**: Limits RSS second-source search to the top 7 single-source candidate events per section, prioritized by investment relevance score.
+- **Deterministic Component Execution**: Ranking, clustering, and SQLite history reads execute deterministically to ensure reproducible output.
+
+---
+
+## Daily Automation & Email Delivery
+
+The daily runner script (`run_daily.py`) handles production execution and automated email delivery:
+
+```
+[GitHub Actions Schedule] (06:40 AM IST / 06:55 AM IST Recovery)
+                │
+                ▼
+        [run_daily.py]
+                │
+                ├─► 1. Load environment variables (.env / GitHub Secrets)
+                ├─► 2. Check last_email_date.txt (Idempotency Guard)
+                │      └─► If today's date exists: Exit 0 (prevents duplicate delivery)
+                ├─► 3. Validate Gmail SMTP credentials presence
+                ├─► 4. Run production pipeline (run_pipeline.py)
+                ├─► 5. Verify data/final_briefing.txt artifact exists & is non-empty
+                ├─► 6. Confirm presence of India, Domestic, and International sections
+                ├─► 7. Send multipart HTML/Text email via Gmail SMTP SSL (Port 465)
+                └─► 8. Record delivery date in data/last_email_date.txt ONLY after SMTP success
+```
+
+### GitHub Actions Workflow (`.github/workflows/daily_briefing.yml`)
+
+The workflow runs on `ubuntu-latest` every single day—including weekends, market holidays, and national holidays:
+- **Primary Execution**: `06:40 AM IST` (`01:10 UTC` | `cron: '10 1 * * *'`)
+- **Recovery Execution**: `06:55 AM IST` (`01:25 UTC` | `cron: '25 1 * * *'`)
+
+> **Note on Scheduling**: GitHub Actions cron jobs are queued on shared runners; actual execution may begin a few minutes after the scheduled timestamp depending on runner load. The same-day idempotency check ensures that if the primary run succeeds, the recovery run exits cleanly without sending duplicate emails.
+
+---
+
+## GitHub Actions Secrets Setup
+
+To enable automated delivery in GitHub Actions, configure the following secrets under **Repository Settings → Secrets and variables → Actions**:
+
+| Secret Name | Required | Purpose | Example / Notes |
+|---|---|---|---|
+| `GEMINI_API_KEY` | **Yes** | Google Gemini API key for event classification and editorial summaries | `AIzaSy...` |
+| `SERPAPI_API_KEY` | Optional | SerpAPI key used exclusively as secondary fallback when RSS corroboration is exhausted | `abc123...` |
+| `GMAIL_SENDER` | **Yes** | Sending Gmail address | `briefings@gmail.com` |
+| `GMAIL_RECIPIENT` | **Yes** | Primary recipient address (or comma-separated addresses in `GMAIL_RECIPIENTS`) | `investment-committee@example.com` |
+| `GMAIL_APP_PASSWORD` | **Yes** | 16-character Google Account App Password (requires 2-Step Verification) | `abcd efgh ijkl mnop` |
+
+---
+
+## Tech Stack & Dependencies
+
+All dependencies are defined in `requirements.txt`:
+
+| Component | Library / Technology |
+|---|---|
+| **Runtime** | Python 3.11+ |
+| **Data Modeling** | `pydantic>=2.7.0`, `pydantic-settings>=2.2.0` |
+| **AI Synthesis** | `google-genai>=0.1.1` (Gemini 2.5/3.6 models) |
+| **HTTP & Parsing** | `httpx>=0.27.0`, `requests>=2.31.0`, `beautifulsoup4>=4.12.3`, `googlenewsdecoder==0.1.7` |
+| **Environment** | `python-dotenv>=1.0.1` |
+| **Persistence** | Embedded `sqlite3` (schema tracking briefings, stories, and publisher history) |
+| **Email Protocol** | Native Python `smtplib` and `email` over SSL (Port 465) |
+| **Testing** | `pytest>=8.1.0`, `pytest-cov>=5.0.0`, `pytest-asyncio>=0.23.0` |
+
+---
+
+## Repository Structure
 
 ```
 investment-news-briefing/
+├── .github/
+│   └── workflows/
+│       └── daily_briefing.yml  # Automated daily scheduling (06:40 & 06:55 IST)
 ├── app/
-│   ├── ai/              # Gemini editorial curation & deterministic summary engine
-│   ├── classification/  # Hard business event classification & EventRegionClassifier
-│   ├── database/        # SQLite / SQLAlchemy persistence for historical briefings
-│   ├── deduplication/   # Event clustering, entity sanitizer & 3-day SQLite lookback
-│   ├── discovery/       # Multi-source RSS providers, reserve pools & query builders
-│   ├── extraction/      # URL resolver, HTML parsing, date verification
-│   ├── filtering/       # Hard deterministic noise, date freshness, & URL rules
-│   ├── formatting/      # Executive WhatsApp, Email, & Markdown formatters with TinyURL
-│   ├── logging_config.py# Centralized rotating file logger
-│   ├── models/          # Pydantic v2 data models (Article, Event, Briefing)
-│   ├── ranking/         # Multi-factor pre-ranker & post-verification relevance scorer
-│   ├── validation/      # 20-point deterministic validation engine
-│   └── verification/    # TwoSourceVerifier, DomesticTrendingEvaluator & SingleSourceEvaluator
-├── data/                # SQLite briefings.db & output artifacts
-├── logs/                # Application runtime log files
-├── tests/               # 560 comprehensive unit & integration tests
-├── .env.example         # Environment variable template
-├── config.py            # Type-safe Pydantic Settings application configuration
-├── run_pipeline.py      # End-to-end pipeline runner
-└── README.md            # Documentation
+│   ├── ai/                     # Gemini client, editorial curation, grounding checks
+│   ├── classification/         # Business event schemas & regional provenance classification
+│   ├── database/               # SQLite schema & execution history storage
+│   ├── deduplication/          # Event clustering, entity sanitizer & 3-day history lookback
+│   ├── discovery/              # Google News RSS provider & candidate reserve collection
+│   ├── extraction/             # HTML fetcher, Google News decoder, date parsing
+│   ├── filtering/              # Deterministic whitelist, freshness, and content rules
+│   ├── formatting/             # Executive briefing formatters (Full canonical URLs)
+│   ├── logging_config.py       # Rotating file and console logger
+│   ├── models/                 # Pydantic models (Article, Event, Briefing, Enums)
+│   ├── pipeline/               # Modular pipeline implementation
+│   │   ├── candidate_processing.py
+│   │   ├── context.py
+│   │   ├── discovery_stage.py
+│   │   ├── enrichment.py
+│   │   ├── fallback_manager.py
+│   │   ├── reporting.py
+│   │   ├── runner.py           # Core pipeline orchestration
+│   │   └── selection.py
+│   ├── ranking/                # Pre-ranker & multi-factor investment relevance scorer
+│   ├── utils/                  # Performance metrics, timer counters, sanitizers
+│   ├── validation/             # 20-rule deterministic gatekeeping engine
+│   └── verification/           # TwoSourceVerifier, DomesticTrending & SingleSource evaluators
+├── data/                       # Local SQLite history database & output text artifacts
+├── logs/                       # Rotating runtime execution logs
+├── tests/                      # 689 automated unit, integration, and regression tests
+├── .env.example                # Environment configuration template
+├── config.py                   # Centralized Pydantic application settings
+├── requirements.txt            # Production Python package requirements
+├── run_daily.py                # Daily runner with idempotency & email dispatch
+├── run_pipeline.py             # Public compatibility entry-point
+└── README.md                   # System documentation
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Quick Start Guide
 
-* **Language**: Python 3.11+
-* **AI Model**: Google Gemini (`google-genai` / `pydantic`)
-* **Data Validation**: Pydantic v2 & Pydantic Settings
-* **Extraction & Resolution**: `trafilatura`, `BeautifulSoup4`, `httpx`, `feedparser`
-* **Search & Corroboration**: Google News RSS Engine & SerpAPI Fallback
-* **Database**: SQLite (via SQLAlchemy)
-* **Testing & Quality**: Pytest (**560 passing tests**)
-* **Package Manager**: `uv` / `pip`
-
----
-
-## 🚀 Quick Start Guide
-
-### 1. Clone & Setup Environment
+### 1. Environment Setup
 
 ```bash
 # Clone the repository
 git clone https://github.com/srushtik26/investment-news-briefing.git
 cd investment-news-briefing
 
-# Create virtual environment and install dependencies
-uv venv --python 3.11 .venv
-.venv\Scripts\activate
+# Create virtual environment
+python -m venv .venv
+```
 
-# Install dependencies
-uv pip install -r requirements.txt
+**Activate Virtual Environment:**
+- **Windows (PowerShell)**:
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+- **macOS / Linux**:
+  ```bash
+  source .venv/bin/activate
+  ```
+
+**Install Dependencies:**
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment Variables
 
-Copy `.env.example` to `.env`:
-
+Create `.env` from `.env.example`:
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your API credentials:
-
+Configure required keys:
 ```env
-# Gemini AI Key (Required for live AI classification & editorial curation)
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.6-flash
 
-# SerpAPI Key (Optional fallback for secondary source corroboration)
-SERPAPI_API_KEY=your_serpapi_key_here
-MAX_SERPAPI_SEARCHES_PER_RUN=8
+GMAIL_SENDER=your_address@gmail.com
+GMAIL_RECIPIENT=recipient@example.com
+GMAIL_APP_PASSWORD=your_16_digit_app_password
 ```
 
----
+### 3. Execution Commands
 
-## 🧪 Running Unit Tests
-
-The test suite contains **560 automated unit and integration tests** covering extraction, filtering, region provenance, single/dual source verification, ranking, domestic trending evaluation, summary completeness, and 20-check validation:
-
-```bash
-# Run full test suite
-python -m pytest -q
-
-# Run with py_compile check
-python -m py_compile run_pipeline.py
-```
-
----
-
-## 🏃 Running the Pipeline
-
-Execute a full pipeline run:
-
+**Run the Core Intelligence Pipeline:**
 ```bash
 python run_pipeline.py
 ```
+*(Windows PowerShell direct invocation without activating subshell:)*
+```powershell
+.\.venv\Scripts\python.exe run_pipeline.py
+```
 
-### Pipeline Execution Summary:
-```text
-=====================================================================
-STARTING END-TO-END PIPELINE RUN (Domestic: 40, India: 40, Intl: 40)
-=====================================================================
-STAGE 1+2: Discovery Reserve Pool → Resolution → Extraction
-STAGE 3: Filtering — deterministic filter engine (Domestic + Business)
-STAGE 4: Classification — Gemini AI article classifier (Pre-ranked)
-STAGE 5: Verification — Two-Source + Quality Evaluator (Domestic + Business)
-STAGE 6: Deduplication — 3-day SQLite lookback and cross-section deduplication
-STAGE 7: Ranking — deterministic relevance scores across 3 sections
-STAGE 8: Gemini Editorial — final editorial curation across 3 sections
-STAGE 9: Final Validation — 20-check deterministic gatekeeper
-STAGE 10: Formatter — generating final briefing text with TinyURLs
-=====================================================================
-BRIEFING GENERATED SUCCESSFULLY: 5 India + 5 Domestic + 5 International Verified Stories (15 Total)
-=====================================================================
+**Run Daily Automation with Delivery Guard:**
+```bash
+python run_daily.py
+```
+*(Windows PowerShell direct invocation:)*
+```powershell
+.\.venv\Scripts\python.exe run_daily.py
 ```
 
 ---
 
-## 📊 Sample Briefing Output Format
+## Testing & Quality Assurance
 
-```text
-🏛️ INVESTMENT COMMITTEE DAILY BRIEFING
-Date: August 28, 2026
+The codebase contains **689 passing tests** validating all architectural components, deterministic edge cases, regional provenance, verification thresholds, and pipeline contracts:
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🇮🇳 INDIA BUSINESS HEADLINES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```bash
+# Run the complete test suite
+python -m pytest
 
-1. Ather Energy shares jump 5% after ₹1,758 crore block deal
-   Summary: Shares of Ather Energy surged over 5 percent following a ₹1,758 crore block deal on Thursday.
-   Source: Moneycontrol
-   URL: https://tinyurl.com/3h8f8j9k
+# Run with verbose output
+pytest -v
 
-2. boAt FY26 net profit rises 38% to ₹84.5 crore, wearables turn profitable
-   Summary: Audio and wearables brand boAt reported a 38 percent increase in annual net profit to ₹84.5 crore.
-   Source: The Economic Times
-   URL: https://tinyurl.com/2p9x4m7b
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏛️ DOMESTIC HEADLINES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. Supreme Court orders Centre to respond within two weeks on national policy
-   Summary: The Supreme Court directed the central government to file a detailed status affidavit within two weeks.
-   Source: The Hindu
-   URL: https://tinyurl.com/5n7v2x8a
-
-2. Orissa HC issues contempt notice to retired DGP over SI's reinstatement
-   Summary: The High Court issued a contempt notice to the retired DGP regarding the compliance order for a sub-inspector.
-   Source: The Hindu
-   URL: https://tinyurl.com/4b8c9d2f
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌍 INTERNATIONAL BUSINESS HEADLINES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. Nvidia agrees to buy AI software firm in $1.2 billion all-cash deal
-   Summary: Nvidia signed a definitive agreement to acquire the AI software developer for $1.2 billion in cash.
-   Source: CNBC
-   URL: https://tinyurl.com/y8k3m9pw
-
-2. National Bank of Canada quarterly earnings rise on back of broad growth
-   Summary: National Bank of Canada reported higher third-quarter net income driven by strength across all operating divisions.
-   Source: Reuters
-   URL: https://tinyurl.com/7v9x2m4k
+# Windows direct venv execution
+.\.venv\Scripts\python.exe -m pytest
 ```
 
 ---
 
-## 🤝 Contact & Contributing
+## Security Best Practices
 
-Designed and built for automated financial research, deal flow tracking, and C-suite briefing automation. Feel free to open an issue or submit a pull request!
+- **Never Commit Secrets**: Keep `.env` and sensitive credentials out of version control. The `.gitignore` file excludes `.env`, `data/`, and runtime logs.
+- **Repository Secrets**: Use GitHub Actions Repository Secrets for CI/CD automation.
+- **Google App Passwords**: Always generate a dedicated 16-character Google Account App Password for SMTP rather than your primary Google Account password.
+- **Credential Rotation**: Rotate any credentials immediately if accidentally exposed or logged.
