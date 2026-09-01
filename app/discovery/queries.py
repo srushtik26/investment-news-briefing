@@ -63,12 +63,21 @@ DOMESTIC_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "India latest national news when:1d",
     ],
     "politics_and_government": [
-        "India government latest decision when:1d",
-        "India Parliament government policy when:1d",
+        "India politics government major development when:1d",
+        "India election politics BJP Congress government when:1d",
+        "India Cabinet Parliament major decision when:1d",
+        "India government policy national impact when:1d",
+    ],
+    "economy_and_national_crisis": [
+        "India economy inflation GDP jobs latest when:1d",
+        "India economic crisis major disruption when:1d",
+        "India rupee inflation fiscal deficit tax policy when:1d",
+        "India economy government policy business impact when:1d",
+        "India major crisis economy infrastructure when:1d",
+        "India trade tariff export import government decision when:1d",
     ],
     "courts_and_law": [
-        "India Supreme Court latest when:1d",
-        "Supreme Court of India ruling verdict when:1d",
+        "India Supreme Court landmark national policy economy election ruling when:1d",
     ],
     "infrastructure_transport": [
         "India major infrastructure project when:1d",

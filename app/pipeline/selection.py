@@ -279,7 +279,7 @@ def run_ranking_and_selection(
         domestic_candidates=dom_ranked,
         articles_lookup=ctx.articles_lookup,
         target_count=max(5, len(dom_ranked)),
-        max_court_stories=2,
+        max_court_stories=1,
     )
     candidate_pool.domestic_candidates = select_diverse_publisher_candidates(
         candidates=candidate_pool.domestic_candidates,

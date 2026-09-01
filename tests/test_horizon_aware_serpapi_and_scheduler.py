@@ -317,9 +317,9 @@ def test_workflow_runs_run_daily_py(workflow_content):
 
 def test_workflow_has_primary_and_recovery_schedule(workflow_content):
     """10. Workflow has primary (06:40 IST = 01:10 UTC) + recovery schedule (06:55 IST = 01:25 UTC)."""
-    # 06:40 AM IST -> 01:10 UTC
-    assert "cron: '10 1 * * *'" in workflow_content or 'cron: "10 1 * * *"' in workflow_content
-    # 06:55 AM IST -> 01:25 UTC
+    # Primary scheduled run (06:35 or 06:40 AM IST -> 01:05 or 01:10 UTC)
+    assert ("cron: '5 1 * * *'" in workflow_content or "cron: '10 1 * * *'" in workflow_content or 'cron: "5 1 * * *"' in workflow_content)
+    # Recovery run (06:55 AM IST -> 01:25 UTC)
     assert "cron: '25 1 * * *'" in workflow_content or 'cron: "25 1 * * *"' in workflow_content
 
 

@@ -111,23 +111,25 @@ def select_diverse_domestic_candidates(
     domestic_candidates: List[ScoredEvent],
     articles_lookup: Optional[dict] = None,
     target_count: int = 5,
-    max_court_stories: int = 2,
+    max_court_stories: int = 1,
     max_same_topic: int = 2,
 ) -> List[ScoredEvent]:
     """
     Select top domestic candidate stories enforcing topic diversity and duplicate-event suppression.
 
     Rules:
-    1. Deduplicate: If multiple candidates cover the same underlying event (e.g. Rajasthan HC transfer),
-       keep only the higher-ranked one.
-    2. Topic Diversity:
-       - Maximum 2 stories from COURT_JUDICIARY in Pass 1.
-       - Prefer at least 3 distinct topic categories across the final 5.
+    1. Deduplicate: If multiple candidates cover the same underlying event, keep only higher-ranked one.
+    2. Topic Priority & Diversity:
+       - Priority order: Major economic crises / Cabinet policy / Election results (VERY HIGH +20),
+         macro economy / infrastructure / defence / landmark courts (HIGH +10 to +15),
+         science / ISRO / education / environment (NORMAL +0), routine court (LOW -20).
+       - Maximum 1 story from COURT_JUDICIARY in Pass 1.
+       - Prefer diverse topics (politics, economy, government, security, infrastructure, science).
        - If enough eligible candidates exist, do not allow one topic category to dominate (>2 stories).
     3. Quality Precedence:
-       - Quality outranks diversity; if fewer than 5 stories qualify across distinct topics,
-         remaining slots are filled from the next best available quality candidates (Pass 2).
-       - Never fail the section solely for lack of diversity if total qualified candidates >= 5.
+       - If fewer than 5 stories qualify across distinct topics, remaining slots are filled
+         from the next best available quality candidates (Pass 2 backfill).
+       - Never fail or reduce the section count below 5 because of diversity if total qualified candidates >= 5.
     """
     if not domestic_candidates:
         return []
@@ -155,7 +157,11 @@ def select_diverse_domestic_candidates(
             deduped.append(scored)
 
     # Step 2: Classify Topics and Apply Domestic Quality Adjustment
-    from app.verification.domestic_trending import classify_domestic_topic, DomesticTopic
+    from app.verification.domestic_trending import (
+        classify_domestic_topic,
+        DomesticTopic,
+        LANDMARK_COURT_IMPACT_PATTERNS,
+    )
     
     candidate_topics = []
     for scored in deduped:
@@ -167,13 +173,51 @@ def select_diverse_domestic_candidates(
         ev.metadata = getattr(ev, "metadata", {}) or {}
         ev.metadata["domestic_topic"] = topic.value
 
-        # Domestic quality weighting: boost national policy/Supreme Court/defence/space, penalize state assembly session filler
-        t_low = title.lower()
+        # Deterministic domestic priority weighting:
+        # VERY HIGH (+20.0): major economic crisis/disruption, major Cabinet/Parliament policy, major election/political development, major security crisis, severe disaster
+        # HIGH (+10.0 to +15.0): macro economy / inflation / GDP / fiscal / jobs, major strategic infrastructure, major public health, landmark court ruling (+10.0)
+        # NORMAL (+0.0): science/ISRO, education, environment
+        # LOW (-20.0): routine court/judiciary
+        comb = f"{title} {body[:400]}".lower()
         quality_adjustment = 0.0
-        if re.search(r"\b(\d+\s+questions|\d+\s+bills|monsoon session|winter session|budget session|assembly session agenda)\b", t_low):
+
+        if re.search(r"\b(\d+\s+questions|\d+\s+bills|assembly session agenda)\b", comb):
             quality_adjustment -= 25.0
-        elif re.search(r"\b(supreme court|constitution bench|cji|union cabinet|isro|defence|indigenous missile|satellite)\b", t_low):
+
+        is_landmark_court = any(re.search(pat, comb) for pat in LANDMARK_COURT_IMPACT_PATTERNS)
+
+        if topic == DomesticTopic.COURT_JUDICIARY:
+            if is_landmark_court:
+                quality_adjustment += 10.0  # Landmark court rulings move back to HIGH
+            else:
+                quality_adjustment -= 20.0  # Routine court de-prioritized
+        elif topic == DomesticTopic.ECONOMY_NATIONAL:
+            is_crisis = bool(re.search(
+                r"\b(economic crisis|recession|slowdown|inflation shock|rupee (?:crash|slump|plunge)|banking crisis|liquidity crisis|nationwide strike|bharat bandh|power crisis|energy crisis|supply disruption|tariff shock)\b",
+                comb
+            ))
+            quality_adjustment += (20.0 if is_crisis else 15.0)
+        elif topic in (DomesticTopic.GOVERNMENT_POLICY, DomesticTopic.POLITICS_ELECTIONS):
+            is_major_event = bool(re.search(
+                r"\b(union cabinet|cabinet approves|cabinet clears|parliament passes|new national law|notifies act|election result|election commission announces|government formation|coalition formed|cabinet reshuffle)\b",
+                comb
+            ))
+            quality_adjustment += (20.0 if is_major_event else 12.0)
+        elif topic == DomesticTopic.DEFENCE_SECURITY:
+            is_security_crisis = bool(re.search(r"\b(terror attack|border clash|standoff|missile test|warship commissioned|security alert)\b", comb))
+            quality_adjustment += (20.0 if is_security_crisis else 10.0)
+        elif topic == DomesticTopic.WEATHER_DISASTER:
+            is_severe_disaster = bool(re.search(r"\b(red alert|cyclone hits|landslide kills|flood havoc|cloudburst|earthquake|ndrf deployed)\b", comb))
+            quality_adjustment += (20.0 if is_severe_disaster else 5.0)
+        elif topic == DomesticTopic.INFRASTRUCTURE:
             quality_adjustment += 10.0
+        elif topic == DomesticTopic.HEALTH:
+            is_public_health = bool(re.search(r"\b(outbreak|epidemic|ayushman bharat|health mission|who alert)\b", comb))
+            quality_adjustment += (10.0 if is_public_health else 5.0)
+        elif topic in (DomesticTopic.SCIENCE_ISRO_TECH, DomesticTopic.EDUCATION, DomesticTopic.ENVIRONMENT):
+            quality_adjustment += 0.0
+        else:
+            quality_adjustment += 0.0
 
         candidate_topics.append((scored, topic, quality_adjustment))
 

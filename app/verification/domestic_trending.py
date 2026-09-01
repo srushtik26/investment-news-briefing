@@ -88,6 +88,7 @@ class DomesticTopic(str, Enum):
     COURT_JUDICIARY = "COURT_JUDICIARY"
     GOVERNMENT_POLICY = "GOVERNMENT_POLICY"
     POLITICS_ELECTIONS = "POLITICS_ELECTIONS"
+    ECONOMY_NATIONAL = "ECONOMY_NATIONAL"
     INFRASTRUCTURE = "INFRASTRUCTURE"
     DEFENCE_SECURITY = "DEFENCE_SECURITY"
     SCIENCE_ISRO_TECH = "SCIENCE_ISRO_TECH"
@@ -105,6 +106,17 @@ DOMESTIC_TOPIC_PATTERNS: List[Tuple[DomesticTopic, List[str]]] = [
         [
             r"\b(supreme court|high court|chief justice|cji|sc bench|hc bench|quashes|stays order|plea in court|judiciary|collegium|bail granted|anticipatory bail|sessions court|magistrate|tribunal|trial court|judge seeks transfer|judge transferred|judge wants|contempt of court|law commission|constitution bench|judicial probe|orders sit|oppose bail|opposes bail|seeks bail|bail plea|bail hearing|delhi riots case)\b",
             r"\b(judge|justice|advocate|bench|court|magistrate)\b.*\b(transfer|transferred|hearing|verdict|ruling|orders|probe|sits|plea|ban)\b",
+        ],
+    ),
+    (
+        DomesticTopic.ECONOMY_NATIONAL,
+        [
+            r"\b(gdp|cpi|wpi|retail inflation|food inflation|wholesale inflation|unemployment rate|jobless rate|jobs data|employment data)\b",
+            r"\b(fiscal deficit|government borrowing|disinvestment target|tax collections?|gst collections?|gst council|gst rate|customs duty|export duty|import tariff|tariffs? on|trade deficit|current account deficit|forex reserves|foreign exchange reserves)\b",
+            r"\b(rupee (?:hits?|falls?|slumps?|slides?|weakens?|gains?|crosses?|depreciat\w*|appreciat\w*)|rupee vs dollar|rupee plunges?|rupee drops?)\b",
+            r"\b(fuel prices?|petrol price|diesel price|lpg cylinder|cng price|crude oil prices?|oil shock|energy crisis|power crisis|power shortage|electricity grid failure|coal shortage|onion prices?|wheat prices?|rice export ban|sugar export ban)\b",
+            r"\b(economic slowdown|recession fears?|banking crisis|systemic crisis|liquidity crunch|liquidity crisis|nationwide strike|bharat bandh|transporters strike|truckers strike|supply chain disruption|economic emergency|national economic package|rbi repo rate|rbi monetary policy|rbi interest rate|rbi curbs? on lending)\b",
+            r"\b(indian economy|national economy|macroeconomic|budget allocation|union budget|finance ministry)\b.*\b(growth|slowdown|inflation|targets?|policy|deficit|reforms?)\b",
         ],
     ),
     (
@@ -152,7 +164,7 @@ DOMESTIC_TOPIC_PATTERNS: List[Tuple[DomesticTopic, List[str]]] = [
     (
         DomesticTopic.POLITICS_ELECTIONS,
         [
-            r"\b(election commission|ec|eci|assembly election|lok sabha election|bypoll|polling|voter turnout|political rally|seat sharing|opposition alliance|party president|bjp|congress|aap|tmc|election dates|campaigning)\b",
+            r"\b(election commission|ec|eci|assembly election|lok sabha election|bypoll|polling|voter turnout|political rally|seat sharing|opposition alliance|party president|bjp|congress|aap|tmc|election dates|campaigning|government formation|coalition formed|cabinet reshuffle)\b",
         ],
     ),
     (
@@ -208,6 +220,12 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     # Political reactions / commentary on judgments and events (NOT distinct national hard events)
     r"\b(slams?|reacts? to|calls? (?:ruling|verdict|decision|order|judgment)|attacks? (?:ruling|verdict|decision|order|judgment)|criticises? (?:ruling|verdict|decision|order|judgment)|praises? (?:ruling|verdict|decision|order|judgment)|terms? (?:ruling|verdict|decision|order|judgment)|hits? out at (?:ruling|verdict|decision|order|judgment)|expresses? outrage|protests? against (?:ruling|verdict|decision))\b",
     r"\b(reaction to (?:ruling|verdict|judgment|decision|order)|calls? (?:allahabad hc|supreme court|high court|sc|hc) (?:ruling|verdict|decision|order|judgment))\b",
+    # Political verbal attacks, mudslinging, routine accusations & reactions without hard development
+    r"\b(?:bjp|congress|aap|tmc|sp|bsp|rjd|nda|india bloc|leader|mp|mla|minister|rahul gandhi|modi|amit shah|kharge|kejriwal)\s+(?:slams?|attacks?|hits? out at|lashes? out at|targets?|corners?|takes? dig at|takes? a jibe at|ridicules?|mocks?|scoffs? at)\s+(?:bjp|congress|aap|tmc|sp|bsp|rjd|nda|india bloc|pm|government|centre|opposition|leader|modi|rahul|kharge)\b",
+    r"\b(?:war of words|verbal duel|political spat|trading barbs|exchange of barbs|mud-slinging|slugfest|wordy duel|political slugfest)\b",
+    r"\b(?:reacts? to (?:remarks?|statement|comment|tweet|post|speech|charge|allegation)|hits? back at (?:remarks?|comment|statement|charge))\b",
+    r"\b(?:claims? (?:bjp|congress|opposition|conspiracy)|alleges? (?:bjp|congress|pm|opposition|conspiracy))\b",
+    r"^(?:bjp|congress|aap|tmc)\s+(?:slams|attacks|hits out|corners|demands resignation|lashes out)\b",
 
     # Generic explainers, listicles & evergreen features
     r"\b(top 10 (?:tourist|holiday|travel|places)|things to know before|explained: how does|a complete guide to|history of|all you need to know about (?:why|how))\b",
@@ -226,10 +244,37 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     r"\b(pros and cons of|myth or reality\??|need of the hour\??|what lies ahead for)\b",
 ]
 
+# Routine Court / Procedural Judiciary Patterns (Reject unless overridden by strong national impact)
+ROUTINE_COURT_PATTERNS: List[str] = [
+    r"\b(seeks? (?:reply|response|affidavit|report|clarification|status report)|asks? (?:centre|state|govt|government|police|cbi|ed|authorities) to (?:respond|reply|file|explain))\b",
+    r"\b(hears? (?:plea|bail|petition|matter|appeal)|hearing (?:adjourned|deferred|resumes|postponed|continues))\b",
+    r"\b(issues? contempt (?:notice|action|proceedings?)|contempt of court notice|contempt plea|contempt notice to)\b",
+    r"\b(bail (?:plea|application|petition|hearing|denied|rejected|refused|granted to|opposed)|anticipatory bail|seeks bail|opposes bail)\b",
+    r"\b(judge (?:transferred|transfer|reallocated|wants transfer|elevation|sworn in)|hc judge transfer|judges? transfer)\b",
+    r"\b(hc stays local|court stays local|trial court order|sessions court order|magistrate order|remand extended|judicial custody extended)\b",
+    r"\b(petition filed|plea filed|plea in (?:sc|hc|supreme court|high court)|moves (?:sc|hc|supreme court|high court)|approaches (?:sc|hc|court)|files plea)\b",
+    r"\b(defamation (?:plea|case|suit)|individual criminal|custody of|quashes fir against|bailable warrant|non-bailable warrant|police custody)\b",
+]
+
+# Major National Impact Court Patterns (Preserves landmark/high-impact rulings)
+LANDMARK_COURT_IMPACT_PATTERNS: List[str] = [
+    r"\b(constitution bench|constitutional|constitutionality|seven-judge|nine-judge|five-judge bench)\b",
+    r"\b(landmark|milestone|historic)\b.*\b(verdict|ruling|judgment|order|decision)\b",
+    r"\b(verdict|ruling|judgment|order|decision)\b.*\b(landmark|milestone|historic)\b",
+    r"\b(nationwide|across the country|pan-india|national policy|central law|parliamentary act|central act|statutory provisions?|government policy|policy)\b",
+    r"\b(election commission|lok sabha|assembly election|electoral bonds?|voting rights?|disqualification of mp|disqualification of mla)\b",
+    r"\b(tax|gst|direct tax|customs|excise|corporate tax|rbi|sebi|cci|telecom dispute|spectrum)\b",
+    r"\b(economic policy|economic|business|industry|industry-wide|large-scale regulatory|banking regulations?)\b",
+    r"\b(fundamental rights?|citizenship|sub-quota|caste census|creamy[- ]layer|creamy layer|obc|reservation quota|reservation policy|reservation rule|reservation|hijab|uniform|classroom)\b",
+    r"\b(inter-state water|national highway|national security|armed forces|defence personnel)\b",
+]
+
 # National Significance Markers
 NATIONAL_SIGNIFICANCE_PATTERNS: List[str] = [
     # Government, Parliament, Cabinet, Law
     r"\b(union cabinet|cabinet approves|prime minister|narendra modi|parliament|lok sabha|rajya sabha|bill passed|supreme court|high court|chief justice|cji|election commission|ec|eci|polling|election result)\b",
+    # Economy, Macro, Fiscal, Inflation & National Economic Crises
+    r"\b(gdp|cpi|wpi|inflation|unemployment|jobs data|fiscal deficit|tax revenue|gst collection|gst council|customs duty|tariff|rupee|fuel price|petrol price|diesel price|lpg price|rbi repo rate|monetary policy|nationwide strike|bharat bandh|power crisis|energy crisis|banking crisis|economic slowdown)\b",
     # Infrastructure, Transport, Energy
     r"\b(railway project|vande bharat|expressway|national highway|nhai|metro rail|airport inaugurat|bullet train|nuclear plant|solar park|power grid|border road|tunnel)\b",
     # Defence & National Security
@@ -336,12 +381,33 @@ class DomesticTrendingEvaluator:
         if is_noise:
             return False, 0.0, f"REJECT_NOISE: {noise_rsn}"
 
-        # 2. Minimum content check
+        # 2. Reject individual company commercial earnings / M&A / fundraising in Domestic section (belongs in India Business)
+        t_lower = title.lower()
+        is_company_commercial = bool(re.search(
+            r"\b(net profit|quarterly profit|q[1-4] profit|q[1-4] results?|ebitda|quarterly revenue|interim dividend|dividend per share|block deal|acquires \d+% stake|stake sale|ipo opens?|anchor investors?|raises funding|funding round)\b",
+            t_lower
+        ))
+        if is_company_commercial and not bool(re.search(r"\b(gdp|cpi|wpi|retail inflation|food inflation|fiscal deficit|union budget|rbi repo rate|gst council)\b", t_lower)):
+            return False, 0.0, "REJECT_CATEGORY: Company corporate earnings/M&A/fundraising belongs in India Business, not Domestic"
+
+        # 3. Court/Judiciary Routine Procedural vs Landmark Check
+        topic = classify_domestic_topic(title, body)
+        comb_court = f"{title} {body[:500]}".lower()
+        if topic == DomesticTopic.COURT_JUDICIARY:
+            is_landmark = any(re.search(pat, comb_court) for pat in LANDMARK_COURT_IMPACT_PATTERNS)
+            if not is_landmark:
+                for pat in ROUTINE_COURT_PATTERNS:
+                    m = re.search(pat, comb_court)
+                    if m:
+                        return False, 0.0, f"REJECT_ROUTINE_COURT: Routine court procedural event without landmark national impact ('{m.group(0)}')"
+                return False, 0.0, "REJECT_ROUTINE_COURT: Court/judiciary story lacks landmark national impact or constitutional/economic significance"
+
+        # 4. Minimum content check
         word_count = len(body.split())
         if word_count < 25 and len(title.split()) < 6:
             return False, 0.0, "REJECT: Insufficient article extraction body (<25 words)"
 
-        # 3. Compute Score
+        # 5. Compute Score
         score = 0.0
         reasons: List[str] = []
 
