@@ -2,11 +2,16 @@ name: Daily Investment Briefing Automation
 
 on:
   schedule:
-    # Primary scheduled run: 06:40 AM IST (01:10 UTC)
     # Cron format (UTC): Minute Hour Day-of-month Month Day-of-week
-    - cron: '10 1 * * *'
-    # Recovery run: 06:55 AM IST (01:25 UTC)
+    # Staggered daily attempts to ensure reliable delivery even with runner queuing delays:
+    # Attempt 1: 06:35 AM IST (01:05 UTC)
+    - cron: '5 1 * * *'
+    # Attempt 2: 06:45 AM IST (01:15 UTC)
+    - cron: '15 1 * * *'
+    # Attempt 3: 06:55 AM IST (01:25 UTC)
     - cron: '25 1 * * *'
+    # Final Recovery: 07:05 AM IST (01:35 UTC)
+    - cron: '35 1 * * *'
   workflow_dispatch:
 
 concurrency:
