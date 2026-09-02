@@ -115,12 +115,15 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
                         continue
                     if ctx.extractor.is_domain_degraded(cand_netloc):
                         continue
+
+                    # DiscoveredArticle exposes publisher as `.source`, not `.source_name`.
+                    cand_source = cand_it.source
                     src_rule = SourceFilterRule()
                     dummy_art = Article(
                         id="check_src",
                         title=cand_it.title,
                         url=cand_url,
-                        source_name=cand_it.source_name,
+                        source_name=cand_source,
                         category=ev.event_category,
                         is_verified_url=True,
                     )
@@ -128,7 +131,7 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
                         continue
                     ext_res = ctx.extractor.extract(
                         url=cand_url,
-                        source_name=cand_it.source_name,
+                        source_name=cand_source,
                         candidate_title=cand_it.title,
                         candidate_category=ev.event_category.value if hasattr(ev.event_category, "value") else str(ev.event_category),
                         candidate_pub_date=cand_it.published_at,
@@ -151,7 +154,6 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
                     if ctx.verifier.is_syndicated_republication(primary_art, sec_art)[0]:
                         continue
 
-                    # UPGRADE EVENT TO TWO_SOURCE_VERIFIED
                     ctx.articles_lookup[sec_art.id] = sec_art
                     ev.article_ids.append(sec_art.id)
                     ev.verification_tier = VerificationTier.TWO_SOURCE_VERIFIED
