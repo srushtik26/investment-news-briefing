@@ -129,9 +129,17 @@ class NewsDiscoveryService:
         max_per_query: int = 5,
     ) -> List[DiscoveredArticle]:
         """
-        Discover candidate news articles for the Domestic India macro/policy section.
+        Discover Domestic India macro/policy candidates using a balanced category mix.
+
+        Domestic quality rules became intentionally stricter around routine court/news
+        noise. A simple concatenate-then-slice strategy could therefore exhaust the
+        40-candidate reserve with many near-duplicate political reaction stories before
+        high-value economy, crisis, security, infrastructure, and policy candidates were
+        represented. This method keeps the same reserve size and verification gates while
+        balancing discovery toward the topics the Domestic section is meant to surface.
         """
         from app.discovery.queries import DOMESTIC_EVENT_CATEGORIES, DOMESTIC_SOURCES
+
         all_categories = DOMESTIC_EVENT_CATEGORIES
         target_cats = (
             {k: v for k, v in all_categories.items() if k in categories}
@@ -139,10 +147,12 @@ class NewsDiscoveryService:
             else all_categories
         )
 
-        discovered: List[DiscoveredArticle] = []
         site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in DOMESTIC_SOURCES]) + ")"
+        discovered_by_category: Dict[str, List[DiscoveredArticle]] = {}
+        all_discovered: List[DiscoveredArticle] = []
 
         for cat_name, phrase_list in target_cats.items():
+            cat_results: List[DiscoveredArticle] = []
             for phrase in phrase_list:
                 query = f"{phrase}{site_clause}"
                 results = self.provider.discover(
@@ -151,15 +161,69 @@ class NewsDiscoveryService:
                     max_results=max_per_query,
                     category_tag=cat_name,
                 )
-                for r in results:
-                    r.category_tag = "domestic"
-                discovered.extend(results)
+                cat_results.extend(results)
+                all_discovered.extend(results)
 
-                if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
+            discovered_by_category[cat_name] = self._deduplicate_candidates(cat_results)
+
+        # Weighted reserve composition: politics/government and national economy first,
+        # meaningful space for crises/security/infrastructure, and only a narrow court slot.
+        # Quotas are scaled automatically when max_candidates differs from the production 40.
+        priority_weights = [
+            ("politics_and_government", 9),
+            ("economy_and_national_crisis", 9),
+            ("breaking_national", 6),
+            ("defence_security", 5),
+            ("weather_disaster_environment", 4),
+            ("infrastructure_transport", 3),
+            ("science_space_tech", 2),
+            ("health_education", 1),
+            ("courts_and_law", 1),
+        ]
+        weight_total = sum(weight for _, weight in priority_weights)
+
+        selected: List[DiscoveredArticle] = []
+        selected_urls: Set[str] = set()
+
+        def add_article(article: DiscoveredArticle) -> bool:
+            norm_url = article.url.strip().lower().rstrip("/")
+            if not norm_url or norm_url in selected_urls:
+                return False
+            selected_urls.add(norm_url)
+            selected.append(article)
+            return True
+
+        # First pass: fill topic-aware quotas.
+        for cat_name, weight in priority_weights:
+            if cat_name not in discovered_by_category:
+                continue
+            quota = max(1, round(max_candidates * weight / weight_total))
+            added = 0
+            for article in discovered_by_category[cat_name]:
+                if add_article(article):
+                    added += 1
+                if added >= quota or len(selected) >= max_candidates:
+                    break
+            if len(selected) >= max_candidates:
+                break
+
+        # Second pass: if a category did not have enough unique results, backfill from
+        # every discovered Domestic candidate without changing any downstream quality gate.
+        if len(selected) < max_candidates:
+            for article in self._deduplicate_candidates(all_discovered):
+                add_article(article)
+                if len(selected) >= max_candidates:
                     break
 
-        unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
-        logger.info("Discovered %d unique candidate articles for Domestic India", len(unique_results))
+        unique_results = selected[:max_candidates]
+        for article in unique_results:
+            # Preserve the existing downstream section contract.
+            article.category_tag = "domestic"
+
+        logger.info(
+            "Discovered %d balanced unique candidate articles for Domestic India",
+            len(unique_results),
+        )
         return unique_results
 
     def discover_all(
@@ -184,4 +248,3 @@ class NewsDiscoveryService:
             result["domestic"] = domestic_candidates
 
         return result
-
