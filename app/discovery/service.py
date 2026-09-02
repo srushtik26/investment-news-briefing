@@ -5,6 +5,7 @@ Orchestrates business news candidate discovery across target regions,
 categories, and publishers with automatic URL deduplication.
 """
 
+import re
 from typing import Dict, List, Optional, Set
 
 from config import get_settings
@@ -131,11 +132,10 @@ class NewsDiscoveryService:
         """
         Discover Domestic India macro/policy candidates using a balanced category mix.
 
-        Domestic quality rules became intentionally stricter around routine court/news
-        noise. A simple concatenate-then-slice strategy could therefore exhaust the
-        40-candidate reserve with many near-duplicate political reaction stories before
-        high-value economy, crisis, security, infrastructure, and policy candidates were
-        represented. This method keeps the same reserve size and verification gates while
+        Domestic quality rules intentionally reject routine courts, opinion, and political
+        reaction noise. A simple concatenate-then-slice strategy can exhaust the reserve
+        before high-value economy, crisis, security, infrastructure, and policy candidates
+        are represented. This keeps the same reserve size and verification gates while
         balancing discovery toward the topics the Domestic section is meant to surface.
         """
         from app.discovery.queries import DOMESTIC_EVENT_CATEGORIES, DOMESTIC_SOURCES
@@ -166,9 +166,6 @@ class NewsDiscoveryService:
 
             discovered_by_category[cat_name] = self._deduplicate_candidates(cat_results)
 
-        # Weighted reserve composition: politics/government and national economy first,
-        # meaningful space for crises/security/infrastructure, and only a narrow court slot.
-        # Quotas are scaled automatically when max_candidates differs from the production 40.
         priority_weights = [
             ("politics_and_government", 9),
             ("economy_and_national_crisis", 9),
@@ -185,7 +182,26 @@ class NewsDiscoveryService:
         selected: List[DiscoveredArticle] = []
         selected_urls: Set[str] = set()
 
+        # Reject obvious foreign-only headlines that leak in through Indian publishers'
+        # world sections. Geopolitical stories that explicitly mention India remain eligible.
+        foreign_only_pattern = re.compile(
+            r"\b(?:former\s+uk\s+pm|uk\s+prime\s+minister|british\s+prime\s+minister|"
+            r"us\s+president|u\.s\.\s+president|white\s+house|european\s+union|"
+            r"french\s+president|german\s+chancellor|canadian\s+prime\s+minister|"
+            r"australian\s+prime\s+minister|japanese\s+prime\s+minister)\b",
+            re.IGNORECASE,
+        )
+        india_context_pattern = re.compile(
+            r"\b(?:india|indian|new\s+delhi|centre|central\s+government|union\s+government|"
+            r"pm\s+modi|narendra\s+modi|rbi|sebi|lok\s+sabha|rajya\s+sabha|parliament)\b",
+            re.IGNORECASE,
+        )
+
         def add_article(article: DiscoveredArticle) -> bool:
+            title = (article.title or "").strip()
+            if foreign_only_pattern.search(title) and not india_context_pattern.search(title):
+                return False
+
             norm_url = article.url.strip().lower().rstrip("/")
             if not norm_url or norm_url in selected_urls:
                 return False
@@ -207,8 +223,8 @@ class NewsDiscoveryService:
             if len(selected) >= max_candidates:
                 break
 
-        # Second pass: if a category did not have enough unique results, backfill from
-        # every discovered Domestic candidate without changing any downstream quality gate.
+        # Second pass: backfill underfilled quotas from all discovered candidates without
+        # changing downstream freshness, source, verification, or score thresholds.
         if len(selected) < max_candidates:
             for article in self._deduplicate_candidates(all_discovered):
                 add_article(article)
@@ -217,7 +233,6 @@ class NewsDiscoveryService:
 
         unique_results = selected[:max_candidates]
         for article in unique_results:
-            # Preserve the existing downstream section contract.
             article.category_tag = "domestic"
 
         logger.info(
