@@ -6,6 +6,7 @@ and India same-company restrictions.
 """
 
 from datetime import date
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.logging_config import get_logger
@@ -59,8 +60,12 @@ class DeduplicationEngine:
             lookback_days,
         )
 
-        # 1. Fetch historical fingerprints for previous 3 days
+        # 1. Fetch historical fingerprints and story records for previous 3 days
         historical_fps = self.history_store.get_recent_fingerprints(
+            lookback_days=lookback_days,
+            target_date=current_date,
+        )
+        recent_stories = self.history_store.get_recent_stories(
             lookback_days=lookback_days,
             target_date=current_date,
         )
@@ -89,15 +94,41 @@ class DeduplicationEngine:
             story["fingerprint_hash"] = fp_hash
 
             # CHECK 1: Previous 3-Day History Lookback
-            if fp_key in historical_fps:
+            is_history_repeat = False
+            history_reason = ""
+            if fp_key in historical_fps or fp_hash in historical_fps or story.get("headline") in historical_fps:
+                is_history_repeat = True
+                history_reason = f"Event already appeared in briefing within previous {lookback_days} days ({fp_key})"
+            else:
+                # Semantic check against recent stories (catches same event reported by another publisher)
+                cand_head = story.get("headline", "")
+                cand_tokens = set(re.findall(r"\w{4,}", cand_head.lower())) if cand_head else set()
+                if cand_tokens:
+                    for hist in recent_stories:
+                        hist_head = hist.get("headline", "")
+                        if not hist_head:
+                            continue
+                        hist_tokens = set(re.findall(r"\w{4,}", hist_head.lower()))
+                        if len(cand_tokens & hist_tokens) >= 3:
+                            from app.verification.verifier import TwoSourceVerifier
+                            from app.models.article import Article
+                            art_cand = Article(title=cand_head, url="https://example.com/c", source_name="Outlet1")
+                            art_hist = Article(title=hist_head, url="https://example.com/h", source_name="Outlet2")
+                            is_same, _, rsn = TwoSourceVerifier().is_same_underlying_event(art_cand, art_hist)
+                            if is_same:
+                                is_history_repeat = True
+                                history_reason = f"Same underlying event as previously briefed story: '{hist_head}'"
+                                break
+
+            if is_history_repeat:
                 logger.info(
-                    "Rejected story (3-day history repeat): '%s' [Fingerprint: %s]",
+                    "Rejected story (3-day history repeat): '%s' [%s]",
                     story.get("headline", "")[:45],
-                    fp_key,
+                    history_reason,
                 )
                 rejection = {
                     **story,
-                    "rejection_reason": f"Event already appeared in briefing within previous {lookback_days} days ({fp_key})",
+                    "rejection_reason": history_reason,
                     "rejection_rule": "3_DAY_HISTORY",
                 }
                 rejected_stories.append(rejection)

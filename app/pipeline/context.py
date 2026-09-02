@@ -68,6 +68,7 @@ class PipelineContext:
     corroboration_searches: int = 0
     second_sources_found: int = 0
     organic_second_sources_found: int = 0
+    rss_domestic_used: int = 0
     rss_india_used: int = 0
     rss_international_used: int = 0
     internal_pipeline_errors: int = 0

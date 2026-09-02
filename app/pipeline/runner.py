@@ -28,6 +28,7 @@ from app.verification import (
     get_corroboration_count,
     increment_corroboration_count,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
+    DOMESTIC_RESERVED_RSS_SEARCHES,
 )
 from app.deduplication import DeduplicationEngine, HistoryStore
 from app.deduplication.clusterer import EventClusterer
@@ -61,8 +62,10 @@ from app.pipeline.selection import (
     get_final_selectable_unique_events,
     is_domestic_diversity_satisfied,
     count_unique_section_events,
+    count_quality_eligible_domestic,
     get_unique_candidate_events,
     run_deduplication,
+    run_post_dedup_refill,
     run_ranking_and_selection,
 )
 from app.pipeline.reporting import (
@@ -356,9 +359,20 @@ def run_pipeline(
             single_source_events.append(event)
             event.event_category = reg_clf.classify_event(event, ev_arts)
 
-    # Active corroboration loop on single source events
+    # Active corroboration loop on single source events with Domestic reservation policy
+    dom_count = count_quality_eligible_domestic(
+        verified_events=verified_events,
+        high_confidence_single_candidates=high_confidence_single_candidates,
+        single_source_events=single_source_events,
+        articles_lookup=articles_lookup,
+        domestic_evaluator=domestic_evaluator,
+        verifier=verifier,
+        run_reference_time=run_reference_time,
+    )
     for event in single_source_events:
-        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+        reserve = DOMESTIC_RESERVED_RSS_SEARCHES if dom_count < 5 else 0
+        if get_corroboration_count() >= (MAX_CORROBORATION_SEARCHES_PER_RUN - reserve):
+            log_exec(f"  -> [CORROBORATION_BUDGET] Reserving {reserve} free RSS searches for Domestic (current dom={dom_count}/5). Stopping Stage 3 corroboration.")
             break
         primary_art = articles_lookup.get(event.article_ids[0])
         if not primary_art:
@@ -376,6 +390,15 @@ def run_pipeline(
                 event.event_category = reg_clf.classify_event(event, ev_arts)
                 verified_events.append(event)
                 second_sources_found += 1
+                dom_count = count_quality_eligible_domestic(
+                    verified_events=verified_events,
+                    high_confidence_single_candidates=high_confidence_single_candidates,
+                    single_source_events=single_source_events,
+                    articles_lookup=articles_lookup,
+                    domestic_evaluator=domestic_evaluator,
+                    verifier=verifier,
+                    run_reference_time=run_reference_time,
+                )
 
     # Single-Source Quality Gate Evaluation
     for event in single_source_events:
@@ -438,6 +461,11 @@ def run_pipeline(
     # STAGE 6: Deduplication & History
     # =========================================================================
     accepted_stories, event_by_id = run_deduplication(ctx)
+
+    # =========================================================================
+    # POST-DEDUP REFILL (if any section < 5 after history dedup)
+    # =========================================================================
+    accepted_stories, event_by_id = run_post_dedup_refill(ctx, accepted_stories, event_by_id)
 
     # =========================================================================
     # STAGE 7: Ranking & Selection

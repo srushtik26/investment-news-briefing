@@ -16,6 +16,7 @@ from app.verification import (
     get_corroboration_count,
     increment_corroboration_count,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
+    DOMESTIC_RESERVED_RSS_SEARCHES,
 )
 from app.verification.serpapi_corroborator import (
     SerpAPICorroborator,
@@ -412,13 +413,61 @@ def run_expansion_and_fallbacks(
         dom_unique_count   = count_unique_section_events_fn(NewsCategory.DOMESTIC)
         india_unique_count = count_unique_section_events_fn(NewsCategory.INDIA)
         intl_unique_count  = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
-        total_unique       = len(get_unique_candidate_events_fn())
+        # Final-mile RSS Discovery for Domestic (only if Domestic < 5 and RSS search budget remains)
+        if dom_unique_count < 5:
+            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            if rss_rem > 0:
+                ctx.log_exec(f"[DOMESTIC_FINAL_MILE_DISCOVERY] Searching for NEW Domestic events (current={dom_unique_count}/5)...")
+                DOMESTIC_SOURCE_GROUPS = [
+                    "(site:thehindu.com OR site:indianexpress.com OR site:hindustantimes.com)",
+                    "(site:ndtv.com OR site:timesofindia.indiatimes.com OR site:business-standard.com)",
+                ]
+                DOMESTIC_EVENT_TEMPLATES = [
+                    "India government major decision when:1d",
+                    "India Cabinet Parliament policy when:1d",
+                    "India politics election major development when:1d",
+                    "India economy inflation GDP jobs when:1d",
+                    "India economic policy tax trade rupee when:1d",
+                    "India major crisis disruption when:1d",
+                    "India national security major development when:1d",
+                    "India infrastructure major project when:1d",
+                    "India disaster national impact when:1d",
+                    "India RBI economy national impact when:1d",
+                ]
+                stop_dom_discovery = False
+                for s_group in DOMESTIC_SOURCE_GROUPS:
+                    if stop_dom_discovery:
+                        break
+                    for tmpl in DOMESTIC_EVENT_TEMPLATES:
+                        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                            stop_dom_discovery = True
+                            break
+                        query_str = f"{tmpl} {s_group}"
+                        q_norm = query_str.lower().strip()
+                        if q_norm in executed_final_mile_queries:
+                            continue
+                        executed_final_mile_queries.add(q_norm)
+                        items = ctx.discovery_service.provider.discover(query=query_str, country="India", max_results=10)
+                        increment_corroboration_count(1)
+                        ctx.corroboration_searches += 1
+                        ctx.rss_domestic_used = getattr(ctx, "rss_domestic_used", 0) + 1
+                        for it in items:
+                            u = it.url.strip()
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                                process_candidate_item(it, "domestic", ctx)
+                                if count_unique_section_events_fn(NewsCategory.DOMESTIC) >= 5:
+                                    ctx.log_exec(f"[DOMESTIC_TARGET_MET] Domestic unique stories reached {count_unique_section_events_fn(NewsCategory.DOMESTIC)}/5. Stopping Domestic discovery.")
+                                    stop_dom_discovery = True
+                                    break
+                        if stop_dom_discovery:
+                            break
 
         # Final-mile RSS Discovery (only if International < 5 and RSS search budget remains)
         if intl_unique_count < 5:
-            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            reserve = DOMESTIC_RESERVED_RSS_SEARCHES if count_unique_section_events_fn(NewsCategory.DOMESTIC) < 5 else 0
+            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - reserve - get_corroboration_count()
             if rss_rem > 0:
-                ctx.log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={intl_unique_count}/5)...")
+                ctx.log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={intl_unique_count}/5, budget_rem={rss_rem}, dom_reserve={reserve})...")
                 INTL_SOURCE_GROUPS = [
                     "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com)",
                     "(site:cnbc.com OR site:apnews.com OR site:bbc.com)",
@@ -448,7 +497,8 @@ def run_expansion_and_fallbacks(
                     if stop_rss_discovery:
                         break
                     for tmpl in INTL_EVENT_TEMPLATES:
-                        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        reserve = DOMESTIC_RESERVED_RSS_SEARCHES if count_unique_section_events_fn(NewsCategory.DOMESTIC) < 5 else 0
+                        if get_corroboration_count() >= (MAX_CORROBORATION_SEARCHES_PER_RUN - reserve):
                             stop_rss_discovery = True
                             break
                         query_str = f"{tmpl} {s_group}"
@@ -473,9 +523,10 @@ def run_expansion_and_fallbacks(
 
         # Check India if India is still < 5 (only if not frozen)
         if india_unique_count < 5:
-            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            reserve = DOMESTIC_RESERVED_RSS_SEARCHES if count_unique_section_events_fn(NewsCategory.DOMESTIC) < 5 else 0
+            rss_rem = MAX_CORROBORATION_SEARCHES_PER_RUN - reserve - get_corroboration_count()
             if rss_rem > 0:
-                ctx.log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (current={india_unique_count}/5)...")
+                ctx.log_exec(f"[INDIA_FINAL_MILE_DISCOVERY] Searching for NEW India events (current={india_unique_count}/5, budget_rem={rss_rem}, dom_reserve={reserve})...")
                 INDIA_SOURCE_GROUPS = [
                     "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com)",
                     "(site:businesstoday.in OR site:financialexpress.com OR site:thehindubusinessline.com)",
@@ -497,7 +548,8 @@ def run_expansion_and_fallbacks(
                     if stop_india_discovery:
                         break
                     for tmpl in INDIA_EVENT_TEMPLATES:
-                        if get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        reserve = DOMESTIC_RESERVED_RSS_SEARCHES if count_unique_section_events_fn(NewsCategory.DOMESTIC) < 5 else 0
+                        if get_corroboration_count() >= (MAX_CORROBORATION_SEARCHES_PER_RUN - reserve):
                             stop_india_discovery = True
                             break
                         query_str = f"{tmpl} {s_group}"

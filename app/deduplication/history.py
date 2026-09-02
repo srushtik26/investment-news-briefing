@@ -88,13 +88,53 @@ class HistoryStore:
         finally:
             conn.close()
 
+    def get_recent_stories(
+        self,
+        lookback_days: int = 3,
+        target_date: Optional[date] = None,
+    ) -> List[dict]:
+        """
+        Fetch all historical stories recorded in the previous N days.
+        """
+        current_date = target_date or date.today()
+        start_date = current_date - timedelta(days=lookback_days)
+
+        start_str = start_date.isoformat()
+        end_str = current_date.isoformat()
+
+        conn = get_connection(self.db_path)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT id, event_id, event_fingerprint, headline, company_name, category, published_date
+                FROM historical_stories
+                WHERE published_date >= ? AND published_date <= ?
+                """,
+                (start_str, end_str),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "event_id": r[1],
+                    "event_fingerprint": r[2],
+                    "headline": r[3],
+                    "company_name": r[4],
+                    "category": r[5],
+                    "published_date": r[6],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
     def get_recent_fingerprints(
         self,
         lookback_days: int = 3,
         target_date: Optional[date] = None,
     ) -> Set[str]:
         """
-        Fetch all event fingerprints recorded in the previous N days.
+        Fetch all event fingerprints and headlines recorded in the previous N days.
 
         Lookback window: [target_date - lookback_days, target_date]
         """
@@ -108,15 +148,20 @@ class HistoryStore:
         try:
             cursor = conn.execute(
                 """
-                SELECT DISTINCT event_fingerprint
+                SELECT DISTINCT event_fingerprint, headline
                 FROM historical_stories
                 WHERE published_date >= ? AND published_date <= ?
                 """,
                 (start_str, end_str),
             )
             rows = cursor.fetchall()
-            fingerprints = {row[0] for row in rows if row[0]}
-            logger.debug("Found %d historical fingerprints in %d-day lookback window", len(fingerprints), lookback_days)
+            fingerprints = set()
+            for r in rows:
+                if r[0]:
+                    fingerprints.add(r[0])
+                if r[1]:
+                    fingerprints.add(r[1])
+            logger.debug("Found %d historical fingerprints/headlines in %d-day lookback window", len(fingerprints), lookback_days)
             return fingerprints
         finally:
             conn.close()

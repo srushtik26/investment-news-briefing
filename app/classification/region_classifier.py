@@ -157,9 +157,8 @@ class EventRegionClassifier:
         r"\b(national education policy|nep|ncert|ugc|neet|ayushman bharat|vaccination drive|icmr|who alert|public health|food security)\b",
     ]
 
-    # Foreign Geographies, Demonyms & International Transaction Keywords
     FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
-        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican)\b",
+        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka)\b",
     ]
 
     def classify_with_reason(
@@ -257,6 +256,12 @@ class EventRegionClassifier:
         if is_domestic_national_news and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "India national public affairs / policy / science / constitutional event"
 
+        # RULE C2: Explicit Foreign Geography & Non-India Safeguard (Must precede Domestic discovery prior)
+        has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        has_india_mention = bool(re.search(r"\b(india|indian|india's)\b", title_lower))
+        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
+            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject overrides discovery prior"
+
         if discovery_region == NewsCategory.DOMESTIC and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "Preserved Domestic discovery pool prior"
 
@@ -287,8 +292,7 @@ class EventRegionClassifier:
                 return NewsCategory.INTERNATIONAL, f"Financial sponsor '{sponsor_matches[0]}' in international transaction context"
 
         # RULE G2: Explicit Foreign Geography & Corporate Context Override (Prior Overriding)
-        has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
-        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and "india" not in title_lower:
+        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / company evidence overrides discovery prior"
 
         # RULE H: Discovery Region Prior Protection

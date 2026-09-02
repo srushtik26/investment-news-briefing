@@ -228,11 +228,22 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     r"^(?:bjp|congress|aap|tmc)\s+(?:slams|attacks|hits out|corners|demands resignation|lashes out)\b",
 
     # Generic explainers, listicles & evergreen features
-    r"\b(top 10 (?:tourist|holiday|travel|places)|things to know before|explained: how does|a complete guide to|history of|all you need to know about (?:why|how))\b",
+    r"\b(top \d+ (?:tourist|holiday|travel|places|destinations)|things to know before|explained: how does|a complete guide to|history of|all you need to know about (?:why|how))\b",
     
+    # Personal advice, motivational quotes, career guidance & lifestyle musings
+    r"\b(career advice|loneliness|life lessons?|asks parents to|advises students|motivational speech|life advice|marriage advice|parenting tips|self-help)\b",
+    r"^['\"‘“][^:\n]{5,120}['\"’”]?\s*:\s*(?:pm|minister|modi|rahul|leader|ias|ips|officer|author)\b",
+    r"\b(?:ias|ips|officer|influencer)\s+(?:divya mittal|posts?|shares?|speaks? on|asks?|opens up about)\b",
+    r"\b(asks? (?:youth|students|citizens|parents|people)\b)",
+
     # Exam preparation, study material, practice questions, quizzes (NOT trending news)
     r"\b(upsc mains answer practice|answer practice|upsc essentials|practice questions?|mock test|exam preparation|study material|current affairs quiz|daily quiz|question of the day|quiz of the day|sample papers?|previous year questions?|pyq|test series)\b",
     r"\b(school assembly news headlines|assembly headlines for school|thought for the day)\b",
+
+    # Generic roundups, morning/evening news briefs, news wraps & digests
+    r"\b(?:morning|evening|daily|afternoon)\s+(?:news\s+)?(?:brief|wrap|roundup|round-up|digest|bulletin)\b",
+    r"\b(top headlines|news wrap|daily roundup|morning digest|evening brief|news briefing|news bulletin|today's top stories|top news headlines)\b",
+    r"^(?:ht|toi|the hindu|indian express|ie|ndtv|livemint)\s+(?:morning|evening|daily)\s+(?:news\s+)?(?:brief|wrap|roundup|round-up|digest|bulletin)\b",
 
     # Opinion columns, Editorials & Op-eds
     r"\b(opinion:|editorial:|column:|view:|analysis:|why we must|the need for|it is time to|op-ed|guest column|opinion piece|editorial board)\b",
@@ -293,6 +304,8 @@ LOCAL_MUNICIPAL_PATTERNS: List[str] = [
     r"\b(bulk water supply|water supply scheme|sewage treatment plant|water pipeline|drainage project|civic project|local road repair|desilting work|pothole|waterlogging in (?:city|ward))\b",
     r"\b(?:civic|municipal|district)\s+(?:officials?|authorities|project|scheme|body|inspection|engineers?)\b",
 ]
+
+DOMESTIC_EVALUATOR_MIN_SCORE: float = 60.0
 
 
 class DomesticTrendingEvaluator:

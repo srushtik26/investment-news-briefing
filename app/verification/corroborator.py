@@ -30,6 +30,7 @@ logger = get_logger("verification.corroborator")
 # Module-level run counter (reset between pipeline runs)
 _run_corroboration_count = 0
 MAX_CORROBORATION_SEARCHES_PER_RUN = get_settings().MAX_CORROBORATION_SEARCHES
+DOMESTIC_RESERVED_RSS_SEARCHES = 3
 MAX_QUERIES_PER_EVENT = 2
 MAX_ARTICLES_PER_QUERY = 5
 

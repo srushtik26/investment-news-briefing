@@ -13,6 +13,7 @@ from app.verification.corroborator import (
     get_corroboration_count,
     increment_corroboration_count,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
+    DOMESTIC_RESERVED_RSS_SEARCHES,
 )
 from app.verification.serpapi_corroborator import (
     SerpAPICorroborator,
@@ -33,6 +34,7 @@ __all__ = [
     "get_corroboration_count",
     "increment_corroboration_count",
     "MAX_CORROBORATION_SEARCHES_PER_RUN",
+    "DOMESTIC_RESERVED_RSS_SEARCHES",
     "SerpAPICorroborator",
     "reset_serpapi_counter",
     "get_serpapi_count",
