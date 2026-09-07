@@ -54,7 +54,8 @@ def test_run_daily_briefing_calls_run_pipeline_with_exact_signature(tmp_path, mo
     mock_pipeline.return_value = 0
 
     with patch("run_pipeline.run_pipeline", mock_pipeline), \
-         patch("run_daily.send_briefing_email", return_value=True):
+         patch("run_daily.send_briefing_email", return_value=True), \
+         patch("run_daily.send_copy_paste_email", return_value=True):
 
         exit_code = run_daily_briefing(
             data_dir_override=data_dir,

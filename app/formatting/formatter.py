@@ -37,7 +37,7 @@ import html
 import re
 import unicodedata
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from app.ai.models import BriefingEditorialPayload, EditorialStorySelection
 from app.formatting.url_shortener import get_display_url
@@ -444,3 +444,153 @@ class BriefingFormatter:
         if 11 <= (day % 100) <= 13:
             return "th"
         return self._ORDINAL_SUFFIXES.get(day % 10, "th")
+
+
+def build_copy_paste_text(
+    stories: Union[BriefingEditorialPayload, Dict[str, Any], str],
+    briefing_date: Optional[Union[date, str]] = None,
+) -> str:
+    """
+    Build a clean plain-text Investment Committee Briefing formatted specifically
+    for easy copy/paste into another chat without broken HTML, asterisks (*),
+    or email-only styling.
+
+    Consumes the SAME final selected stories (5 India, 5 Domestic, 5 International)
+    already used by the primary email.
+
+    Structure:
+        INVESTMENT COMMITTEE BRIEFING
+        <Day, Date>
+
+        TOP 5 INDIA BUSINESS HEADLINES
+
+        1. <Headline>
+        <One-line factual summary>
+        Source: <Publication>
+        <Primary URL>
+        Also verified by: <Secondary Publication>
+        <Secondary URL>
+
+        ... exactly 5
+
+        TOP 5 DOMESTIC HEADLINES
+
+        1. ...
+        ... exactly 5
+
+        TOP 5 INTERNATIONAL BUSINESS HEADLINES
+
+        1. ...
+        ... exactly 5
+    """
+    formatter = BriefingFormatter()
+
+    # 1. Resolve date string
+    header_date_str = ""
+    if isinstance(briefing_date, date):
+        header_date_str = formatter._format_date(briefing_date)
+    elif isinstance(briefing_date, str) and briefing_date.strip():
+        header_date_str = briefing_date.strip("* \t\r\n")
+
+    # 2. Extract sections & stories
+    india_stories: List[Any] = []
+    domestic_stories: List[Any] = []
+    intl_stories: List[Any] = []
+
+    if isinstance(stories, str):
+        # Plain text input (e.g. from final_briefing.txt)
+        from app.email.email_sender import parse_briefing_text
+        parsed = parse_briefing_text(stories)
+        if parsed:
+            if not header_date_str and parsed.get("date"):
+                header_date_str = str(parsed["date"]).strip("* \t\r\n")
+            for sec in parsed.get("sections", []):
+                sec_key = sec.get("key", "").upper()
+                sec_stories = sec.get("stories", [])
+                if "INDIA" in sec_key:
+                    india_stories = sec_stories
+                elif "DOMESTIC" in sec_key:
+                    domestic_stories = sec_stories
+                elif "INTERNATIONAL" in sec_key:
+                    intl_stories = sec_stories
+    elif isinstance(stories, dict):
+        # Structured dictionary (e.g. from final_15_stories.json)
+        india_stories = list(stories.get("india", []))
+        domestic_stories = list(stories.get("domestic", []))
+        intl_stories = list(stories.get("international", []))
+        if not header_date_str and stories.get("date"):
+            raw_d = stories["date"]
+            if isinstance(raw_d, date):
+                header_date_str = formatter._format_date(raw_d)
+            else:
+                header_date_str = str(raw_d).strip("* \t\r\n")
+    elif hasattr(stories, "india_stories"):
+        # BriefingEditorialPayload object
+        india_stories = list(stories.india_stories)
+        domestic_stories = list(getattr(stories, "domestic_stories", []) or [])
+        intl_stories = list(stories.international_stories)
+
+    if not header_date_str:
+        header_date_str = formatter._format_date(datetime.now(timezone.utc).date())
+
+    def _get_val(obj: Any, key: str, default: Any = "") -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    def _render_story_lines(story_obj: Any, idx: int) -> List[str]:
+        raw_headline = str(_get_val(story_obj, "headline", ""))
+        clean_headline = raw_headline.strip("* \t\r\n")
+        clean_headline = re.sub(r"^\d+[\.\)]\s*", "", clean_headline).strip()
+        clean_headline = formatter.clean_text(clean_headline)
+        clean_headline = TITLE_SUFFIX_PATTERN.sub("", clean_headline).strip()
+        clean_headline = formatter._sanitize_inline(clean_headline)
+
+        s_lines = [f"{idx}. {clean_headline}"]
+
+        summary_raw = str(_get_val(story_obj, "summary", "") or "").strip()
+        if summary_raw.lower().startswith("summary:"):
+            summary_raw = summary_raw[8:].strip()
+        clean_summary = formatter.clean_text(summary_raw)
+        clean_summary = formatter._sanitize_inline(clean_summary)
+        if clean_summary:
+            s_lines.append(clean_summary)
+
+        raw_source = str(_get_val(story_obj, "source", "") or "Verified Source").strip()
+        source = formatter._clean_source_name(raw_source)
+        s_lines.append(f"Source: {source}")
+
+        raw_url = str(_get_val(story_obj, "url", "")).strip()
+        if raw_url:
+            s_lines.append(raw_url)
+
+        sec_source = _get_val(story_obj, "secondary_source")
+        sec_url = _get_val(story_obj, "secondary_url")
+        if sec_source and sec_url and str(sec_source).strip() and str(sec_url).strip():
+            clean_sec_source = formatter._clean_source_name(str(sec_source))
+            s_lines.append(f"Also verified by: {clean_sec_source}")
+            s_lines.append(str(sec_url).strip())
+
+        return s_lines
+
+    sections_data = [
+        ("TOP 5 INDIA BUSINESS HEADLINES", india_stories),
+        ("TOP 5 DOMESTIC HEADLINES", domestic_stories),
+        ("TOP 5 INTERNATIONAL BUSINESS HEADLINES", intl_stories),
+    ]
+
+    out_lines: List[str] = [
+        "INVESTMENT COMMITTEE BRIEFING",
+        header_date_str,
+        "",
+    ]
+
+    for title, sec_story_list in sections_data:
+        out_lines.append(title)
+        out_lines.append("")
+        for idx, st_obj in enumerate(sec_story_list[:5], start=1):
+            out_lines.extend(_render_story_lines(st_obj, idx))
+            out_lines.append("")
+
+    return "\n".join(line.rstrip() for line in out_lines).rstrip() + "\n"
+

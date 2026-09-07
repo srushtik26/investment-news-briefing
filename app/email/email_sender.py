@@ -426,3 +426,85 @@ def send_briefing_email(
     except Exception as e:
         logger.error("EMAIL_DELIVERY_FAILED: Failed to send email via SMTP: %s", type(e).__name__)
         return False
+
+
+def send_copy_paste_email(
+    recipient: Optional[str] = None,
+    subject: Optional[str] = None,
+    text_content: str = "",
+    sender: Optional[str] = None,
+    password: Optional[str] = None,
+) -> bool:
+    """
+    Send the executive news briefing plain-text copy/paste version via Gmail SMTP SSL.
+
+    This email is strictly plain text (text/plain charset=utf-8) without any HTML
+    alternative or markup, formatted specifically for clean copy-pasting.
+
+    Args:
+        recipient: Target email address (defaults to GMAIL_RECIPIENTS or GMAIL_RECIPIENT env var).
+        subject: Email subject line.
+        text_content: Plain text content of the copy/paste briefing.
+        sender: Sender email address (defaults to GMAIL_SENDER env var).
+        password: Gmail App Password (defaults to GMAIL_APP_PASSWORD env var).
+
+    Returns:
+        bool: True if email was delivered successfully to SMTP server, False otherwise.
+    """
+    sender_email = sender or os.environ.get("GMAIL_SENDER", "").strip()
+    recipient_email = (
+        recipient
+        or os.environ.get("GMAIL_RECIPIENTS", "").strip()
+        or os.environ.get("GMAIL_RECIPIENT", "").strip()
+    )
+    app_password = password or os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+
+    if not sender_email:
+        logger.error("EMAIL_DELIVERY_FAILED: GMAIL_SENDER environment variable is not configured.")
+        return False
+
+    if not recipient_email:
+        logger.error("EMAIL_DELIVERY_FAILED: GMAIL_RECIPIENT environment variable is not configured.")
+        return False
+
+    if not app_password:
+        logger.error("EMAIL_DELIVERY_FAILED: GMAIL_APP_PASSWORD environment variable is not configured.")
+        return False
+
+    if not text_content or not text_content.strip():
+        logger.error("EMAIL_DELIVERY_FAILED: text_content is empty.")
+        return False
+
+    email_subject = subject or "Investment Committee Briefing — Copy/Paste Text"
+
+    msg = EmailMessage()
+    msg["Subject"] = email_subject
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+
+    # Plain text only — no HTML alternative
+    msg.set_content(text_content, charset="utf-8")
+
+    try:
+        logger.info(
+            "Connecting to %s:%d (SSL) to send copy/paste text briefing to %s...",
+            GMAIL_SMTP_HOST,
+            GMAIL_SMTP_PORT,
+            recipient_email,
+        )
+        with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30.0) as server:
+            server.login(sender_email, app_password)
+            server.send_message(msg)
+
+        logger.info("EMAIL_DELIVERY_SUCCESS: Copy/paste text email successfully delivered to %s", recipient_email)
+        return True
+    except smtplib.SMTPAuthenticationError:
+        logger.error(
+            "EMAIL_DELIVERY_FAILED: SMTP Authentication failed for sender %s. Check GMAIL_APP_PASSWORD.",
+            sender_email,
+        )
+        return False
+    except Exception as e:
+        logger.error("EMAIL_DELIVERY_FAILED: Failed to send copy/paste text email via SMTP: %s", type(e).__name__)
+        return False
+

@@ -10,6 +10,7 @@ Wraps run_pipeline.py with:
 6. Atomic state tracking only after verified SMTP transmission.
 """
 
+import json
 import os
 import sys
 from datetime import date, datetime, timezone
@@ -27,9 +28,30 @@ except ImportError:
     pass
 
 from app.logging_config import setup_logging, get_logger
-from app.email.email_sender import send_briefing_email
+from app.email.email_sender import send_briefing_email, send_copy_paste_email
+from app.formatting.formatter import build_copy_paste_text
 
 logger = get_logger("daily.runner")
+
+
+def get_primary_email_date(data_dir: Path) -> Optional[str]:
+    """Read the date (YYYY-MM-DD) when primary email was successfully sent."""
+    date_file = data_dir / "primary_email_date.txt"
+    if date_file.exists():
+        try:
+            return date_file.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning("Could not read primary_email_date.txt: %s", e)
+    return None
+
+
+def record_primary_email_date(data_dir: Path, today_str: str) -> None:
+    """Record today's date in primary_email_date.txt after confirmed primary SMTP delivery."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    date_file = data_dir / "primary_email_date.txt"
+    date_file.write_text(today_str, encoding="utf-8")
+    logger.info("Recorded primary email delivery date in %s: %s", date_file, today_str)
+
 
 
 def get_last_email_date(data_dir: Path) -> Optional[str]:
@@ -151,26 +173,70 @@ def run_daily_briefing(
         print("\nERROR: Final briefing does not contain all 3 required sections.\n")
         return 1
 
-    # 6. Construct Subject & Dispatch Email via SMTP SSL
-    subject = f"Investment Committee Briefing — {format_subject_date(today)}"
-    logger.info("Sending briefing email with subject '%s' to %s...", subject, recipient)
+    # 6. Construct Subjects & Dispatch Emails via SMTP SSL
+    primary_subject = f"Investment Committee Briefing — {format_subject_date(today)}"
+    copy_paste_subject = f"Investment Committee Briefing — Copy/Paste Text — {format_subject_date(today)}"
 
-    email_sent = send_briefing_email(
+    # Generate copy/paste text version reusing structured data if available, or briefing_text
+    final_15_path = data_dir / "final_15_stories.json"
+    if final_15_path.exists():
+        try:
+            stories_data = json.loads(final_15_path.read_text(encoding="utf-8"))
+            copy_paste_text = build_copy_paste_text(stories_data, briefing_date=today)
+        except Exception as json_err:
+            logger.warning("Could not load final_15_stories.json (%s); falling back to briefing_text", json_err)
+            copy_paste_text = build_copy_paste_text(briefing_text, briefing_date=today)
+    else:
+        copy_paste_text = build_copy_paste_text(briefing_text, briefing_date=today)
+
+    # Save copy_paste_briefing.txt artifact alongside final_briefing.txt for inspection
+    try:
+        (data_dir / "copy_paste_briefing.txt").write_text(copy_paste_text, encoding="utf-8")
+    except Exception as save_err:
+        logger.warning("Could not write copy_paste_briefing.txt: %s", save_err)
+
+    # Email 1: Primary briefing (check if already sent on a previous attempt today)
+    primary_sent_today = (get_primary_email_date(data_dir) == today_str)
+    if not primary_sent_today:
+        logger.info("Sending primary briefing email with subject '%s' to %s...", primary_subject, recipient)
+        email_sent = send_briefing_email(
+            recipient=recipient,
+            subject=primary_subject,
+            briefing_text=briefing_text,
+            sender=sender,
+            password=password,
+        )
+
+        if not email_sent:
+            logger.error("EMAIL_DELIVERY_FAILED: Primary email SMTP transmission failed. Delivery date NOT recorded.")
+            print("\nERROR: Email delivery failed via SMTP.\n")
+            return 1
+
+        record_primary_email_date(data_dir, today_str)
+        logger.info("PRIMARY_EMAIL_SENT: Primary briefing email successfully delivered to %s", recipient)
+    else:
+        logger.info("PRIMARY_EMAIL_SENT: Primary email was already sent today (%s); skipping duplicate.", today_str)
+
+    # Email 2: Plain-text copy/paste version
+    logger.info("Sending copy/paste text briefing email with subject '%s' to %s...", copy_paste_subject, recipient)
+    copy_text_sent = send_copy_paste_email(
         recipient=recipient,
-        subject=subject,
-        briefing_text=briefing_text,
+        subject=copy_paste_subject,
+        text_content=copy_paste_text,
         sender=sender,
         password=password,
     )
 
-    if not email_sent:
-        logger.error("EMAIL_DELIVERY_FAILED: SMTP transmission failed. Delivery date NOT recorded.")
-        print("\nERROR: Email delivery failed via SMTP.\n")
+    if not copy_text_sent:
+        logger.error("COPY_TEXT_EMAIL_FAILED: Copy/paste text email SMTP transmission failed. Delivery date NOT recorded.")
+        print("\nERROR: Copy/paste text email delivery failed via SMTP.\n")
         return 1
 
-    # 7. Record Idempotency Date ONLY AFTER Successful SMTP Transmission
+    logger.info("COPY_TEXT_EMAIL_SENT: Copy/paste text email successfully delivered to %s", recipient)
+
+    # 7. Record Idempotency Date ONLY AFTER BOTH Required Emails Succeed
     record_successful_email_date(data_dir, today_str)
-    logger.info("DAILY_BRIEFING_COMPLETED_SUCCESSFULLY: Date %s, Recipient %s", today_str, recipient)
+    logger.info("DAILY_BRIEFING_COMPLETED_SUCCESSFULLY: Date %s, Recipient %s (Both primary and copy/paste emails delivered)", today_str, recipient)
     print(f"\nSUCCESS: Daily briefing successfully generated and delivered to {recipient}.\n")
     return 0
 
