@@ -2,16 +2,10 @@ name: Daily Investment Briefing Automation
 
 on:
   schedule:
-    # Cron format (UTC): Minute Hour Day-of-month Month Day-of-week
-    # Staggered daily attempts to ensure reliable delivery even with runner queuing delays:
-    # Attempt 1: 06:35 AM IST (01:05 UTC)
-    - cron: '5 1 * * *'
-    # Attempt 2: 06:45 AM IST (01:15 UTC)
-    - cron: '15 1 * * *'
-    # Attempt 3: 06:55 AM IST (01:25 UTC)
-    - cron: '25 1 * * *'
-    # Final Recovery: 07:05 AM IST (01:35 UTC)
-    - cron: '35 1 * * *'
+    # Run every day at 07:00 AM IST
+    - cron: '0 7 * * *'
+      timezone: 'Asia/Kolkata'
+
   workflow_dispatch:
 
 concurrency:
@@ -22,6 +16,7 @@ jobs:
   run-daily-briefing:
     name: Generate & Deliver Daily Briefing
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -38,12 +33,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Get current date (UTC / IST)
+      - name: Get current IST date
         id: current-date
+        shell: bash
         run: |
-          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "date=$(TZ=Asia/Kolkata date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "Current IST time:"
+          TZ=Asia/Kolkata date
 
-      - name: Restore delivery state cache (Idempotency)
+      - name: Restore delivery state cache
         uses: actions/cache@v4
         with:
           path: data/last_email_date.txt
@@ -57,11 +55,15 @@ jobs:
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT || secrets.GMAIL_RECIPIENTS }}
           GMAIL_RECIPIENTS: ${{ secrets.GMAIL_RECIPIENTS || secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TZ: Asia/Kolkata
         run: |
+          echo "Starting daily briefing..."
+          echo "Current IST time:"
+          TZ=Asia/Kolkata date
           python run_daily.py
 
-      - name: Save delivery state cache (if email sent successfully)
-        if: always()
+      - name: Save delivery state cache
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: data/last_email_date.txt
