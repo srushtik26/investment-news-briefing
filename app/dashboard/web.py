@@ -42,6 +42,7 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
         latest = repo.get_latest_briefing()
         return {
             "status": "ok",
+            "backend": repo.backend,
             "app": "plutus-briefing-dashboard",
             "database": "connected",
             "latest_briefing_date": latest.briefing_date.isoformat() if latest else None,

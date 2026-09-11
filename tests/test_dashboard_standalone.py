@@ -445,3 +445,134 @@ def test_12_dashboard_sync_never_calls_external_apis(monkeypatch, tmp_path: Path
 
     success = sync_dashboard(input_file=test_txt, db_path=db_path)
     assert success is True
+
+
+def test_13_no_dashboard_database_url_sqlite_fallback(monkeypatch, tmp_path: Path):
+    """A. Test that missing DASHBOARD_DATABASE_URL falls back to SQLite data/dashboard.db."""
+    from app.dashboard.repository import DEFAULT_DB_PATH
+    monkeypatch.delenv("DASHBOARD_DATABASE_URL", raising=False)
+    monkeypatch.chdir(tmp_path)
+    repo = DashboardRepository()
+    assert repo.backend == "sqlite"
+    assert repo.db_path == DEFAULT_DB_PATH
+    assert repo.engine is None
+
+
+def test_14_explicit_db_path_forces_sqlite(monkeypatch, tmp_path: Path):
+    """B. Test that explicit db_path forces SQLite even if DASHBOARD_DATABASE_URL is set."""
+    monkeypatch.setenv("DASHBOARD_DATABASE_URL", "postgresql://user:pass@ep-fake.neon.tech/neondb?sslmode=require")
+    custom_db = tmp_path / "custom_test.db"
+    repo = DashboardRepository(db_path=custom_db)
+    assert repo.backend == "sqlite"
+    assert repo.db_path == custom_db
+    assert repo.engine is None
+
+
+def test_15_dashboard_database_url_selects_postgresql(monkeypatch):
+    """C. Test that DASHBOARD_DATABASE_URL selects PostgreSQL backend and normalizes URL."""
+    from unittest.mock import MagicMock
+    from app.dashboard.repository import normalize_database_url
+
+    raw_url = "postgresql://usr_test:secret_pass_123@ep-test.neon.tech/neondb?sslmode=require"
+    monkeypatch.setenv("DASHBOARD_DATABASE_URL", raw_url)
+
+    # Test URL normalization
+    norm_url = normalize_database_url(raw_url)
+    assert norm_url.startswith("postgresql+psycopg://")
+    assert "usr_test:secret_pass_123" in norm_url
+
+    # Test postgres:// shorthand normalization
+    assert normalize_database_url("postgres://u:p@h/d") == "postgresql+psycopg://u:p@h/d"
+    assert normalize_database_url("postgresql+psycopg://u:p@h/d") == "postgresql+psycopg://u:p@h/d"
+
+    # Mock create_engine and metadata.create_all so no network connection is attempted
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+
+    monkeypatch.setattr("app.dashboard.repository.create_engine", lambda url, **kw: mock_engine)
+    monkeypatch.setattr("app.dashboard.repository.metadata.create_all", lambda eng: None)
+
+    repo = DashboardRepository()
+    assert repo.backend == "postgresql"
+    assert repo.db_path is None
+    assert repo.engine == mock_engine
+
+    # Ensure credentials are not leaked in string representation
+    repo_repr = repr(repo)
+    assert "secret_pass_123" not in repo_repr
+    assert "postgresql" in repo_repr
+
+
+def test_16_sqlalchemy_backend_idempotency_and_conflict():
+    """D & E. Test SQLAlchemy engine CRUD, idempotency, conflict detection, and replace."""
+    from sqlalchemy import create_engine
+    engine = create_engine("sqlite:///:memory:")
+    repo = DashboardRepository(engine=engine)
+
+    b_orig = parse_briefing_text(SAMPLE_SENT_EMAIL_BRIEFING_SEP8)
+    id1 = repo.save_briefing(b_orig)
+    assert id1 is not None
+
+    # D. Same-date same-hash is idempotent no-op
+    id2 = repo.save_briefing(b_orig)
+    assert id1 == id2
+    assert len(repo.get_archive_dates()) == 1
+
+    # E. Same-date changed hash raises conflict unless allow_replace=True
+    mod_text = SAMPLE_SENT_EMAIL_BRIEFING_SEP8.replace("Dangote Refinery", "Alternative Energy Corp")
+    b_diff = parse_briefing_text(mod_text)
+
+    with pytest.raises(DashboardSyncConflictError) as exc_info:
+        repo.save_briefing(b_diff, allow_replace=False)
+    assert "existing briefing differs from incoming briefing" in str(exc_info.value)
+
+    # Safe replacement when allow_replace=True
+    id3 = repo.save_briefing(b_diff, allow_replace=True)
+    assert id3 == id1
+    latest = repo.get_latest_briefing()
+    assert latest is not None
+    assert "Alternative Energy Corp" in latest.india_stories[0].headline
+
+
+def test_17_workflow_yaml_contains_sync_and_secrets():
+    """F & G. Verify GitHub Actions workflow structure, commands, secret passing, and schedule."""
+    workflow_path = Path(".github/workflows/daily_briefing.yml")
+    assert workflow_path.exists()
+    content = workflow_path.read_text(encoding="utf-8")
+
+    # F. Commands executed in exact order
+    assert "python run_daily.py" in content
+    assert "python run_dashboard_sync.py --file data/copy_paste_briefing.txt" in content
+    run_daily_pos = content.index("python run_daily.py")
+    run_sync_pos = content.index("python run_dashboard_sync.py --file data/copy_paste_briefing.txt")
+    assert run_daily_pos < run_sync_pos
+
+    # G. Secret passed to environment
+    assert "DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}" in content
+
+    # Schedule integrity
+    assert "cron: '0 7 * * *'" in content
+    assert "timezone: 'Asia/Kolkata'" in content
+    assert "workflow_dispatch:" in content
+
+
+def test_18_dashboard_routes_and_health_check(tmp_path: Path):
+    """H & I. Verify dashboard routes do not call external APIs and /health returns backend type."""
+    db_file = tmp_path / "dashboard.db"
+    repo = DashboardRepository(db_path=db_file)
+    b8 = parse_briefing_text(SAMPLE_SENT_EMAIL_BRIEFING_SEP8)
+    repo.save_briefing(b8)
+
+    app = create_app(db_path=db_file)
+    client = TestClient(app)
+
+    # Health check
+    resp_health = client.get("/health")
+    assert resp_health.status_code == 200
+    data = resp_health.json()
+    assert data["status"] == "ok"
+    assert data["backend"] == "sqlite"
+    assert data["latest_briefing_date"] == "2026-09-08"
+    assert data["total_briefings_count"] == 1
+    # Check no passwords in health response
+    assert "password" not in str(data).lower()

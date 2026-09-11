@@ -55,12 +55,14 @@ jobs:
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT || secrets.GMAIL_RECIPIENTS }}
           GMAIL_RECIPIENTS: ${{ secrets.GMAIL_RECIPIENTS || secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
           echo "Starting daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
           python run_daily.py
+          python run_dashboard_sync.py --file data/copy_paste_briefing.txt
 
       - name: Save delivery state cache
         if: success()

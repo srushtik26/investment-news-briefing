@@ -338,9 +338,10 @@ def sync_dashboard(
 
     try:
         b_id = repo.save_briefing(briefing, allow_replace=allow_replace)
+        target_info = f"backend={repo.backend}" if repo.backend == "postgresql" else str(repo.db_path)
         print(
             f"[SYNC_SUCCESS] Briefing id={b_id} for date {briefing.briefing_date} "
-            f"synced into {repo.db_path} (source: {briefing.sync_source}, hash: {briefing.content_hash[:10]}...)"
+            f"synced into {target_info} (source: {briefing.sync_source}, hash: {briefing.content_hash[:10]}...)"
         )
         return True
     except DashboardSyncConflictError as conflict_err:
