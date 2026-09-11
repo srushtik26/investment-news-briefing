@@ -1,17 +1,10 @@
 name: Daily Investment Briefing Automation
 
-# on:
-#   schedule:
-#     # Run every day at 07:00 AM IST
-#     - cron: '0 7 * * *'
-#       timezone: 'Asia/Kolkata'
-
-#   workflow_dispatch:
 on:
   schedule:
     - cron: '30 1 * * *'
 
-  workflow_dispatch:  
+  workflow_dispatch:
 
 concurrency:
   group: daily-briefing-execution
@@ -52,7 +45,7 @@ jobs:
           path: data/last_email_date.txt
           key: daily-email-state-${{ steps.current-date.outputs.date }}
 
-      - name: Execute daily briefing pipeline and email delivery
+      - name: Execute daily briefing pipeline, email delivery and dashboard sync
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
@@ -60,12 +53,14 @@ jobs:
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT || secrets.GMAIL_RECIPIENTS }}
           GMAIL_RECIPIENTS: ${{ secrets.GMAIL_RECIPIENTS || secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
           echo "Starting daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
           python run_daily.py
+          python run_dashboard_sync.py --file data/copy_paste_briefing.txt
 
       - name: Save delivery state cache
         if: success()
