@@ -1,12 +1,17 @@
 name: Daily Investment Briefing Automation
 
+# on:
+#   schedule:
+#     # Run every day at 07:00 AM IST
+#     - cron: '0 7 * * *'
+#       timezone: 'Asia/Kolkata'
+
+#   workflow_dispatch:
 on:
   schedule:
-    # Run every day at 07:00 AM IST
-    - cron: '0 7 * * *'
-      timezone: 'Asia/Kolkata'
+    - cron: '30 1 * * *'
 
-  workflow_dispatch:
+  workflow_dispatch:  
 
 concurrency:
   group: daily-briefing-execution
