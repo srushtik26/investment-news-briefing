@@ -4,16 +4,108 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ title }} - Plutus Wealth Management LLP</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260911_plutus_v4">
+  <style>
+    /* Immediate theme enforcement to guarantee zero browser caching latency */
+    :root {
+      --primary-green: #183A27 !important;
+      --secondary-green: #234E37 !important;
+      --accent-gold: #B8934A !important;
+      --accent-gold-hover: #CCA85E !important;
+      --accent-gold-light: #F7EEDB !important;
+      --bg-page: #F7F9F7 !important;
+      --bg-surface: #FFFFFF !important;
+      --text-primary: #14261C !important;
+      --text-secondary: #4A5F53 !important;
+      --border-light: #E3E9E4 !important;
+    }
+    .site-header {
+      background-color: #14261C !important;
+      border-top: 4px solid #B8934A !important;
+      border-bottom: 1px solid rgba(184, 147, 74, 0.3) !important;
+      box-shadow: 0 4px 12px rgba(10, 20, 14, 0.25) !important;
+    }
+    .brand-logo {
+      height: 42px !important;
+      width: 42px !important;
+      max-height: 42px !important;
+      object-fit: contain !important;
+      display: block !important;
+    }
+    .brand-title {
+      color: #FFFFFF !important;
+      font-size: 1.15rem !important;
+      font-weight: 800 !important;
+      letter-spacing: 0.04em !important;
+      line-height: 1.2 !important;
+    }
+    .brand-subtitle {
+      color: #B8934A !important;
+      font-size: 0.775rem !important;
+      font-weight: 700 !important;
+      letter-spacing: 0.03em !important;
+      text-transform: uppercase !important;
+    }
+    .nav-link {
+      color: #D6E4DC !important;
+    }
+    .nav-link:hover {
+      color: #FFFFFF !important;
+      background-color: rgba(255, 255, 255, 0.08) !important;
+      border-color: rgba(184, 147, 74, 0.4) !important;
+    }
+    .nav-link.active {
+      background-color: #214431 !important;
+      color: #F7EEDB !important;
+      border: 1px solid #B8934A !important;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) !important;
+    }
+    .section-header {
+      border-bottom: 2.5px solid #B8934A !important;
+      color: #FFFFFF !important;
+    }
+    .header-india {
+      background: linear-gradient(135deg, #102619 0%, #1A402B 100%) !important;
+    }
+    .header-domestic {
+      background: linear-gradient(135deg, #153222 0%, #224D36 100%) !important;
+    }
+    .header-international {
+      background: linear-gradient(135deg, #0C2116 0%, #173B28 100%) !important;
+    }
+    .story-number {
+      background-color: #F0F5F2 !important;
+      color: #183A27 !important;
+      border: 1.5px solid #B8934A !important;
+    }
+    .story-headline {
+      color: #183A27 !important;
+    }
+    .story-link, .archive-link {
+      color: #B8934A !important;
+    }
+    .briefing-banner {
+      border-left: 5px solid #B8934A !important;
+    }
+    .briefing-date-title {
+      color: #183A27 !important;
+    }
+  </style>
 </head>
 <body>
   <header class="site-header">
     <div class="header-inner">
       <div class="brand-group">
-        <h1 class="brand-title">PLUTUS WEALTH MANAGEMENT LLP</h1>
-        <p class="brand-subtitle">Investment Committee News Briefing</p>
+        <a href="/" class="brand-link">
+          <img src="/static/images/logo_circle.png" alt="Plutus Emblem" class="brand-logo">
+          <div class="brand-text">
+            <h1 class="brand-title">PLUTUS WEALTH MANAGEMENT LLP</h1>
+            <p class="brand-subtitle">Investment Committee Intelligence &bull; Plutus Pulse</p>
+          </div>
+        </a>
       </div>
       <nav class="nav-links">
         <a href="/" class="nav-link {% if is_latest %}active{% endif %}">Latest Briefing</a>
