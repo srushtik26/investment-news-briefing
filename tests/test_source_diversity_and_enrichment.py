@@ -458,6 +458,8 @@ def test_second_source_enrichment_scoring_and_top_7_capping():
     from app.utils.performance_metrics import PipelineMetrics
     from app.ranking.scorer import InvestmentRelevanceScorer
 
+    from app.verification import reset_corroboration_counter
+    reset_corroboration_counter()
     metrics = PipelineMetrics.reset()
     ctx = MagicMock(spec=PipelineContext)
     ctx.metrics = metrics

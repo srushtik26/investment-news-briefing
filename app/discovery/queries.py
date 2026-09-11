@@ -6,7 +6,7 @@ for Indian and International financial publications.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -172,6 +172,44 @@ INDIA_EVENT_CATEGORIES: Dict[str, List[str]] = {
 }
 
 
+# Material corporate event terms for portfolio watchlist discovery
+PORTFOLIO_EVENT_TERMS = (
+    "(order OR contract OR acquisition OR stake OR merger OR investment OR capex OR expansion "
+    "OR plant OR commissioning OR fundraise OR bond OR debt OR refinancing OR regulatory "
+    "OR approval OR penalty OR litigation OR partnership OR \"joint venture\" OR capacity "
+    "OR production OR guidance OR dividend OR buyback OR rating OR project OR PPA "
+    "OR concession OR launch)"
+)
+
+# Targeted Portfolio Watchlist Discovery Groups (India Business)
+# Covers all 32 canonical portfolio holdings with high-recall aliases and safe entity names (no bare ACC)
+PORTFOLIO_DISCOVERY_GROUPS: Dict[str, str] = {
+    "group_1_psu_capital_goods": (
+        '("Coal India" OR NTPC OR "BHEL" OR "Bharat Heavy Electricals" OR "BEL" OR "Bharat Electronics" '
+        'OR "SAIL" OR "Steel Authority of India")'
+    ),
+    "group_2_financials_it_metals": (
+        '("State Bank of India" OR "SBI" OR "Infosys" OR "Vedanta" OR "Accelya Solutions" OR "Accelya" '
+        'OR "RateGain" OR "RateGain Travel")'
+    ),
+    "group_3_consumer_retail_fmcg": (
+        '("Tata Consumer" OR "Tata Consumer Products" OR "Titan" OR "Titan Company" OR "Trent" '
+        'OR "Britannia" OR "Britannia Industries" OR "Havells" OR "Havells India" OR "Eternal Ltd")'
+    ),
+    "group_4_pharma_chem_health": (
+        '("Sun Pharma" OR "Sun Pharmaceutical" OR "Granules India" OR "Granules" OR "Cohance Lifesciences" '
+        'OR "Cohance" OR "BASF India" OR "Sumitomo Chemical India" OR "Sumitomo Chemical")'
+    ),
+    "group_5_auto_industrials_midcaps_adani": (
+        '("Ashok Leyland" OR "Harsha Engineers" OR "Tega Industries" OR "Windsor Machines" '
+        'OR "CarTrade Tech" OR "CarTrade" OR "Choice International" OR "Nazara Tech" OR "Nazara Technologies" '
+        'OR "Tilaknagar Industries" OR "Tilaknagar" OR "Kaya" OR "Kaya Ltd" OR "Bombay Dyeing" '
+        'OR "Adani Enterprises" OR "Adani Ports" OR "Adani Power" OR "Adani Green" '
+        'OR "Adani Energy Solutions" OR "Adani Total Gas" OR "Ambuja Cements")'
+    ),
+}
+
+
 # Targeted Hard Business Event Categories (International)
 INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
     "us_earnings": [
@@ -316,3 +354,26 @@ class SearchQueryBuilder:
                 queries.append(query_str.strip())
 
         return queries
+
+    @classmethod
+    def build_portfolio_queries(
+        cls,
+        include_site_filters: bool = True,
+    ) -> List[Tuple[str, str]]:
+        """
+        Generate search query strings for the 5 portfolio watchlist groups.
+        Returns list of (group_name, query_string).
+        """
+        sources = cls.get_sources_for_country("India")
+        site_clause = ""
+        if include_site_filters and sources:
+            site_terms = [f"site:{s.domain}" for s in sources]
+            site_clause = " (" + " OR ".join(site_terms) + ")"
+
+        queries: List[Tuple[str, str]] = []
+        for grp_name, expr in PORTFOLIO_DISCOVERY_GROUPS.items():
+            query_str = f"{expr} {PORTFOLIO_EVENT_TERMS} when:1d{site_clause}"
+            queries.append((grp_name, query_str.strip()))
+
+        return queries
+

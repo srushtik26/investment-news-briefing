@@ -12,8 +12,11 @@ DISCOVERY_STEPS = [20, 30, 40, 50]  # candidate budgets per section per expansio
 
 def _score_discovery_candidate(title: str) -> float:
     """Score candidate discovery headline to prioritize corporate actions and hard events."""
+    from app.ranking.watchlist import is_watchlist_company
     t_low = title.lower()
     score = 50.0
+    if is_watchlist_company(title)[0]:
+        score += 30.0
     if re.search(r"\b(crore|cr|billion|million|\$|₹|\d+%)\b", t_low):
         score += 20.0
     if re.search(r"\b(acquires?|acquisition|stake|block deal|bought|buys|takeover|merger|amalgamation)\b", t_low):
@@ -52,6 +55,9 @@ def discover_initial_reserves(
         max_domestic=max_domestic,
     )
     ctx.metrics.stop_timer("discovery_seconds")
+    ctx.portfolio_discovery_executed = bool(
+        getattr(ctx.discovery_service, "portfolio_discovery_executed", False)
+    )
 
     ctx.domestic_reserve_pool = initial_discovery.get("domestic", [])
     ctx.india_reserve_pool    = initial_discovery.get("india", [])
@@ -60,9 +66,9 @@ def discover_initial_reserves(
     discovered_total = len(ctx.domestic_reserve_pool) + len(ctx.india_reserve_pool) + len(ctx.intl_reserve_pool)
     ctx.log_exec(f"Discovery Reserve Pool loaded: {len(ctx.domestic_reserve_pool)} Domestic + {len(ctx.india_reserve_pool)} India Business + {len(ctx.intl_reserve_pool)} International (Total: {discovered_total})")
 
-    # Pass 1: Extract top candidates from reserve pool (e.g. up to 20 each)
+    # Pass 1: Extract top candidates from reserve pool (up to 30 for India to ensure portfolio coverage)
     initial_dom      = min(len(ctx.domestic_reserve_pool), DISCOVERY_STEPS[0])
-    initial_india    = min(len(ctx.india_reserve_pool), DISCOVERY_STEPS[0])
+    initial_india    = min(len(ctx.india_reserve_pool), 30)
     initial_intl     = min(len(ctx.intl_reserve_pool), DISCOVERY_STEPS[0])
 
     pass1_candidates = (

@@ -34,6 +34,7 @@ from app.ai.prompts import (
     build_editorial_user_prompt,
 )
 from app.ai.usage_logger import GeminiUsageLogger
+from app.ai.headline_synthesis import synthesize_investment_headline, is_approved_institutional_headline
 
 logger = get_logger("ai.editor")
 
@@ -59,14 +60,18 @@ def generate_deterministic_summary(
     headline: Optional[str] = None,
 ) -> str:
     """
-    Generate a concise, factual, neutral 1-sentence summary (target: 15-25 words, max 30 words).
-    Uses grounded sentence selection from the article body validated against headline concepts.
-    If no body sentence passes grounding, generates a clean structured declarative fallback.
+    Generate a descriptive, factual Investment Committee summary (target: 35-55 words, max 65 words).
+    Explains:
+    1. What happened?
+    2. What is the scale/magnitude?
+    3. Why does it matter for the company, sector, market, or investor?
     """
     from app.formatting.formatter import BriefingFormatter
     from app.ai.summary_grounding import (
         select_grounded_summary_sentence,
-        build_structured_fallback_summary,
+        build_descriptive_investment_summary,
+        is_summary_substantially_identical_to_headline,
+        clamp_summary_length,
     )
 
     raw_title = (headline or (article.title if article else "") or (getattr(event, "canonical_title", "") if event else "")).strip()
@@ -74,12 +79,14 @@ def generate_deterministic_summary(
 
     if article and article.content_text:
         grounded_sentence = select_grounded_summary_sentence(article, clean_title, event=event)
-        if grounded_sentence:
-            return BriefingFormatter.clean_text(grounded_sentence)
+        if grounded_sentence and not is_summary_substantially_identical_to_headline(grounded_sentence, clean_title):
+            words = grounded_sentence.split()
+            if 35 <= len(words) <= 65:
+                return BriefingFormatter.clean_text(clamp_summary_length(grounded_sentence, max_words=65))
 
-    # Use deterministic structured fallback
-    fallback = build_structured_fallback_summary(clean_title, event=event, article=article)
-    return BriefingFormatter.clean_text(fallback)
+    # Use deterministic descriptive investment committee summary
+    fallback = build_descriptive_investment_summary(clean_title, event=event, article=article)
+    return BriefingFormatter.clean_text(clamp_summary_length(fallback, max_words=65))
 
 
 class GeminiEditorialEngine:
@@ -198,6 +205,8 @@ class GeminiEditorialEngine:
                 parsed_json = self._extract_json_from_response(raw_text)
                 payload = BriefingEditorialPayload.model_validate(parsed_json)
 
+                from app.ai.headline_synthesis import synthesize_investment_headline
+
                 # Ensure Domestic stories from ranked_pool are preserved (Domestic is deterministic)
                 if not getattr(payload, "domestic_stories", None) or len(payload.domestic_stories) < 5:
                     dom_stories = []
@@ -206,29 +215,39 @@ class GeminiEditorialEngine:
                         art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                         src = e.primary_publisher or (art.source_name if art else "The Hindu")
                         u = e.primary_url or (art.url if art else f"https://example.com/dom-{e.id}")
-                        sum_text = generate_deterministic_summary(art, e, e.canonical_title)
+                        headline_text = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+                        sum_text = generate_deterministic_summary(art, e, headline_text)
                         dom_stories.append(EditorialStorySelection(
                             section="domestic",
                             event_id=e.id,
-                            headline=e.canonical_title,
+                            headline=headline_text,
                             summary=sum_text,
                             source=src,
                             url=u,
                         ))
                     payload.domestic_stories = dom_stories
 
-                # Validate summary grounding for every story (guarantees zero summary hallucination/mismatch)
-                from app.ai.summary_grounding import validate_summary_grounding
+                # Validate headline style and summary grounding for every story
+                from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
                 for story in (payload.domestic_stories + payload.india_stories + payload.international_stories):
                     scored = valid_events_map.get(story.event_id)
                     ev = scored.event if scored else None
                     art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
+                    story.headline = synthesize_investment_headline(story.headline, event=ev, article=art)
                     if not getattr(story, "summary", None):
                         story.summary = generate_deterministic_summary(art, ev, story.headline)
                     else:
                         is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
-                        if not is_grounded:
-                            logger.warning("Summary grounding failed for '%s' (%s) — replacing with grounded fallback", story.headline, g_reason)
+                        is_duplicate = is_summary_substantially_identical_to_headline(story.summary, story.headline)
+                        sum_len = len(story.summary.split())
+                        if not is_grounded or is_duplicate or sum_len > 65:
+                            logger.warning(
+                                "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — replacing with descriptive fallback",
+                                story.headline,
+                                is_grounded,
+                                is_duplicate,
+                                sum_len,
+                            )
                             story.summary = generate_deterministic_summary(art, ev, story.headline)
 
                 # Programmatic Validation Checks
@@ -391,6 +410,13 @@ class GeminiEditorialEngine:
                     raise ValueError(f"India section selected duplicate company: '{comp}'")
                 seen_india_companies.add(norm)
 
+        # 3. Validate International Geopolitical Quantified Impact Gate
+        from app.verification.international import is_geopolitical_market_impact_eligible
+        for story in payload.international_stories:
+            is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(story.headline)
+            if not is_geo_elig:
+                raise ValueError(f"International story '{story.headline}' failed geopolitical check: {geo_reason}")
+
     def _call_model(
         self,
         ranked_pool: RankedCandidatePool,
@@ -461,11 +487,12 @@ class GeminiEditorialEngine:
             source_name = art.source_name if art else "Business Standard"
             url = art.url if art else f"https://example.com/domestic-{e.id}"
             sum_text = generate_deterministic_summary(art, e, e.canonical_title)
+            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
 
             domestic_selected.append({
                 "section": "domestic",
                 "event_id": e.id,
-                "headline": e.canonical_title,
+                "headline": inst_headline,
                 "summary": sum_text,
                 "source": source_name,
                 "url": url,
@@ -498,11 +525,12 @@ class GeminiEditorialEngine:
 
             url = art.url if art else f"https://example.com/india-{e.id}"
             sum_text = generate_deterministic_summary(art, e, e.canonical_title)
+            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
 
             india_selected.append({
                 "section": "india",
                 "event_id": e.id,
-                "headline": e.canonical_title,
+                "headline": inst_headline,
                 "summary": sum_text,
                 "source": source_name,
                 "url": url,
@@ -521,10 +549,11 @@ class GeminiEditorialEngine:
                 source_name = art.source_name if art else "Business Standard"
                 url = art.url if art else f"https://example.com/india-{e.id}"
                 sum_text = generate_deterministic_summary(art, e, e.canonical_title)
+                inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
                 india_selected.append({
                     "section": "india",
                     "event_id": e.id,
-                    "headline": e.canonical_title,
+                    "headline": inst_headline,
                     "summary": sum_text,
                     "source": source_name,
                     "url": url,
@@ -538,11 +567,12 @@ class GeminiEditorialEngine:
             source_name = art.source_name if art else "Reuters"
             url = art.url if art else f"https://example.com/intl-{e.id}"
             sum_text = generate_deterministic_summary(art, e, e.canonical_title)
+            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
 
             intl_selected.append({
                 "section": "international",
                 "event_id": e.id,
-                "headline": e.canonical_title,
+                "headline": inst_headline,
                 "summary": sum_text,
                 "source": source_name,
                 "url": url,

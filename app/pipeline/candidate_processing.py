@@ -210,10 +210,21 @@ def process_candidate_item(
             "success": ext_res.success,
             "failure_reason": ext_res.error_message,
         }
-        ctx.all_records.append(rec)
     except Exception as e:
+        if cand_section == "domestic":
+            ctx.log_exec(
+                f'[DOM_DIAG_TARGET_EXTRACTION] title="{cand.title}" success=False method="unknown" word_count=0 error="{e}"'
+            )
         ctx.log_exec(f"  [Extraction Error] {cand.url[:60]}: {e}")
         return None
+
+    if cand_section == "domestic":
+        w_cnt = ext_res.word_count or 0
+        meth = ext_res.extraction_method or "unknown"
+        err = ext_res.error_message or ""
+        ctx.log_exec(
+            f'[DOM_DIAG_TARGET_EXTRACTION] title="{cand.title}" success={ext_res.success} method="{meth}" word_count={w_cnt} error="{err}"'
+        )
 
     if not ext_res.success or not ext_res.article:
         return None
@@ -224,8 +235,18 @@ def process_candidate_item(
 
     if cand_section == "domestic":
         filt_res = ctx.domestic_filter_engine.filter_article(art, max_age_hours=active_horizon)
+        engine_name = "domestic_filter_engine"
+        _filt_reason = (
+            getattr(filt_res, "rejection_reason", None)
+            or getattr(filt_res, "rule_failed", None)
+            or ""
+        )
+        ctx.log_exec(
+            f'[DOM_DIAG_TARGET_FILTER] title="{art.title}" passed={filt_res.is_accepted} engine="{engine_name}" reason="{_filt_reason}"'
+        )
     else:
         filt_res = ctx.business_filter_engine.filter_article(art, max_age_hours=active_horizon)
+        engine_name = "business_filter_engine"
 
     if not filt_res.is_accepted:
         if filt_res.rule_failed == "DATE":
@@ -286,9 +307,21 @@ def process_candidate_item(
     else:
         ctx.single_source_events.append(event)
         event.event_category = ctx.reg_clf.classify_event(event, [art])
+        if cand_section == "domestic":
+            cand_cat_str = "domestic"
+            art_cat_str = art.category.value if hasattr(art.category, "value") else str(art.category)
+            ev_cat_str = event.event_category.value if hasattr(event.event_category, "value") else str(event.event_category)
+            ctx.log_exec(
+                f'[DOM_CATEGORY_DIAG] title="{art.title}" candidate_category={cand_cat_str} article_category={art_cat_str} event_category={ev_cat_str} filter_engine={engine_name}'
+            )
+
         if not is_multi_event_roundup(event.canonical_title):
             if event.event_category == NewsCategory.DOMESTIC:
                 is_elig, conf, rsn = ctx.domestic_evaluator.evaluate(event, art, now_utc=ctx.run_reference_time, max_age_hours=active_horizon)
+                if cand_section == "domestic":
+                    ctx.log_exec(
+                        f'[DOM_DIAG_TARGET_HCSS] title="{event.canonical_title}" score={conf:.1f} passed={is_elig}'
+                    )
             else:
                 is_elig, conf, rsn = ctx.single_source_evaluator.evaluate_event(event, art, now_utc=ctx.run_reference_time, max_age_hours=active_horizon)
 

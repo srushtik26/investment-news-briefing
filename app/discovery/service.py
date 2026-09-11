@@ -6,7 +6,7 @@ categories, and publishers with automatic URL deduplication.
 """
 
 import re
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from config import get_settings
 from app.logging_config import get_logger
@@ -30,6 +30,7 @@ class NewsDiscoveryService:
 
     def __init__(self, provider: Optional[DiscoveryProvider] = None) -> None:
         self.provider: DiscoveryProvider = provider or MockDiscoveryProvider()
+        self.portfolio_discovery_executed: bool = False
         logger.info("NewsDiscoveryService initialized with provider: %s", self.provider.provider_name)
 
     def _deduplicate_candidates(self, articles: List[DiscoveredArticle]) -> List[DiscoveredArticle]:
@@ -83,6 +84,57 @@ class NewsDiscoveryService:
 
         unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
         logger.info("Discovered %d unique candidate articles for India", len(unique_results))
+        return unique_results
+
+    def discover_portfolio_news(
+        self,
+        max_candidates: int = 50,
+        max_per_query: int = 15,
+        log_callback: Optional[Any] = None,
+    ) -> List[DiscoveredArticle]:
+        """
+        Discover candidate news articles specifically for the 32 portfolio watchlist companies
+        across 5 grouped queries.
+        """
+        from app.discovery.queries import SearchQueryBuilder
+        from app.ranking.watchlist import get_watchlist_match_details
+
+        def _log(msg: str):
+            logger.info(msg)
+            if log_callback:
+                try:
+                    log_callback(msg)
+                except Exception:
+                    pass
+
+        _log("[PORTFOLIO_DISCOVERY_START]")
+        self.portfolio_discovery_executed = True
+        portfolio_queries = SearchQueryBuilder.build_portfolio_queries(include_site_filters=True)
+        discovered: List[DiscoveredArticle] = []
+
+        for grp_name, query in portfolio_queries:
+            _log(f'[PORTFOLIO_DISCOVERY_QUERY]\ngroup={grp_name}\nquery="{query}"')
+            results = self.provider.discover(
+                query=query,
+                country="India",
+                max_results=max_per_query,
+                category_tag="india",
+            )
+            _log(f'[PORTFOLIO_DISCOVERY_RESULT]\nquery="{query}"\nresults={len(results)}')
+            discovered.extend(results)
+
+        unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
+        for article in unique_results:
+            article.category_tag = "india"
+
+        matched_n = 0
+        for art in unique_results:
+            m, cname, calias = get_watchlist_match_details(art.title or "")
+            if m:
+                matched_n += 1
+                _log(f'[PORTFOLIO_MATCH]\ncompany="{cname}"\nalias="{calias}"\ntitle="{art.title}"')
+
+        _log(f"[PORTFOLIO_DISCOVERY_END]\nqualified={len(unique_results)}\nselected={matched_n}")
         return unique_results
 
     def discover_international_news(
@@ -248,18 +300,24 @@ class NewsDiscoveryService:
         max_domestic: int = 40,
     ) -> Dict[str, List[DiscoveredArticle]]:
         """
-        Run discovery across Domestic, India Business, and International categories.
+        Run discovery across Domestic, India Business, and International categories,
+        including dedicated Portfolio Watchlist discovery.
         """
-        logger.info("Running full news discovery for Investment Committee briefing (Domestic + India + Intl)...")
+        logger.info("Running full news discovery for Investment Committee briefing (Domestic + India + Intl + Portfolio)...")
         domestic_candidates = self.discover_domestic_news(max_candidates=max_domestic) if max_domestic > 0 else []
+        portfolio_candidates = self.discover_portfolio_news(max_candidates=50, max_per_query=15)
         india_candidates = self.discover_india_news(max_candidates=max_india)
         intl_candidates = self.discover_international_news(max_candidates=max_international)
 
+        # Portfolio candidates are prioritized into the India business candidate pool
+        combined_india = self._deduplicate_candidates(portfolio_candidates + india_candidates)[: max_india * 2]
+
         result: Dict[str, List[DiscoveredArticle]] = {
-            "india": india_candidates,
+            "india": combined_india,
             "international": intl_candidates,
         }
         if max_domestic > 0:
             result["domestic"] = domestic_candidates
 
         return result
+

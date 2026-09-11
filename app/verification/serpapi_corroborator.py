@@ -164,7 +164,9 @@ class SerpAPICorroborator:
         try:
             logger.info("SERPAPI QUERY USED (%.0fh, tbs=%s): '%s'", eff_horizon, time_window, full_query[:80])
             response = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
+            before_cnt = _run_serpapi_count
             _run_serpapi_count += 1
+            logger.debug(f'[SEARCH_BUDGET_DIAG] stage="SerpAPI fallback" before={before_cnt} increment=1 after={_run_serpapi_count} max={self.max_searches} domestic_reserved=0')
 
             if response.status_code != 200:
                 logger.warning("SerpAPI request returned HTTP %d: %s", response.status_code, response.text[:100])

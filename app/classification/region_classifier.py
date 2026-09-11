@@ -51,7 +51,7 @@ class EventRegionClassifier:
         r"\b(mahindra|mahindra & mahindra|m&m|bajaj|bajaj auto|bajaj finance|bajaj finserv)\b",
         r"\b(itc|maruti|maruti suzuki|hero motocorp|tvs motor|eicher)\b",
         r"\b(vedanta|jsw|jsw steel|hindalco|grasim|ultratech|shree cement)\b",
-        r"\b(ntpc|ongc|coal india|power grid|bharat petroleum|bpcl|ioc|iocl|hpcl|gail)\b",
+        r"\b(ntpc|ongc|coal india|power grid corp|power grid corporation|powergrid|pgcil|bharat petroleum|bpcl|ioc|iocl|hpcl|gail)\b|\bpower grid\b(?=\s+(?:corp|corporation|ltd|limited)\b)|\bpower grid\b(?=.*?\b(?:india|indian|bse|nse|shares|stocks?|transmission|substation|dividend|pat|capex|q[1-4])\b)",
         r"\b(bhel|bel|hal|hindustan aeronautics|mazagon dock)\b",
         r"\b(tube investments|tube investments of india|tii|shanthi gears)\b",
         r"\b(jbm auto|jbm|godrej|piramal|havells|voltas|polycab|kei industries)\b",
@@ -124,7 +124,7 @@ class EventRegionClassifier:
     INDIAN_BUSINESS_POLICY_AND_REGULATORS: List[str] = [
         r"\b(sebi|securities and exchange board of india)\b",
         r"\b(rbi (?:imposes|penalizes|bars|bans|penalty|curbs|orders|mandates|repo rate|monetary policy|crr|slr))\b",
-        r"\b(cci approves?|competition commission of india approves?|nclt approves?|drhp|listing|ipo|qip)\b",
+        r"\b(cci approves?|competition commission of india approves?|nclt approves?|files? drhp|sebi (?:nod|approves?|clears?)|bse|nse|mainboard listing)\b",
         r"\b(gst council|tax rate|customs duty|pli scheme|fdi policy|mining royalty|royalty taxation)\b",
         r"\b(nifty|nifty 50|sensex|bse|nse|bse sensex)\b",
     ]
@@ -158,7 +158,7 @@ class EventRegionClassifier:
     ]
 
     FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
-        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka)\b",
+        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi arabia|saudi|riyadh|jeddah|cuba|cuban|havana|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka|kuwait|qatar|bahrain|oman|venezuela|turkey|turkish|egypt|south africa|nigeria|kenya|indonesia|malaysia|thailand|vietnam|philippines)\b",
     ]
 
     def classify_with_reason(
@@ -173,12 +173,13 @@ class EventRegionClassifier:
         Deterministically classify an event or article with explicit rationale across DOMESTIC, INDIA, INTERNATIONAL.
         Precedence:
         1. Global Regulators & International Macro -> INTERNATIONAL
-        2. International Entities with Global/USD context -> INTERNATIONAL
-        3. Indian Corporate Hard Event (earnings/M&A/deals/contracts/corporate regulatory enforcement) -> INDIA BUSINESS
-        4. Indian National Public Affairs (ISRO/Supreme Court/Defence/Cabinet Policy/Disaster) -> DOMESTIC
-        5. General Indian Business / Currency Signals -> INDIA BUSINESS
-        6. Discovery Region Prior
-        7. Default Fallback
+        2. Explicit Foreign Geography without Indian entity/currency -> INTERNATIONAL
+        3. International Entities with Global/USD context -> INTERNATIONAL
+        4. Indian Corporate Hard Event (earnings/M&A/deals/contracts/corporate regulatory enforcement) -> INDIA BUSINESS
+        5. Indian National Public Affairs (ISRO/Supreme Court/Defence/Cabinet Policy/Disaster) -> DOMESTIC
+        6. General Indian Business / Currency Signals -> INDIA BUSINESS
+        7. Discovery Region Prior
+        8. Default Fallback
         """
         title_lower = (title or "").lower()
         companies_text = " ".join(companies or []).lower()
@@ -236,6 +237,28 @@ class EventRegionClassifier:
             w in title_lower for w in ["royalty", "taxation", "tax", "acquisition", "merger", "insolvency", "nclt", "penalty", "bank", "licence", "license fee", "telecom", "spectrum", "mining royalty"]
         )
 
+        # Portfolio Watchlist routing -> INDIA BUSINESS (only for genuine corporate/business events with eligible priority role)
+        from app.ranking.watchlist import get_portfolio_company_role
+        from app.verification.materiality import CONCRETE_PORTFOLIO_EVENT_PATTERNS
+        is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(title_lower, companies_text)
+        if is_pf and pf_eligible:
+            has_corporate_business_event = (
+                is_corporate_hard_event
+                or is_business_policy_or_reg
+                or is_commercial_legal_event
+                or any(re.search(pat, title_lower) for _, pat in CONCRETE_PORTFOLIO_EVENT_PATTERNS)
+                or bool(re.search(r"\b(?:commissioning|commissions?|commissioned|expansion|capex|orders?|contracts?|projects?|wins?|bags?|secures?|signs?|pact|deal|acquisition|merger|profit|revenue|shares|quarterly|earnings|dividend|buyback|qip|ipo|ncd|bonds?|issuance|plant|facility|terminal|concession|drhp|investment)\b", title_lower))
+            )
+            if has_corporate_business_event:
+                return NewsCategory.INDIA, f"Portfolio company '{pf_company}' corporate/business event ({pf_role}) routed to INDIA"
+
+        # SAFEGUARD: Explicit Foreign Geography & Non-India Subject -> INTERNATIONAL
+        # Overrides corporate keywords and discovery prior when no Indian company/currency/nexus exists
+        has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        has_india_mention = bool(re.search(r"\b(india|indian|india's)\b", title_lower))
+        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
+            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL"
+
         # RULE A: International entity with dollar or international discovery prior
         if intl_entity_matches:
             matched_intl = intl_entity_matches[0]
@@ -255,12 +278,6 @@ class EventRegionClassifier:
         # RULE C: Indian National Public Affairs (ISRO, Supreme Court constitutional, Defence, Cabinet Policy, Disasters) -> DOMESTIC
         if is_domestic_national_news and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "India national public affairs / policy / science / constitutional event"
-
-        # RULE C2: Explicit Foreign Geography & Non-India Safeguard (Must precede Domestic discovery prior)
-        has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
-        has_india_mention = bool(re.search(r"\b(india|indian|india's)\b", title_lower))
-        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
-            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject overrides discovery prior"
 
         if discovery_region == NewsCategory.DOMESTIC and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "Preserved Domestic discovery pool prior"

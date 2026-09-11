@@ -69,7 +69,21 @@ class CandidatePoolRanker:
         def _ranking_key(s: ScoredEvent):
             tier = getattr(s.event, "verification_tier", None)
             is_two_source = 1 if (tier == VerificationTier.TWO_SOURCE_VERIFIED) else 0
-            return (is_two_source, s.investment_score)
+            has_penalty = bool(getattr(s.score_breakdown, "relevance_penalties", 0.0) > 0.0)
+
+            # Conceptual ranking hierarchy:
+            # 2: High-quality corroborated event (two-source, unpenalized)
+            # 1: High-confidence single-source event (unpenalized)
+            # 0: Penalized / routine / listicle event (demoted below legitimate strategic events)
+            if has_penalty:
+                priority_tier = 0
+            elif is_two_source:
+                priority_tier = 2
+            else:
+                priority_tier = 1
+
+            conf = float(getattr(s.event, "verification_confidence", 0.0) or 0.0)
+            return (priority_tier, s.investment_score, conf)
 
         # Sort descending: two-source verified first, then by investment_score
         domestic_sorted = sorted(domestic_scored, key=_ranking_key, reverse=True)
@@ -84,10 +98,23 @@ class CandidatePoolRanker:
         for idx, scored in enumerate(intl_sorted, 1):
             scored.rank = idx
 
-        # Select top 8–10 candidates for each section (without selecting final 5 yet)
+        # Select top candidates for each section
         top_domestic = domestic_sorted[:top_n]
         top_india = india_sorted[:top_n]
         top_intl = intl_sorted[:top_n]
+
+        # For India, ensure qualified portfolio candidates outside top_n are not crowded out
+        top_india_ids = {id(s) for s in top_india}
+        for s in india_sorted[top_n:]:
+            is_port = getattr(s.event, "is_portfolio_company", False)
+            if not is_port:
+                from app.ranking.watchlist import is_watchlist_company
+                t = getattr(s.event, "canonical_title", "") or getattr(s.event, "title", "") or ""
+                comps = getattr(s.event, "companies_involved", []) or []
+                is_port = is_watchlist_company(f"{t} {' '.join(comps)}")[0]
+            if is_port:
+                top_india.append(s)
+                top_india_ids.add(id(s))
 
         logger.info(
             "Ranking complete: Kept top %d Domestic (out of %d), top %d India (out of %d), and top %d International (out of %d)",

@@ -16,7 +16,7 @@ Design principles:
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Callable
 from urllib.parse import urlparse, quote_plus
 
 from config import get_settings
@@ -31,6 +31,7 @@ logger = get_logger("verification.corroborator")
 _run_corroboration_count = 0
 MAX_CORROBORATION_SEARCHES_PER_RUN = get_settings().MAX_CORROBORATION_SEARCHES
 DOMESTIC_RESERVED_RSS_SEARCHES = 3
+PORTFOLIO_RESERVED_RSS_SEARCHES = 3
 MAX_QUERIES_PER_EVENT = 2
 MAX_ARTICLES_PER_QUERY = 5
 

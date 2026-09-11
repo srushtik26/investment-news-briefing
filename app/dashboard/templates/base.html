@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} - Plutus Wealth Management LLP</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand-group">
+        <h1 class="brand-title">PLUTUS WEALTH MANAGEMENT LLP</h1>
+        <p class="brand-subtitle">Investment Committee News Briefing</p>
+      </div>
+      <nav class="nav-links">
+        <a href="/" class="nav-link {% if is_latest %}active{% endif %}">Latest Briefing</a>
+        <a href="/archive" class="nav-link {% if not is_latest and title == 'Briefing Archive' %}active{% endif %}">Archive</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Plutus Wealth Management LLP. Strictly Confidential &bull; For Internal Investment Committee Use Only.</p>
+  </footer>
+</body>
+</html>

@@ -42,6 +42,7 @@ from app.validation.models import (
     ValidationCheckResult,
     ValidationStatus,
 )
+from app.ai.summary_grounding import is_summary_substantially_identical_to_headline
 
 logger = get_logger("validation.engine")
 
@@ -283,6 +284,9 @@ class FinalValidationEngine:
 
             # -------------------------------------------------------------
             # CHECK 8: Two-source verified or high-confidence single-source (or domestic trending)
+            # NOTE: For Domestic stories, uses the SAME canonical is_domestic_final_eligible()
+            #       helper as Stage 7 (_domestic_select). This guarantees that a story accepted
+            #       by Stage 7 can never be rejected here, and vice versa.
             # -------------------------------------------------------------
             if event:
                 from app.models.enums import VerificationTier
@@ -425,16 +429,74 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             # CHECK 19: Geopolitical story quantified impact
             # -------------------------------------------------------------
-            if story.section != "domestic" and any(geo in story.headline.lower() for geo in ("war", "sanctions", "geopolitical", "tariffs", "ceasefire")):
-                has_numbers = any(c.isdigit() for c in story.headline)
-                if not has_numbers:
+            if story.section != "domestic":
+                from app.verification.international import is_geopolitical_market_impact_eligible
+                is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(story.headline)
+                if not is_geo_elig:
                     check_results.append(ValidationCheckResult(
                         check_id=19,
                         check_name="No geopolitical story without quantified market impact",
                         passed=False,
-                        failure_reason=f"Geopolitical story '{story.headline}' lacks quantified market impact figures",
+                        failure_reason=geo_reason,
                         failed_story_id=story.event_id,
                     ))
+
+        # -------------------------------------------------------------
+        # SECTION REGIONAL CONSISTENCY & HEADLINE EVENT GROUNDING
+        # -------------------------------------------------------------
+        from app.classification.region_classifier import EventRegionClassifier
+        from app.ai.headline_synthesis import _clean_headline_text
+        region_clf = EventRegionClassifier()
+
+        for story in domestic_stories:
+            h_lower = story.headline.lower()
+            ev = events_lookup.get(story.event_id)
+            art = articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+            text_to_check = f"{h_lower} {art.title.lower() if art else ''}"
+            has_foreign_geo = any(re.search(pat, text_to_check) for pat in region_clf.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+            has_india_mention = bool(re.search(r"\b(india|indian|india's|delhi|mumbai|bengaluru|isro|centre|parliament)\b", text_to_check))
+            has_indian_entity = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_ENTITIES)
+            has_indian_currency = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_CURRENCY_AND_UNITS)
+            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention:
+                check_results.append(ValidationCheckResult(
+                    check_id=1,
+                    check_name="Domestic geographical consistency",
+                    passed=False,
+                    failure_reason=f"Domestic story '{story.headline}' has foreign country subject and lacks Indian domestic nexus",
+                    failed_story_id=story.event_id,
+                ))
+
+        for story in payload.india_stories:
+            h_lower = story.headline.lower()
+            ev = events_lookup.get(story.event_id)
+            art = articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+            text_to_check = f"{h_lower} {art.title.lower() if art else ''}"
+            has_foreign_geo = any(re.search(pat, text_to_check) for pat in region_clf.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+            has_india_mention = bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", text_to_check))
+            has_indian_entity = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_ENTITIES)
+            has_indian_currency = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_CURRENCY_AND_UNITS)
+            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention:
+                check_results.append(ValidationCheckResult(
+                    check_id=2,
+                    check_name="India section business nexus consistency",
+                    passed=False,
+                    failure_reason=f"India story '{story.headline}' has foreign subject and lacks Indian business nexus",
+                    failed_story_id=story.event_id,
+                ))
+
+        for story in all_stories:
+            ev = events_lookup.get(story.event_id)
+            art = articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+            if not art:
+                continue
+            hl_lower = story.headline.lower()
+            src_text = f"{art.title.lower()} {art.content_text[:600].lower() if art.content_text else ''}"
+
+            if ("epc" in hl_lower or "bags" in hl_lower) and any(w in src_text for w in ["exit", "exits", "stake sale", "sells stake", "sale to"]) and not any(w in src_text for w in ["bags order", "wins contract", "awarded contract"]):
+                story.headline = _clean_headline_text(art.title)
+
+            if any(w in hl_lower for w in ["commercial action", "operating realignment", "facility construction"]) and any(w in src_text for w in ["weather", "rain", "monsoon", "imd", "cyclone", "heatwave", "flood"]):
+                story.headline = _clean_headline_text(art.title)
 
         # -------------------------------------------------------------
         # CHECK 10: No India company appears twice
@@ -534,12 +596,12 @@ class FinalValidationEngine:
                         failure_reason=f"Story summary contains leading markdown bullet: '{sum_text}'",
                         failed_story_id=story.event_id,
                     ))
-                elif sum_text.lower() == story.headline.strip().lower():
+                elif is_summary_substantially_identical_to_headline(sum_text, story.headline):
                     check_results.append(ValidationCheckResult(
                         check_id=20,
                         check_name="Final format is exactly correct",
                         passed=False,
-                        failure_reason=f"Story summary is identical to headline: '{sum_text}'",
+                        failure_reason=f"Story summary is substantially identical to headline: '{sum_text}'",
                         failed_story_id=story.event_id,
                     ))
                 elif any(tok in sum_text for tok in mojibake_tokens):
@@ -550,12 +612,12 @@ class FinalValidationEngine:
                         failure_reason=f"Story summary contains unresolved mojibake tokens: '{sum_text}'",
                         failed_story_id=story.event_id,
                     ))
-                elif len(sum_text.split()) > 30:
+                elif len(sum_text.split()) > 65:
                     check_results.append(ValidationCheckResult(
                         check_id=20,
                         check_name="Final format is exactly correct",
                         passed=False,
-                        failure_reason=f"Story summary exceeds maximum 30 words ({len(sum_text.split())} words): '{sum_text}'",
+                        failure_reason=f"Story summary exceeds maximum 65 words ({len(sum_text.split())} words): '{sum_text}'",
                         failed_story_id=story.event_id,
                     ))
                 elif not sum_text.endswith((".", "!", "?", '"', "'")):

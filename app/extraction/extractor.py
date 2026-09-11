@@ -423,7 +423,9 @@ class ArticleExtractor:
         category_enum = NewsCategory.UNKNOWN
         if candidate_category:
             norm_cat = candidate_category.lower()
-            if "india" in norm_cat:
+            if "domestic" in norm_cat:
+                category_enum = NewsCategory.DOMESTIC
+            elif "india" in norm_cat:
                 category_enum = NewsCategory.INDIA
             elif "international" in norm_cat or "global" in norm_cat or "us" in norm_cat:
                 category_enum = NewsCategory.INTERNATIONAL

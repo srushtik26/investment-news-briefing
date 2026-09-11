@@ -263,8 +263,8 @@ def test_deterministic_summary_generation():
     summary = generate_deterministic_summary(art, ev)
     assert summary.endswith(".")
     assert "₹19,878 crore" in summary or "Reliance" in summary
-    assert len(summary.split()) >= 10
-    assert len(summary.split()) <= 30
+    assert len(summary.split()) >= 35
+    assert len(summary.split()) <= 65
     assert "Γ" not in summary
 
 
@@ -524,13 +524,23 @@ def test_summary_word_count_validation_limits():
     now_utc = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
     target_d = now_utc.date()
 
-    # 12-word summary: must pass (non-empty, <= 30 words)
-    twelve_word_sum = "The Supreme Court on Thursday directed all states to submit comprehensive data."
-    assert len(twelve_word_sum.split()) == 12
+    # 40-word descriptive summary: must pass (non-empty, <= 65 words)
+    forty_word_sum = (
+        "The Supreme Court on Thursday directed all states to submit comprehensive data regarding captive wildlife welfare "
+        "while ordering immediate administrative compliance across regional authorities. The judicial ruling mandates updated operational "
+        "frameworks to enforce animal protection protocols and safeguard conservation interests nationwide."
+    )
+    assert 35 <= len(forty_word_sum.split()) <= 55
 
-    # 31-word summary: must fail (exceeds max 30 words)
-    thirty_one_word_sum = "The Supreme Court on Thursday directed all states to submit comprehensive data regarding captive elephant welfare while ordering immediate compliance across regional authorities within a two-week period following extensive judicial hearings."
-    assert len(thirty_one_word_sum.split()) == 31
+    # 67-word summary: must fail (exceeds max 65 words)
+    sixty_seven_word_sum = (
+        "The Supreme Court on Thursday directed all state governments and union territory administrations to submit comprehensive "
+        "documentation regarding captive wildlife welfare while simultaneously ordering strict immediate regulatory compliance across "
+        "all regional administrative authorities. The historic judicial ruling establishes expansive new governance standards for institutional "
+        "oversight, penalizing departmental non-compliance, accelerating ecological protection mandates, and demanding rigorous supervisory "
+        "audits across every single operational jurisdiction nationwide and across every local municipal department."
+    )
+    assert len(sixty_seven_word_sum.split()) > 65
 
     def make_payload(summary_val):
         def make_story(sec, i):
@@ -578,7 +588,7 @@ def test_summary_word_count_validation_limits():
             candidate_urls.add(u2)
 
     pass_report = validator.validate_briefing(
-        payload=make_payload(twelve_word_sum),
+        payload=make_payload(forty_word_sum),
         events_lookup=events_map,
         articles_lookup=articles_map,
         candidate_urls=candidate_urls,
@@ -586,10 +596,10 @@ def test_summary_word_count_validation_limits():
         quality_ladder_mode=True,
         run_reference_time=now_utc,
     )
-    assert pass_report.is_valid, f"12-word summary failed check #{pass_report.failed_check_id}: {pass_report.failure_reason}"
+    assert pass_report.is_valid, f"40-word summary failed check #{pass_report.failed_check_id}: {pass_report.failure_reason}"
 
     fail_report = validator.validate_briefing(
-        payload=make_payload(thirty_one_word_sum),
+        payload=make_payload(sixty_seven_word_sum),
         events_lookup=events_map,
         articles_lookup=articles_map,
         candidate_urls=candidate_urls,
@@ -599,7 +609,7 @@ def test_summary_word_count_validation_limits():
     )
     assert not fail_report.is_valid
     assert fail_report.failed_check_id == 20
-    assert "exceeds maximum 30 words" in fail_report.failure_reason
+    assert "exceeds maximum 65 words" in fail_report.failure_reason
 
 
 # =========================================================================
@@ -618,7 +628,7 @@ def test_summary_does_not_end_with_incomplete_tokens():
     ather_summary = generate_deterministic_summary(ather_art, headline=ather_art.title)
     assert not ather_summary.endswith("electric.")
     assert ather_summary.endswith(".")
-    assert len(ather_summary.split()) <= 30
+    assert len(ather_summary.split()) <= 65
 
     # 2. Orissa HC: must not end with 'and.'
     orissa_art = Article(
@@ -630,7 +640,7 @@ def test_summary_does_not_end_with_incomplete_tokens():
     orissa_summary = generate_deterministic_summary(orissa_art, headline=orissa_art.title)
     assert not orissa_summary.endswith("and.")
     assert orissa_summary.endswith(".")
-    assert len(orissa_summary.split()) <= 30
+    assert len(orissa_summary.split()) <= 65
 
     # 3. Rahul Gandhi: must not end with 'a.'
     rahul_art = Article(
@@ -642,7 +652,7 @@ def test_summary_does_not_end_with_incomplete_tokens():
     rahul_summary = generate_deterministic_summary(rahul_art, headline=rahul_art.title)
     assert not rahul_summary.endswith("a.")
     assert rahul_summary.endswith(".")
-    assert len(rahul_summary.split()) <= 30
+    assert len(rahul_summary.split()) <= 65
 
     # 4. Ludhiana: must not end with 'major.'
     ludhiana_art = Article(
@@ -654,7 +664,7 @@ def test_summary_does_not_end_with_incomplete_tokens():
     ludhiana_summary = generate_deterministic_summary(ludhiana_art, headline=ludhiana_art.title)
     assert not ludhiana_summary.endswith("major.")
     assert ludhiana_summary.endswith(".")
-    assert len(ludhiana_summary.split()) <= 30
+    assert len(ludhiana_summary.split()) <= 65
 
     # 5. SoftBank: no 'dollars.SoftBank'
     softbank_art = Article(
@@ -666,7 +676,7 @@ def test_summary_does_not_end_with_incomplete_tokens():
     softbank_summary = generate_deterministic_summary(softbank_art, headline=softbank_art.title)
     assert "dollars.SoftBank" not in softbank_summary
     assert softbank_summary.endswith(".")
-    assert len(softbank_summary.split()) <= 30
+    assert len(softbank_summary.split()) <= 65
 
 
 def test_utf8_mojibake_analysis_and_formatter_cleanliness():

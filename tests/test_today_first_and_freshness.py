@@ -332,15 +332,16 @@ def test_7_domestic_final_mile_discovery_runs_when_deficit():
 # 8. Domestic final-mile candidates still pass evaluator >= 60
 def test_8_domestic_candidate_requires_score_ge_60():
     evaluator = DomesticTrendingEvaluator()
+    art_date = datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc)
     art = _make_article(
         "ad_pass",
         "Union Cabinet clears ₹75,000 crore national semiconductor package",
-        datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc),
+        art_date,
         category=NewsCategory.DOMESTIC,
         content="The Union Cabinet chaired by the Prime Minister approved a major national semiconductor framework.",
     )
     ev = _make_event("ed_pass", art)
-    is_elig, score, rsn = evaluator.evaluate(ev, art)
+    is_elig, score, rsn = evaluator.evaluate(ev, art, now_utc=art_date + timedelta(hours=1))
     assert is_elig
     assert score >= 60.0
 
@@ -362,15 +363,16 @@ def test_9_uk_only_political_story_routes_international_despite_domestic_prior()
 # 10. Major India politics qualifies
 def test_10_major_india_politics_qualifies():
     evaluator = DomesticTrendingEvaluator()
+    art_date = datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc)
     art = _make_article(
         "ad_pol",
         "Election Commission finalizes schedule for upcoming five state assembly elections",
-        datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc),
+        art_date,
         category=NewsCategory.DOMESTIC,
         content="Chief Election Commissioner announced the polling phases across states with model code of conduct active.",
     )
     ev = _make_event("ed_pol", art)
-    is_elig, score, rsn = evaluator.evaluate(ev, art)
+    is_elig, score, rsn = evaluator.evaluate(ev, art, now_utc=art_date + timedelta(hours=1))
     assert is_elig
     assert score >= 60.0
     assert classify_domestic_topic(art.title, art.content_text) == DomesticTopic.POLITICS_ELECTIONS
@@ -379,15 +381,16 @@ def test_10_major_india_politics_qualifies():
 # 11. Major India economy/GDP story qualifies
 def test_11_major_india_economy_gdp_qualifies():
     evaluator = DomesticTrendingEvaluator()
+    art_date = datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc)
     art = _make_article(
         "ad_econ",
         "India GDP growth accelerates to 7.8% in Q1 driven by manufacturing and services expansion",
-        datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc),
+        art_date,
         category=NewsCategory.DOMESTIC,
         content="Official data showed strong macroeconomic resilience as gross domestic product exceeded forecasts.",
     )
     ev = _make_event("ed_econ", art)
-    is_elig, score, rsn = evaluator.evaluate(ev, art)
+    is_elig, score, rsn = evaluator.evaluate(ev, art, now_utc=art_date + timedelta(hours=1))
     assert is_elig
     assert score >= 60.0
     assert classify_domestic_topic(art.title, art.content_text) == DomesticTopic.ECONOMY_NATIONAL

@@ -129,7 +129,7 @@ class TwoSourceVerifier:
             r"\b(appoints? ceo|new ceo|steps down|resigns?|managing director|chief executive|cfo|appoints? md|executive chairman|leadership change)\b",
         ],
         "CONTRACT_ORDER": [
-            r"\b(bags order|wins contract|secures contract|order worth|epc contract|epc order|contract win)\b",
+            r"\b(bags order|wins contract|secures contract|secures order|wins order|order worth|epc contract|epc order|contract win)\b",
         ],
         "POLICY_MACRO": [
             r"\b(gdp growth|inflation|cpi|interest rate|repo rate|tariff|customs duty|fed rate)\b",

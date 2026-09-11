@@ -58,6 +58,20 @@ class ScoreBreakdown(BaseModel):
         le=100.0,
         description="Corroboration strength and publisher tier quality (weight: 10%)",
     )
+    strategic_bonuses: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Deterministic bonuses from strategic M&A, capex, policy, regulatory, and capital flows",
+    )
+    editorial_signals: float = Field(
+        default=0.0,
+        description="Net score adjustment from approved investment committee editorial guidance patterns",
+    )
+    relevance_penalties: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Deterministic penalties from routine quarterly results, listicles, or market noise",
+    )
     total_score: float = Field(
         ...,
         ge=0.0,

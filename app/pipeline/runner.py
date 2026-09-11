@@ -29,6 +29,7 @@ from app.verification import (
     increment_corroboration_count,
     MAX_CORROBORATION_SEARCHES_PER_RUN,
     DOMESTIC_RESERVED_RSS_SEARCHES,
+    PORTFOLIO_RESERVED_RSS_SEARCHES,
 )
 from app.deduplication import DeduplicationEngine, HistoryStore
 from app.deduplication.clusterer import EventClusterer
@@ -43,7 +44,8 @@ from app.ai import (
     EditorialStorySelection,
 )
 from app.ai.editor import generate_deterministic_summary
-from app.ai.summary_grounding import validate_summary_grounding
+from app.ai.headline_synthesis import synthesize_investment_headline, is_approved_institutional_headline
+from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
 from app.validation import FinalValidationEngine
 from app.formatting.formatter import BriefingFormatter
 from app.verification.domestic_trending import DomesticTrendingEvaluator
@@ -81,6 +83,7 @@ def run_pipeline(
     max_india: Optional[int] = None,
     max_international: Optional[int] = None,
     run_reference_time: Optional[datetime] = None,
+    validation_run: bool = False,
 ) -> int:
     """Run the automated investment news briefing pipeline end-to-end."""
     settings = get_settings()
@@ -100,7 +103,8 @@ def run_pipeline(
         execution_log_lines.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
     log_exec("=" * 60)
-    log_exec(f"PIPELINE RUN: {date_str} (Reference Time: {run_reference_time.isoformat()})")
+    mode_str = " [VALIDATION MODE]" if validation_run else ""
+    log_exec(f"PIPELINE RUN: {date_str} (Reference Time: {run_reference_time.isoformat()}){mode_str}")
     log_exec("=" * 60)
 
     max_india = max_india or settings.MAX_DISCOVERY_INDIA
@@ -116,7 +120,21 @@ def run_pipeline(
     GeminiUsageLogger.reset()
 
     # Instantiate services
-    history_store = HistoryStore()
+    if validation_run:
+        validation_db_file = data_dir / "validation_briefings.db"
+        for ext in ("", "-wal", "-shm"):
+            p = Path(f"{validation_db_file}{ext}")
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception as e:
+                    logger.warning("Could not remove old validation DB %s: %s", p, e)
+        validation_db_url = f"sqlite:///{validation_db_file.as_posix()}"
+        history_store = HistoryStore(db_path=validation_db_url)
+        log_exec(f"[VALIDATION MODE] Using isolated history database: {validation_db_url} (production history untouched)")
+    else:
+        history_store = HistoryStore()
+
     discovery_service = NewsDiscoveryService(
         provider=GoogleNewsRSSDiscoveryProvider()
     )
@@ -145,6 +163,7 @@ def run_pipeline(
         settings=settings,
         max_india=max_india,
         max_international=max_international,
+        validation_run=validation_run,
         log_exec=log_exec,
         discovery_service=discovery_service,
         extractor=extractor,
@@ -370,9 +389,11 @@ def run_pipeline(
         run_reference_time=run_reference_time,
     )
     for event in single_source_events:
-        reserve = DOMESTIC_RESERVED_RSS_SEARCHES if dom_count < 5 else 0
+        dom_reserve = DOMESTIC_RESERVED_RSS_SEARCHES if dom_count < 5 else 0
+        pf_reserve = PORTFOLIO_RESERVED_RSS_SEARCHES if not getattr(ctx, "portfolio_discovery_executed", False) else 0
+        reserve = dom_reserve + pf_reserve
         if get_corroboration_count() >= (MAX_CORROBORATION_SEARCHES_PER_RUN - reserve):
-            log_exec(f"  -> [CORROBORATION_BUDGET] Reserving {reserve} free RSS searches for Domestic (current dom={dom_count}/5). Stopping Stage 3 corroboration.")
+            log_exec(f"  -> [CORROBORATION_BUDGET] Reserving {dom_reserve} for Domestic and {pf_reserve} for Portfolio. Stopping Stage 5 corroboration.")
             break
         primary_art = articles_lookup.get(event.article_ids[0])
         if not primary_art:
@@ -508,10 +529,11 @@ def run_pipeline(
             sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
             sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
             sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+            inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
             dom_stories_selected.append(EditorialStorySelection(
                 section="domestic",
                 event_id=ev.id,
-                headline=ev.canonical_title,
+                headline=inst_hl,
                 summary=sum_text,
                 source=src,
                 url=u,
@@ -536,12 +558,13 @@ def run_pipeline(
                 src = ev.primary_publisher or (art.source_name if art else "Business Standard")
                 u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
                 sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
+                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
                 sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 india_stories_selected.append(EditorialStorySelection(
                     section="india",
                     event_id=ev.id,
-                    headline=ev.canonical_title,
+                    headline=inst_hl,
                     summary=sum_text,
                     source=src,
                     url=u,
@@ -555,12 +578,13 @@ def run_pipeline(
                 src = ev.primary_publisher or (art.source_name if art else "Reuters")
                 u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
                 sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
+                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
                 sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 intl_stories_selected.append(EditorialStorySelection(
                     section="international",
                     event_id=ev.id,
-                    headline=ev.canonical_title,
+                    headline=inst_hl,
                     summary=sum_text,
                     source=src,
                     url=u,
@@ -573,16 +597,30 @@ def run_pipeline(
                 international_stories=intl_stories_selected,
             )
 
-        # Summary grounding validation
+        # Headline institutional style verification and Summary grounding validation
         for story in (selection_payload.domestic_stories + selection_payload.india_stories + selection_payload.international_stories):
             ev = event_by_id.get(story.event_id)
             art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+
+            # Verify and upgrade headline style if routine or unapproved
+            if not is_approved_institutional_headline(story.headline):
+                raw_t = ev.canonical_title if ev else story.headline
+                story.headline = synthesize_investment_headline(raw_t, event=ev, article=art)
+
             if not getattr(story, "summary", None):
                 story.summary = generate_deterministic_summary(art, ev, story.headline)
             else:
                 is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
-                if not is_grounded:
-                    logger.warning("Summary grounding failed for '%s' (%s) — using deterministic fallback", story.headline, g_reason)
+                is_duplicate = is_summary_substantially_identical_to_headline(story.summary, story.headline)
+                sum_len = len(story.summary.split())
+                if not is_grounded or is_duplicate or sum_len > 65:
+                    logger.warning(
+                        "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — using deterministic fallback",
+                        story.headline,
+                        is_grounded,
+                        is_duplicate,
+                        sum_len,
+                    )
                     story.summary = generate_deterministic_summary(art, ev, story.headline)
             if ev and ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED and ev.secondary_publisher and ev.secondary_url:
                 story.secondary_source = ev.secondary_publisher

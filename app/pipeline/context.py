@@ -43,6 +43,7 @@ class PipelineContext:
     editorial_engine: Any = None
     validator: Any = None
     formatter: Any = None
+    validation_run: bool = False
     metrics: PipelineMetrics = field(default_factory=PipelineMetrics.get_instance)
 
     # In-memory working collections
@@ -57,6 +58,7 @@ class PipelineContext:
     rejections: List[Any] = field(default_factory=list)
     date_deferred_articles: List[Article] = field(default_factory=list)
     rejected_events_list: List[Dict[str, Any]] = field(default_factory=list)
+    stage6_rejected_stories: List[Dict[str, Any]] = field(default_factory=list)
     class_map: Dict[str, Any] = field(default_factory=dict)
 
     # Reserve pools
@@ -72,3 +74,4 @@ class PipelineContext:
     rss_india_used: int = 0
     rss_international_used: int = 0
     internal_pipeline_errors: int = 0
+    portfolio_discovery_executed: bool = False

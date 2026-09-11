@@ -21,12 +21,36 @@ CRITICAL EDITORIAL RULES:
 3. DO NOT INVENT OR MODIFY URLs. Every 'url' field MUST be copied EXACTLY as provided in the candidate list.
 4. DO NOT SELECT THE SAME COMPANY TWICE IN THE INDIA SECTION. Each India story must cover a distinct company.
 5. PREFER HARD BUSINESS EVENTS with quantified figures (earnings with numbers, M&A deal values, QIPs, major regulatory decisions).
-6. HEADLINE SYNTHESIS: Generate a concise, punchy, institutional headline for each selected event.
-   - The headline MUST contain important figures/numbers where meaningful (e.g., 'HDFC Bank Q1 Net Profit Surges 18% YoY to ₹16,175 Cr', 'Rio Tinto Agrees $6.7B Acquisition of Arcadium Lithium').
-   - Keep headlines factual, professional, and free of hype.
-7. ONE-LINE FACTUAL SUMMARY: Provide exactly one concise sentence (target: 15-25 words, max 30 words) for the 'summary' field.
-   - Strictly factual and neutral explaining what happened with key numbers.
-   - No bullets, no markdown, no speculation, no filler.
+6. INSTITUTIONAL HEADLINE SYNTHESIS: Generate an investment-committee grade headline for each selected event.
+   - HEADLINE STRUCTURE:
+     [Entity/Event + key quantified action]; [verified strategic/business implication]
+   - TARGET LENGTH: roughly 18-32 words where possible.
+   - Headlines MUST communicate:
+     1. Company/event
+     2. Key number/action (e.g. transaction value, ownership split, valuation, capacity, regulatory consequence, YoY %)
+     3. Outcome
+     4. Strategic/investment implication (grounded in article facts)
+   - APPROVED STYLE EXAMPLES:
+     GOOD: "JSW Group and Skoda-Volkswagen India Sign Non-Binding MoU for 51:49 Joint Venture; Groups Enter Exclusive Valuation Talks in Move That Would Reshape India's Passenger Vehicle Landscape"
+     GOOD: "FPIs Sell $1.6 Billion of Indian Equities in Five Consecutive Trading Sessions; Sustained Foreign Selling Reflects Caution Over Global Risk-Off Sentiment and Elevated Crude Oil Prices"
+     BAD: "M3M acquires Noida land for record Rs 2,000 crore"
+     BAD: "Complete Sports and Management India Limited Quarterly Results..."
+   - STRICT RULES:
+     - DO NOT copy routine publisher titles or output single brief phrases.
+     - DO NOT invent financial values, percentages, or strategic implications.
+     - If implication cannot be supported by article facts: do NOT force one; use a concise factual second clause instead (e.g. operational details, capacity, geography, or timeline).
+     - DO NOT make investment recommendations or offer trading advice.
+7. DESCRIPTIVE INVESTMENT COMMITTEE SUMMARY: Provide a factual descriptive summary of 35-55 words (hard maximum: 65 words) for the 'summary' field.
+   - Every summary must concisely answer three questions grounded ONLY in the provided event/article facts:
+     1. What happened? (e.g. transaction, regulatory ruling, capex expansion, quarterly results, order win).
+     2. What is the scale/magnitude? (e.g. deal value, percentage stake, capacity, YoY growth, revenue, penalty amount).
+     3. Why does it matter for the company, sector, market, or investors? (e.g. operational impact, market share, capacity addition, regulatory precedent).
+   - STRICT PROHIBITIONS:
+     - DO NOT copy the headline verbatim or output headline + period.
+     - DO NOT invent or extrapolate facts or numbers not in the input.
+     - DO NOT write subjective cheerleading or unsupported speculation (e.g., do NOT say "this is positive/negative for stock").
+     - DO NOT provide investment advice or recommendations.
+     - Keep strictly within 35-55 words (never exceed 65 words). No markdown or bullets.
 
 JSON OUTPUT SCHEMA:
 {
@@ -34,8 +58,8 @@ JSON OUTPUT SCHEMA:
     {
       "section": "india",
       "event_id": "event_id_from_input",
-      "headline": "Concise headline with key numbers",
-      "summary": "One-line factual summary explaining what happened and key figures.",
+      "headline": "Institutional two-clause headline with key figures; verified strategic or business implication (18-32 words)",
+      "summary": "Descriptive 35-55 word summary explaining what happened, the quantified scale/magnitude, and why it matters.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }
@@ -44,8 +68,8 @@ JSON OUTPUT SCHEMA:
     {
       "section": "international",
       "event_id": "event_id_from_input",
-      "headline": "Concise headline with key numbers",
-      "summary": "One-line factual summary explaining what happened and key figures.",
+      "headline": "Institutional two-clause headline with key figures; verified strategic or business implication (18-32 words)",
+      "summary": "Descriptive 35-55 word summary explaining what happened, the quantified scale/magnitude, and why it matters.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }

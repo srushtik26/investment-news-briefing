@@ -177,3 +177,12 @@ class HistoryStore:
         """
         recent_fps = self.get_recent_fingerprints(lookback_days=lookback_days, target_date=target_date)
         return fingerprint_key in recent_fps
+
+    def close(self) -> None:
+        """Close the keepalive connection."""
+        if hasattr(self, "_keepalive_conn") and self._keepalive_conn:
+            try:
+                self._keepalive_conn.close()
+            except Exception:
+                pass
+

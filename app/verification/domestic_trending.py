@@ -8,7 +8,7 @@ disasters, education, health, and national public interest).
 
 from datetime import datetime, timezone
 import re
-from typing import List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from app.logging_config import get_logger
 from app.models.article import Article
@@ -503,3 +503,61 @@ class DomesticTrendingEvaluator:
         qualifies = (score >= 60.0)
         summary_reason = f"{'QUALIFIED' if qualifies else 'REJECT_LOW_SCORE'}: score={score:.1f}/100 [{', '.join(reasons)}]"
         return qualifies, score, summary_reason
+
+
+DOMESTIC_FINAL_QUALITY_THRESHOLD: float = 60.0
+
+
+def get_effective_domestic_max_age_hours(ctx: Any = None) -> float:
+    """
+    Returns the effective maximum age horizon (hours) for Domestic story evaluation.
+    Derived from pipeline context settings/fallback level if present, defaulting to 72.0h
+    (or 36.0h / 24.0h according to fallback state).
+    """
+    if ctx is None:
+        return 72.0
+    if hasattr(ctx, "effective_domestic_horizon") and ctx.effective_domestic_horizon is not None:
+        return float(ctx.effective_domestic_horizon)
+    if hasattr(ctx, "domestic_max_age_hours") and ctx.domestic_max_age_hours is not None:
+        return float(ctx.domestic_max_age_hours)
+    fallback_level = getattr(ctx, "domestic_fallback_level", None) or getattr(ctx, "pipeline_status", None)
+    if fallback_level:
+        level_str = str(fallback_level).upper()
+        if "STRICT" in level_str or "24H" in level_str:
+            return 24.0
+        if "36H" in level_str:
+            return 36.0
+        if "48H" in level_str:
+            return 48.0
+        if "72H" in level_str or "EMERGENCY" in level_str:
+            return 72.0
+    return 72.0
+
+
+def is_domestic_final_eligible(
+    event: Event,
+    article: Optional[Article],
+    now_utc: Optional[datetime] = None,
+    max_age_hours: Optional[float] = None,
+    evaluator: Optional[DomesticTrendingEvaluator] = None,
+    ctx: Any = None,
+    **kwargs,
+) -> Tuple[bool, float, str]:
+    """
+    Canonical Domestic final eligibility gate used by BOTH Stage 7 and Stage 9.
+    Returns (is_eligible, score, reason).
+    Enforces that ANY Domestic story (regardless of verification tier) must score
+    >= DOMESTIC_FINAL_QUALITY_THRESHOLD (60.0) on DomesticTrendingEvaluator.
+    """
+    if max_age_hours is None:
+        max_age_hours = get_effective_domestic_max_age_hours(ctx)
+    if evaluator is None:
+        if ctx is not None and getattr(ctx, "domestic_evaluator", None) is not None:
+            evaluator = ctx.domestic_evaluator
+        else:
+            evaluator = DomesticTrendingEvaluator()
+    if article is None:
+        return False, 0.0, "REJECT_NO_PRIMARY_ARTICLE"
+    return evaluator.evaluate(event, article, now_utc=now_utc, max_age_hours=max_age_hours)
+
+

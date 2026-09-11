@@ -1,3 +1,4 @@
+
 """
 Tests for Free RSS Budget Reservation for Domestic and Post-Dedup Refill.
 
@@ -171,7 +172,8 @@ def test_5_domestic_final_mile_candidate_must_score_ge_60():
         NewsCategory.DOMESTIC,
     )
     ev_pass = _make_evt("e_pass", art_pass, "Union Cabinet")
-    is_qual_pass, score_pass, _ = evaluator.evaluate(ev_pass, art_pass)
+    ref_t = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
+    is_qual_pass, score_pass, _ = evaluator.evaluate(ev_pass, art_pass, now_utc=ref_t)
     assert score_pass >= 60.0
     assert is_qual_pass is True
 
@@ -182,7 +184,7 @@ def test_5_domestic_final_mile_candidate_must_score_ge_60():
         NewsCategory.DOMESTIC,
     )
     ev_fail = _make_evt("e_fail", art_fail, "Council")
-    is_qual_fail, score_fail, _ = evaluator.evaluate(ev_fail, art_fail)
+    is_qual_fail, score_fail, _ = evaluator.evaluate(ev_fail, art_fail, now_utc=ref_t)
     assert score_fail < 60.0
     assert is_qual_fail is False
 
@@ -223,7 +225,7 @@ def test_6_india_5_reduced_to_4_by_history_refills_to_5():
     ]
     # And 1 extra valid backup candidate in memory
     india_heads.append(
-        ("e_in_6", "Wipro partners with Google Cloud for generative enterprise AI solutions", "Wipro")
+        ("e_in_6", "Wipro signs Rs 1,500 crore contract with Google Cloud for generative enterprise AI solutions", "Wipro")
     )
 
     for eid, title, comp in india_heads:
@@ -358,7 +360,8 @@ def test_14_two_source_verification_unchanged():
     v = TwoSourceVerifier()
     a1 = _make_art("a1", "Company A acquires Company B for Rs 500 crore", datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc), NewsCategory.INDIA)
     a2 = _make_art("a2", "Company A completes buyout of Company B for Rs 500 cr", datetime(2026, 9, 2, 1, 30, tzinfo=timezone.utc), NewsCategory.INDIA)
-    is_same, conf, _ = v.is_same_underlying_event(a1, a2)
+    ref_t = datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)
+    is_same, conf, _ = v.is_same_underlying_event(a1, a2, now_utc=ref_t)
     assert is_same is True
     assert conf >= 0.8
 

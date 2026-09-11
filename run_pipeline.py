@@ -80,6 +80,20 @@ __all__ = [
 
 if __name__ == "__main__":
     st = get_settings()
-    max_in  = int(sys.argv[1]) if len(sys.argv) > 1 else st.MAX_DISCOVERY_INDIA
-    max_int = int(sys.argv[2]) if len(sys.argv) > 2 else st.MAX_DISCOVERY_INTL
-    sys.exit(run_pipeline(max_india=max_in, max_international=max_int))
+    validation_mode = False
+    positional_args = []
+    for arg in sys.argv[1:]:
+        if arg in ("--validation-run", "--validation", "-v"):
+            validation_mode = True
+        else:
+            positional_args.append(arg)
+
+    max_in  = int(positional_args[0]) if len(positional_args) > 0 else st.MAX_DISCOVERY_INDIA
+    max_int = int(positional_args[1]) if len(positional_args) > 1 else st.MAX_DISCOVERY_INTL
+    sys.exit(
+        run_pipeline(
+            max_india=max_in,
+            max_international=max_int,
+            validation_run=validation_mode,
+        )
+    )

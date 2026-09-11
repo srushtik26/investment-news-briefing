@@ -35,11 +35,12 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 
-# Log files
-logs/*.log
+# Runtime logs
+logs/*.log*
 *.log
 pipeline_*_live.txt
 pipeline_*_test.txt
+validation_run_log.txt
 
 # Unit test / coverage reports
 .pytest_cache/

@@ -8,6 +8,7 @@ from app.ranking.models import RankedCandidatePool, ScoreBreakdown, ScoredEvent
 from app.ranking.scorer import InvestmentRelevanceScorer, calculate_corroboration_priority
 from app.ranking.sorter import CandidatePoolRanker
 from app.ranking.pre_ranker import ArticlePreRanker
+from app.ranking.signals import evaluate_editorial_signals, EditorialEvaluationResult
 
 __all__ = [
     "ArticlePreRanker",
@@ -17,4 +18,6 @@ __all__ = [
     "RankedCandidatePool",
     "ScoreBreakdown",
     "ScoredEvent",
+    "evaluate_editorial_signals",
+    "EditorialEvaluationResult",
 ]

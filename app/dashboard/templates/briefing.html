@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% if briefing %}
+  <div class="briefing-banner">
+    <div>
+      <h2 class="briefing-date-title">{{ briefing.briefing_date.strftime('%A, %d %B %Y') }}</h2>
+      <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem;">
+        Compiled for Investment Committee &bull; {{ briefing.story_count }} Verified Hard Business & National Events
+      </p>
+    </div>
+    <div>
+      {% if is_latest %}
+        <span class="briefing-badge badge-live">Latest Briefing</span>
+      {% else %}
+        <span class="briefing-badge">Archived Edition</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="briefing-sections">
+    <!-- 1. INDIA BUSINESS SECTION -->
+    <section class="section-card">
+      <div class="section-header header-india">
+        <span>Top 5 India Business Headlines</span>
+        <span style="font-size: 0.85rem; font-weight: 500;">5 Stories</span>
+      </div>
+      <ol class="stories-list">
+        {% for story in briefing.india_stories %}
+          <li class="story-item">
+            <div class="story-number">{{ story.position }}</div>
+            <div class="story-body">
+              <h3 class="story-headline">{{ story.headline }}</h3>
+              {% if story.summary %}
+                <p class="story-summary">{{ story.summary }}</p>
+              {% endif %}
+              <div class="story-meta">
+                <span class="source-tag">Source: {{ story.source }}</span>
+                <a href="{{ story.url }}" target="_blank" rel="noopener noreferrer" class="story-link">
+                  Read Original Article &rarr;
+                </a>
+              </div>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+
+    <!-- 2. DOMESTIC SECTION -->
+    <section class="section-card">
+      <div class="section-header header-domestic">
+        <span>Top 5 Domestic Headlines</span>
+        <span style="font-size: 0.85rem; font-weight: 500;">5 Stories</span>
+      </div>
+      <ol class="stories-list">
+        {% for story in briefing.domestic_stories %}
+          <li class="story-item">
+            <div class="story-number">{{ story.position }}</div>
+            <div class="story-body">
+              <h3 class="story-headline">{{ story.headline }}</h3>
+              {% if story.summary %}
+                <p class="story-summary">{{ story.summary }}</p>
+              {% endif %}
+              <div class="story-meta">
+                <span class="source-tag">Source: {{ story.source }}</span>
+                <a href="{{ story.url }}" target="_blank" rel="noopener noreferrer" class="story-link">
+                  Read Original Article &rarr;
+                </a>
+              </div>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+
+    <!-- 3. INTERNATIONAL SECTION -->
+    <section class="section-card">
+      <div class="section-header header-international">
+        <span>Top 5 International Business Headlines</span>
+        <span style="font-size: 0.85rem; font-weight: 500;">5 Stories</span>
+      </div>
+      <ol class="stories-list">
+        {% for story in briefing.international_stories %}
+          <li class="story-item">
+            <div class="story-number">{{ story.position }}</div>
+            <div class="story-body">
+              <h3 class="story-headline">{{ story.headline }}</h3>
+              {% if story.summary %}
+                <p class="story-summary">{{ story.summary }}</p>
+              {% endif %}
+              <div class="story-meta">
+                <span class="source-tag">Source: {{ story.source }}</span>
+                <a href="{{ story.url }}" target="_blank" rel="noopener noreferrer" class="story-link">
+                  Read Original Article &rarr;
+                </a>
+              </div>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+  </div>
+
+{% else %}
+  <div class="empty-state">
+    <h3>No Briefing Stored Yet</h3>
+    <p>Run <code>python run_dashboard_sync.py</code> to sync the latest pipeline output into the dashboard database.</p>
+  </div>
+{% endif %}
+{% endblock %}

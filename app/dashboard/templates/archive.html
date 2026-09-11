@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="briefing-banner">
+  <div>
+    <h2 class="briefing-date-title">Briefing Archive</h2>
+    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem;">
+      Historical Investment Committee Daily Intelligence Briefings
+    </p>
+  </div>
+</div>
+
+{% if archives %}
+  <div class="archive-table-container">
+    <table class="archive-table">
+      <thead>
+        <tr>
+          <th>Briefing Date</th>
+          <th>Stories</th>
+          <th>Generated At</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in archives %}
+          <tr>
+            <td>
+              <strong>{{ item.date_formatted }}</strong>
+            </td>
+            <td>
+              <span class="source-tag">{{ item.story_count }} Stories (5/5/5)</span>
+            </td>
+            <td style="color: var(--text-secondary); font-size: 0.85rem;">
+              {{ item.generated_at }}
+            </td>
+            <td>
+              <a href="/briefing/{{ item.briefing_date.isoformat() }}" class="archive-link">
+                View Briefing &rarr;
+              </a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="empty-state">
+    <h3>No Historical Briefings in Archive</h3>
+    <p>When briefings are synchronized via <code>run_dashboard_sync.py</code>, they will appear here automatically.</p>
+  </div>
+{% endif %}
+{% endblock %}
