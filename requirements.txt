@@ -13,3 +13,4 @@ fastapi
 uvicorn
 sqlalchemy
 psycopg[binary]
+jinja2
