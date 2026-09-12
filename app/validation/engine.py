@@ -208,7 +208,18 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             # CHECK 4: URL opens successfully (Accessible URL)
             # -------------------------------------------------------------
-            if "broken" in story.url or "dead-link" in story.url or "404" in story.url:
+            # Do not search for the raw substring "404" anywhere in the URL:
+            # valid article IDs can legitimately contain those digits.
+            url_lower = (story.url or "").lower()
+            url_path = urlparse(url_lower).path.rstrip("/")
+            has_explicit_dead_link_marker = (
+                "broken" in url_lower
+                or "dead-link" in url_lower
+                or url_path == "/404"
+                or url_path.endswith("/404")
+                or url_path.endswith("/404.html")
+            )
+            if has_explicit_dead_link_marker:
                 check_results.append(ValidationCheckResult(
                     check_id=4,
                     check_name="URL opens successfully",
@@ -224,7 +235,7 @@ class FinalValidationEngine:
             if not is_valid_story_url:
                 check_results.append(ValidationCheckResult(
                     check_id=5,
-                    check_name="URL points to a specific article",
+                    check_name="URL points to a directory/hub rather than a specific article",
                     passed=False,
                     failure_reason=f"URL points to a directory/hub rather than a specific article: '{story.url}' ({url_reason})",
                     failed_story_id=story.event_id,
@@ -355,7 +366,6 @@ class FinalValidationEngine:
                 headline_numbers = set(re.findall(r"\b(?:\d+(?:\.\d+)?%?|\₹\d+|\$\d+)\b", story.headline.lower()))
                 source_text = (primary_art.title + " " + primary_art.content_text + " " + " ".join(event.financial_figures if event else [])).lower()
                 for num in headline_numbers:
-                    # Clean symbol
                     clean_num = num.replace("₹", "").replace("$", "").replace("%", "").strip()
                     if clean_num.isdigit() and len(clean_num) >= 2 and clean_num not in source_text:
                         check_results.append(ValidationCheckResult(
@@ -677,7 +687,6 @@ class FinalValidationEngine:
         final_check_results: List[ValidationCheckResult] = []
         for cid in range(1, 21):
             if cid in failed_ids:
-                # Find failure record
                 fail_rec = next(r for r in check_results if r.check_id == cid and not r.passed)
                 final_check_results.append(fail_rec)
             else:
