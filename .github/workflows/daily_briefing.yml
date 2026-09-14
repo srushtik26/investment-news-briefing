@@ -47,7 +47,7 @@ jobs:
             data/primary_email_date.txt
           key: daily-email-state-${{ steps.current-date.outputs.date }}
 
-      - name: Generate and email canonical 10-story briefing
+      - name: Generate and email canonical 15-story briefing
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
@@ -57,10 +57,10 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TZ: Asia/Kolkata
         run: |
-          echo "Starting canonical 10-story daily briefing..."
+          echo "Starting canonical 15-story daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
-          python run_daily_10.py
+          python run_daily_15.py
 
       - name: Save delivery state cache
         if: success()
