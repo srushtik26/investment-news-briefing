@@ -21,8 +21,6 @@ class EventRegionClassifier:
     5. Buyer / Seller financial sponsor domicile (foreign sponsor buying Indian target = INDIA)
     """
 
-    # Indian Regulators, Government Bodies, Indices & Policy Keywords
-    # Indian Regulators, Government Bodies, Indices & Policy Keywords
     INDIAN_REGULATORY_AND_POLICY: List[str] = [
         r"\b(rbi|reserve bank of india)\b",
         r"\b(sebi|securities and exchange board of india)\b",
@@ -35,15 +33,12 @@ class EventRegionClassifier:
         r"\b(standalone net profit|standalone profit|standalone revenue|standalone results)\b",
     ]
 
-    # Indian Currencies & Financial Scale Units
     INDIAN_CURRENCY_AND_UNITS: List[str] = [
         r"₹",
         r"\b(rs\.?|inr|rupees?|crore|cr|lakh|lakhs)\b",
     ]
 
-    # Major Indian Companies, Startups, Financial Institutions, Conglomerates
     INDIAN_ENTITIES: List[str] = [
-        # Major Conglomerates & Industrial
         r"\b(tata|tata motors|tata steel|tata power|tcs|tata consultancy)\b",
         r"\b(reliance|reliance industries|ril|reliance retail|reliance jio|jio)\b",
         r"\b(adani|adani enterprises|adani ports|adani green|adani power)\b",
@@ -55,30 +50,19 @@ class EventRegionClassifier:
         r"\b(bhel|bel|hal|hindustan aeronautics|mazagon dock)\b",
         r"\b(tube investments|tube investments of india|tii|shanthi gears)\b",
         r"\b(jbm auto|jbm|godrej|piramal|havells|voltas|polycab|kei industries)\b",
-        
-        # Financial & Banking
         r"\b(hdfc|hdfc bank|hdfc life|hdfc ergo|icici|icici bank|icici prudential)\b",
         r"\b(sbi|state bank of india|axis bank|kotak|kotak mahindra|indusind|yes bank|idfc|idfc first)\b",
         r"\b(idbi|idbi bank|kfin|kfin technologies|kfintech)\b",
         r"\b(punjab national bank|pnb|bank of baroda|canara bank|union bank of india)\b",
         r"\b(zerodha|groww|angel one|upstox|bandhan bank|federal bank|rbl bank|au small finance bank)\b",
-        
-        # IT & Tech Services
         r"\b(infosys|wipro|hcl tech|hcl technologies|tech mahindra|l&t technology|ltimindtree|mphasis|coforge)\b",
-        
-        # Pharma & Healthcare
         r"\b(sun pharma|dr reddy|dr\. reddy|cipla|lupin|aurobindo|divi's|zydus|mankind pharma|biocon|apollo hospitals)\b",
         r"\b(manipal|manipal health|manipal hospitals|max healthcare|fortis|narayana hrudayalaya|medanta|tynor|tynor orthotics|fluence pharma)\b",
-        
-        # Consumer, Retail & Digital Startups & Retail/Malls & Manufacturing
         r"\b(zomato|swiggy|paytm|phonepe|zepto|blinkit|shiprocket|nykaa|ola|ola electric|oyo|byju's|delhivery|meesho|mamaearth|honasa|honasa consumer|lenskart|cred|urban company)\b",
         r"\b(welspun|welspun corp|inorbit|inorbit malls|prozone|prozone malls|kedaara|kedaara capital|c2i|c2i semiconductors|airtel payments bank|ardee|ardee industries|ardee infrastructure)\b",
-        
-        # Explicit Indian name indicators
         r"\b\w+\s+(?:of\s+india|india\s+ltd|india\s+limited)\b",
     ]
 
-    # Global / International Regulators & Macro Bodies
     INTERNATIONAL_REGULATORY_AND_POLICY: List[str] = [
         r"\b(fed|federal reserve|jerome powell|fomc)\b",
         r"\b(ecb|european central bank|bank of england|boe|bank of japan|boj)\b",
@@ -88,39 +72,30 @@ class EventRegionClassifier:
         r"\b(us gdp|us inflation|us cpi|eurozone|us treasury|treasury yields)\b",
     ]
 
-    # Global Financial Sponsors / PE / Asset Managers (often transact in Indian companies)
     FINANCIAL_SPONSORS: List[str] = [
         r"\b(general atlantic|bain capital|bain|fairfax|fairfax financial|temasek|gic|softbank|tiger global|peak xv|sequoia|warburg pincus|advent international|eqt|cpibb|blackstone|kkr|carlyle|brookfield)\b",
     ]
 
-    # Major Global / International Companies & Entities
     INTERNATIONAL_ENTITIES: List[str] = [
-        # Big Tech, Enterprise Software, Cybersecurity & AI
         r"\b(salesforce|crowdstrike|okta|snowflake|palantir|oracle|ibm|cisco|dell|hp|servicenow|adobe|uber|airbnb|spotify)\b",
         r"\b(apple|microsoft|google|alphabet|meta|facebook|amazon|nvidia|tesla)\b",
         r"\b(openai|anthropic|stripe|openrouter|mistral|deepmind|arm holdings|arm|hugging face)\b",
         r"\b(tsmc|asml|intel|amd|qualcomm|broadcom|micron|samsung|sony|alibaba|tencent|bytedance)\b",
-        
-        # Global Finance, Sponsors, Sports Franchises & Private Equity
         r"\b(arctos|atlanta falcons|falcons|lakers|los angeles lakers|nfl|nba|mlb|f1|formula 1)\b",
         r"\b(goldman sachs|jpmorgan|morgan stanley|citigroup|citi|bank of america|bofa|wells fargo)\b",
         r"\b(blackrock|blackstone|kkr|carlyle|apollo global|lcn capital|lcn capital partners)\b",
         r"\b(hsbc|barclays|ubs|bnp paribas|deutsche bank|credit agricole|santander)\b",
-        
-        # Global Industrial, Mining, Pharma, Auto
         r"\b(rio tinto|arcadium lithium|bhp|glencore|anglo american|vale)\b",
         r"\b(boeing|airbus|lockheed martin|general electric|ge aerospace)\b",
         r"\b(pfizer|moderna|astrazeneca|novartis|roche|novo nordisk|eli lilly|leo pharma|mersana|mitsubishi tanabe)\b",
         r"\b(toyota|volkswagen|bmw|mercedes-benz|stellantis|ford|general motors|byd)\b",
         r"\b(nestle|unilever|procter & gamble|p&g|pepsico|coca-cola|lvmh|nike)\b",
-        # Global Media, Sports & Entertainment
         r"\b(dazn|espn|sky sports|discovery\+|peacock|paramount\+|hbo|warner bros|universal pictures|sony pictures)\b",
         r"\b(netflix|disney|disney\+|hulu|spotify|tencent music|iheartmedia)\b",
         r"\b(comcast|charter communications|at\&t|verizon|t-mobile|deutsche telekom)\b",
         r"\b(manchester united|manchester city|real madrid|barcelona|chelsea fc|arsenal fc|liverpool fc)\b",
     ]
 
-    # Indian Regulators, Government Bodies & Financial Market Keywords -> INDIA BUSINESS
     INDIAN_BUSINESS_POLICY_AND_REGULATORS: List[str] = [
         r"\b(sebi|securities and exchange board of india)\b",
         r"\b(rbi (?:imposes|penalizes|bars|bans|penalty|curbs|orders|mandates|repo rate|monetary policy|crr|slr))\b",
@@ -129,7 +104,6 @@ class EventRegionClassifier:
         r"\b(nifty|nifty 50|sensex|bse|nse|bse sensex)\b",
     ]
 
-    # Corporate hard event markers (belong strictly to INDIA BUSINESS, never DOMESTIC)
     CORPORATE_HARD_ACTION_PATTERNS: List[str] = [
         r"\b(net profit|q[1-4] results|q[1-4] profit|q[1-4] revenue|standalone net profit|consolidated net profit|quarterly results|quarterly profit|quarterly revenue|quarterly earnings|profit rises|profit falls|profit jumps|profit surges|profit drops|revenue rises|revenue falls|profit up|profit down|pat rises|pat falls|pat up|pat down)\b",
         r"\b(acquires?|acquisition|to buy|to acquire|acquisition of|buys|bought|buyout|stake sale|stake purchase|block deal|divests|sells stake|calls off proposed acquisition)\b",
@@ -139,21 +113,13 @@ class EventRegionClassifier:
         r"\b(semiconductor incentive|commercial agreement|joint venture|capex plan)\b",
     ]
 
-    # Domestic general national news, government, politics, courts, science, defense, infrastructure, weather -> DOMESTIC
     DOMESTIC_NATIONAL_NEWS_PATTERNS: List[str] = [
-        # Courts & Constitutional / Public Law
         r"\b(supreme court|high court|chief justice|cji|law commission|judiciary|constitutional bench|sc bench|quashes|stays order|nationwide ruling|orders probe)\b",
-        # Space, Science & Technology
         r"\b(isro|chandrayaan|gaganyaan|aditya-l1|satellite launch|rocket launch|pslv|gslv|space mission)\b",
-        # Defence, Armed Forces & National Security (policy/systems, not commercial company contracts)
         r"\b(drdo|missile test|flight test|indian army|indian navy|indian air force|iaf|border security|anti-terror|nia|defence procurement policy|armed forces)\b",
-        # Politics, Parliament & Central Government Public Policy
         r"\b(union cabinet|cabinet approves?|cabinet clears?|cabinet nod|parliament|lok sabha|rajya sabha|bill passed|new national law|centre notifies|centre announces|election commission|ec|eci|assembly election|bypoll|pmo)\b",
-        # Public Infrastructure & Public Transport
         r"\b(railway corridor|vande bharat|national highway|expressway|metro rail|bullet train|mega bridge|airport terminal|national infrastructure|smart cities)\b",
-        # Weather, Environment & Disasters
         r"\b(cyclone|landslide|cloudburst|flood|earthquake|imd alert|heatwave|red alert|rescue operation|ndrf|western ghats)\b",
-        # Health, Education & Social Policy
         r"\b(national education policy|nep|ncert|ugc|neet|ayushman bharat|vaccination drive|icmr|who alert|public health|food security)\b",
     ]
 
@@ -169,29 +135,18 @@ class EventRegionClassifier:
         companies: Optional[List[str]] = None,
         discovery_region: Optional[NewsCategory] = None,
     ) -> Tuple[NewsCategory, str]:
-        """
-        Deterministically classify an event or article with explicit rationale across DOMESTIC, INDIA, INTERNATIONAL.
-        Precedence:
-        1. Global Regulators & International Macro -> INTERNATIONAL
-        2. Explicit Foreign Geography without Indian entity/currency -> INTERNATIONAL
-        3. International Entities with Global/USD context -> INTERNATIONAL
-        4. Indian Corporate Hard Event (earnings/M&A/deals/contracts/corporate regulatory enforcement) -> INDIA BUSINESS
-        5. Indian National Public Affairs (ISRO/Supreme Court/Defence/Cabinet Policy/Disaster) -> DOMESTIC
-        6. General Indian Business / Currency Signals -> INDIA BUSINESS
-        7. Discovery Region Prior
-        8. Default Fallback
-        """
+        """Deterministically classify an event or article with explicit rationale."""
         title_lower = (title or "").lower()
+        content_lower = (content or "").lower()
+        context_text = f"{title_lower} {content_lower}"
         companies_text = " ".join(companies or []).lower()
         figures_text = " ".join(financial_figures or []).lower()
 
-        # 1. Check Global Regulators / Macro Policy
         for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY:
             m = re.search(pat, title_lower)
             if m:
                 return NewsCategory.INTERNATIONAL, f"Global regulatory / macro policy match: '{m.group(0)}'"
 
-        # 2. Entity Matches: Prioritize Headline title matches over secondary company mentions
         indian_entity_matches = [
             re.search(pat, title_lower).group(0)
             for pat in self.INDIAN_ENTITIES
@@ -222,22 +177,18 @@ class EventRegionClassifier:
             if re.search(pat, companies_text)
         ]
 
-        # 3. Currency and Unit Signals
         local_text = f"{title_lower} {figures_text}"
         has_indian_currency_local = any(re.search(pat, local_text) for pat in self.INDIAN_CURRENCY_AND_UNITS)
         has_dollar_local = bool(re.search(r"(\$|\b(usd|us dollar|dollars?)\b)", local_text))
 
-        # Check action patterns
         is_corporate_hard_event = any(re.search(pat, title_lower) for pat in self.CORPORATE_HARD_ACTION_PATTERNS)
         is_business_policy_or_reg = any(re.search(pat, title_lower) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
         is_domestic_national_news = any(re.search(pat, title_lower) for pat in self.DOMESTIC_NATIONAL_NEWS_PATTERNS)
 
-        # Special business-precedence check: commercial court ruling / royalty / tax / business impact
         is_commercial_legal_event = is_domestic_national_news and any(
             w in title_lower for w in ["royalty", "taxation", "tax", "acquisition", "merger", "insolvency", "nclt", "penalty", "bank", "licence", "license fee", "telecom", "spectrum", "mining royalty"]
         )
 
-        # Portfolio Watchlist routing -> INDIA BUSINESS (only for genuine corporate/business events with eligible priority role)
         from app.ranking.watchlist import get_portfolio_company_role
         from app.verification.materiality import CONCRETE_PORTFOLIO_EVENT_PATTERNS
         is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(title_lower, companies_text)
@@ -252,20 +203,16 @@ class EventRegionClassifier:
             if has_corporate_business_event:
                 return NewsCategory.INDIA, f"Portfolio company '{pf_company}' corporate/business event ({pf_role}) routed to INDIA"
 
-        # SAFEGUARD: Explicit Foreign Geography & Non-India Subject -> INTERNATIONAL
-        # Overrides corporate keywords and discovery prior when no Indian company/currency/nexus exists
         has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
         has_india_mention = bool(re.search(r"\b(india|indian|india's)\b", title_lower))
         if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL"
 
-        # RULE A: International entity with dollar or international discovery prior
         if intl_entity_matches:
             matched_intl = intl_entity_matches[0]
             if not has_indian_currency_local or has_dollar_local or discovery_region == NewsCategory.INTERNATIONAL:
                 return NewsCategory.INTERNATIONAL, f"International entity '{matched_intl}' with global context"
 
-        # RULE B: Corporate Hard Events & Business Regulatory Enforcement by/affecting Indian Entities -> INDIA BUSINESS
         if is_corporate_hard_event or is_business_policy_or_reg or is_commercial_legal_event:
             if indian_entity_matches:
                 matched_name = indian_entity_matches[0]
@@ -275,14 +222,28 @@ class EventRegionClassifier:
             if has_indian_currency_local or "india" in title_lower or is_business_policy_or_reg or is_commercial_legal_event:
                 return NewsCategory.INDIA, "Indian corporate action / financial market regulatory event"
 
-        # RULE C: Indian National Public Affairs (ISRO, Supreme Court constitutional, Defence, Cabinet Policy, Disasters) -> DOMESTIC
         if is_domestic_national_news and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "India national public affairs / policy / science / constitutional event"
 
+        # Discovery is only a prior, not proof. A Domestic candidate must have
+        # real India/public-affairs evidence in its title or extracted content.
         if discovery_region == NewsCategory.DOMESTIC and not is_corporate_hard_event:
-            return NewsCategory.DOMESTIC, "Preserved Domestic discovery pool prior"
+            has_india_context = bool(re.search(r"\b(india|indian|india's)\b", context_text))
+            has_domestic_context = any(
+                re.search(pat, context_text) for pat in self.DOMESTIC_NATIONAL_NEWS_PATTERNS
+            )
+            has_foreign_subject = any(
+                re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS
+            )
 
-        # RULE D: Target / Subject entity domicile (Corporate India general)
+            if has_foreign_subject and not has_india_context and not has_domestic_context:
+                return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: foreign subject without Indian nexus"
+
+            if has_india_context or has_domestic_context:
+                return NewsCategory.DOMESTIC, "Domestic discovery prior confirmed by Indian nexus"
+
+            return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: no Indian domestic nexus"
+
         if indian_entity_matches:
             matched_name = indian_entity_matches[0]
             if sponsor_matches:
@@ -291,35 +252,29 @@ class EventRegionClassifier:
                 return NewsCategory.INDIA, f"Indian entity '{matched_name}' transacting with international entity '{intl_entity_matches[0]}'"
             return NewsCategory.INDIA, f"Indian entity match: '{matched_name}'"
 
-        # RULE E: Explicit Indian geography in title
         if re.search(r"\b(india|indian|india's)\b", title_lower):
             if not (intl_entity_matches and has_dollar_local and not has_indian_currency_local):
                 return NewsCategory.INDIA, "Explicit Indian geography in headline"
 
-        # RULE F: Strong Currency Signals in Title/Headline
         title_has_inr = any(re.search(pat, title_lower) for pat in self.INDIAN_CURRENCY_AND_UNITS)
         if title_has_inr:
             return NewsCategory.INDIA, "Indian currency in title / event headline (crore/₹/lakh)"
 
-        # RULE G: Financial Sponsor transactions
         if sponsor_matches:
             if has_indian_currency_local or "india" in title_lower:
                 return NewsCategory.INDIA, f"Financial sponsor '{sponsor_matches[0]}' in Indian transaction context"
             if discovery_region == NewsCategory.INTERNATIONAL or has_dollar_local:
                 return NewsCategory.INTERNATIONAL, f"Financial sponsor '{sponsor_matches[0]}' in international transaction context"
 
-        # RULE G2: Explicit Foreign Geography & Corporate Context Override (Prior Overriding)
         if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / company evidence overrides discovery prior"
 
-        # RULE H: Discovery Region Prior Protection
         if discovery_region == NewsCategory.INTERNATIONAL:
             return NewsCategory.INTERNATIONAL, "Preserved International discovery pool prior"
 
         if discovery_region == NewsCategory.INDIA:
             return NewsCategory.INDIA, "Preserved Indian discovery pool prior"
 
-        # Default fallback
         if has_dollar_local:
             return NewsCategory.INTERNATIONAL, "Dollar currency transaction"
         if has_indian_currency_local:
@@ -335,7 +290,6 @@ class EventRegionClassifier:
         companies: Optional[List[str]] = None,
         discovery_region: Optional[NewsCategory] = None,
     ) -> NewsCategory:
-        """Classify into NewsCategory."""
         cat, _ = self.classify_with_reason(
             title=title,
             content=content,
@@ -346,7 +300,6 @@ class EventRegionClassifier:
         return cat
 
     def classify_article(self, article: Article) -> NewsCategory:
-        """Classify an Article instance."""
         cat, reason = self.classify_with_reason(
             title=article.title,
             content=article.content_text,
@@ -356,7 +309,6 @@ class EventRegionClassifier:
         return cat
 
     def classify_event(self, event: Event, articles: Optional[List[Article]] = None) -> NewsCategory:
-        """Classify an Event instance with observability logging."""
         combined_content = event.description or ""
         disc_region = None
         if articles:
