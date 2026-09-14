@@ -42,10 +42,12 @@ jobs:
       - name: Restore delivery state cache
         uses: actions/cache@v4
         with:
-          path: data/last_email_date.txt
+          path: |
+            data/last_email_date.txt
+            data/primary_email_date.txt
           key: daily-email-state-${{ steps.current-date.outputs.date }}
 
-      - name: Execute daily briefing pipeline, email delivery and dashboard sync
+      - name: Generate and email canonical 10-story briefing
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
@@ -53,18 +55,25 @@ jobs:
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT || secrets.GMAIL_RECIPIENTS }}
           GMAIL_RECIPIENTS: ${{ secrets.GMAIL_RECIPIENTS || secrets.GMAIL_RECIPIENT }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
-          echo "Starting daily briefing..."
+          echo "Starting canonical 10-story daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
-          python run_daily.py
-          python run_dashboard_sync.py --file data/copy_paste_briefing.txt
+          python run_daily_10.py
 
       - name: Save delivery state cache
         if: success()
         uses: actions/cache/save@v4
         with:
-          path: data/last_email_date.txt
+          path: |
+            data/last_email_date.txt
+            data/primary_email_date.txt
           key: daily-email-state-${{ steps.current-date.outputs.date }}
+
+      - name: Sync emailed briefing to dashboard
+        env:
+          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: |
+          python run_dashboard_sync.py --file data/copy_paste_briefing.txt
