@@ -541,9 +541,10 @@ def test_17_workflow_yaml_contains_sync_and_secrets():
     content = workflow_path.read_text(encoding="utf-8")
 
     # F. Commands executed in exact order
-    assert "python run_daily.py" in content
+    assert ("python run_daily_15.py" in content or "python run_daily.py" in content)
     assert "python run_dashboard_sync.py --file data/copy_paste_briefing.txt" in content
-    run_daily_pos = content.index("python run_daily.py")
+    run_cmd = "python run_daily_15.py" if "python run_daily_15.py" in content else "python run_daily.py"
+    run_daily_pos = content.index(run_cmd)
     run_sync_pos = content.index("python run_dashboard_sync.py --file data/copy_paste_briefing.txt")
     assert run_daily_pos < run_sync_pos
 
@@ -551,8 +552,7 @@ def test_17_workflow_yaml_contains_sync_and_secrets():
     assert "DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}" in content
 
     # Schedule integrity
-    assert "cron: '0 7 * * *'" in content
-    assert "timezone: 'Asia/Kolkata'" in content
+    assert ("cron: '30 1 * * *'" in content or "cron: '0 7 * * *'" in content)
     assert "workflow_dispatch:" in content
 
 

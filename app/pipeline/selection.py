@@ -799,11 +799,43 @@ def run_ranking_and_selection(
     effective_domestic_horizon = get_effective_domestic_max_age_hours(ctx)
 
     rejected_domestic_event_ids: Set[str] = set()
+    domestic_rejected_count = [0]
+
+    def _get_reg_classifier():
+        reg_clf = getattr(ctx, "reg_clf", None)
+        if not reg_clf:
+            from app.classification.region_classifier import EventRegionClassifier
+            reg_clf = EventRegionClassifier()
+        return reg_clf
 
     def _domestic_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         filtered = []
+        reg_classifier = _get_reg_classifier()
+
         for s in cands:
             s_art = ctx.articles_lookup.get(s.event.article_ids[0]) if s.event.article_ids else None
+
+            # ----------------------------------------------------------------
+            # REGION ELIGIBILITY VERIFICATION (BEFORE EDITORIAL SELECTION)
+            # ----------------------------------------------------------------
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                s.event, s_art, requested_region=NewsCategory.DOMESTIC
+            )
+            if not is_reg_valid:
+                rejected_domestic_event_ids.add(s.event.id)
+                domestic_rejected_count[0] += 1
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{s.event.canonical_title}"\n'
+                    f"requested_region=DOMESTIC\n"
+                    f'reason="{reg_reason}"'
+                )
+                logger.info(
+                    "REGION_REJECTED: headline=\"%s\" requested_region=DOMESTIC reason=\"%s\"",
+                    s.event.canonical_title,
+                    reg_reason,
+                )
+                continue
 
             # ----------------------------------------------------------------
             # CANONICAL DOMESTIC QUALITY GATE — same evaluator used by Stage 9
@@ -842,6 +874,19 @@ def run_ranking_and_selection(
                     rejected_domestic_event_ids.add(s.event.id)
                     break
             if not is_dup:
+                if domestic_rejected_count[0] > 0:
+                    ctx.log_exec(
+                        f"BACKFILL:\n"
+                        f"region=DOMESTIC\n"
+                        f"rejected={domestic_rejected_count[0]}\n"
+                        f'replacement="{s.event.canonical_title}"'
+                    )
+                    logger.info(
+                        "BACKFILL: region=DOMESTIC rejected=%d replacement=\"%s\"",
+                        domestic_rejected_count[0],
+                        s.event.canonical_title,
+                    )
+                    domestic_rejected_count[0] = 0
                 filtered.append(s)
 
         div = select_diverse_domestic_candidates(
@@ -873,6 +918,7 @@ def run_ranking_and_selection(
         from app.pipeline.candidate_processing import process_candidate_item
         from app.pipeline.fallback_manager import reconsider_date_deferred_candidates
 
+        reg_classifier = _get_reg_classifier()
         needed = 5 - len(dom_final)
         ctx.log_exec(
             f"[DOMESTIC_RECOVERY_PASS_START] current={len(dom_final)} needed={needed} max_age_hours={effective_domestic_horizon}"
@@ -893,6 +939,21 @@ def run_ranking_and_selection(
                 continue
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
+                continue
+
+            # Region verification
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.DOMESTIC
+            )
+            if not is_reg_valid:
+                rejected_domestic_event_ids.add(ev.id)
+                domestic_rejected_count[0] += 1
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{ev.canonical_title}"\n'
+                    f"requested_region=DOMESTIC\n"
+                    f'reason="{reg_reason}"'
+                )
                 continue
 
             is_dup = False
@@ -927,6 +988,19 @@ def run_ranking_and_selection(
                 investment_score=dom_score,
                 rank=len(dom_final) + 1,
             )
+            if domestic_rejected_count[0] > 0:
+                ctx.log_exec(
+                    f"BACKFILL:\n"
+                    f"region=DOMESTIC\n"
+                    f"rejected={domestic_rejected_count[0]}\n"
+                    f'replacement="{ev.canonical_title}"'
+                )
+                logger.info(
+                    "BACKFILL: region=DOMESTIC rejected=%d replacement=\"%s\"",
+                    domestic_rejected_count[0],
+                    ev.canonical_title,
+                )
+                domestic_rejected_count[0] = 0
             dom_final.append(scored)
             selected_event_ids.add(ev.id)
             ctx.log_exec(
@@ -951,6 +1025,22 @@ def run_ranking_and_selection(
                     cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                     if not cand_art:
                         continue
+
+                    # Region verification
+                    is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                        ev, cand_art, requested_region=NewsCategory.DOMESTIC
+                    )
+                    if not is_reg_valid:
+                        rejected_domestic_event_ids.add(ev.id)
+                        domestic_rejected_count[0] += 1
+                        ctx.log_exec(
+                            f"REGION_REJECTED:\n"
+                            f'headline="{ev.canonical_title}"\n'
+                            f"requested_region=DOMESTIC\n"
+                            f'reason="{reg_reason}"'
+                        )
+                        continue
+
                     is_dup = False
                     for ex in dom_final:
                         ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
@@ -981,6 +1071,19 @@ def run_ranking_and_selection(
                         investment_score=dom_score,
                         rank=len(dom_final) + 1,
                     )
+                    if domestic_rejected_count[0] > 0:
+                        ctx.log_exec(
+                            f"BACKFILL:\n"
+                            f"region=DOMESTIC\n"
+                            f"rejected={domestic_rejected_count[0]}\n"
+                            f'replacement="{ev.canonical_title}"'
+                        )
+                        logger.info(
+                            "BACKFILL: region=DOMESTIC rejected=%d replacement=\"%s\"",
+                            domestic_rejected_count[0],
+                            ev.canonical_title,
+                        )
+                        domestic_rejected_count[0] = 0
                     dom_final.append(scored)
                     selected_event_ids.add(ev.id)
                     ctx.log_exec(
@@ -1023,12 +1126,34 @@ def run_ranking_and_selection(
         # Separate candidates into portfolio watchlist candidates and general India candidates, preserving ranking order
         portfolio_cands: List[Tuple[ScoredEvent, str]] = []
         general_cands: List[ScoredEvent] = []
+        india_rejected_count = [0]
+        reg_classifier = _get_reg_classifier()
 
         for scored in cands:
             ev = scored.event
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
                 continue
+
+            # Region verification
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INDIA
+            )
+            if not is_reg_valid:
+                india_rejected_count[0] += 1
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{ev.canonical_title}"\n'
+                    f"requested_region=INDIA\n"
+                    f'reason="{reg_reason}"'
+                )
+                logger.info(
+                    "REGION_REJECTED: headline=\"%s\" requested_region=INDIA reason=\"%s\"",
+                    ev.canonical_title,
+                    reg_reason,
+                )
+                continue
+
             is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(
                 ev.canonical_title,
                 cand_art.content_text if cand_art else "",
@@ -1092,6 +1217,20 @@ def run_ranking_and_selection(
             if norm_comps and norm_comps.intersection(seen_comps):
                 continue
 
+            if india_rejected_count[0] > 0:
+                ctx.log_exec(
+                    f"BACKFILL:\n"
+                    f"region=INDIA\n"
+                    f"rejected={india_rejected_count[0]}\n"
+                    f'replacement="{ev.canonical_title}"'
+                )
+                logger.info(
+                    "BACKFILL: region=INDIA rejected=%d replacement=\"%s\"",
+                    india_rejected_count[0],
+                    ev.canonical_title,
+                )
+                india_rejected_count[0] = 0
+
             selected.append(scored)
             seen_portfolio_companies[pf_company] = ev.canonical_title
             seen_comps.update(norm_comps)
@@ -1146,8 +1285,21 @@ def run_ranking_and_selection(
             )
 
             for g_scored in pub_div_general[:needed_slots]:
-                selected.append(g_scored)
                 g_ev = g_scored.event
+                if india_rejected_count[0] > 0:
+                    ctx.log_exec(
+                        f"BACKFILL:\n"
+                        f"region=INDIA\n"
+                        f"rejected={india_rejected_count[0]}\n"
+                        f'replacement="{g_ev.canonical_title}"'
+                    )
+                    logger.info(
+                        "BACKFILL: region=INDIA rejected=%d replacement=\"%s\"",
+                        india_rejected_count[0],
+                        g_ev.canonical_title,
+                    )
+                    india_rejected_count[0] = 0
+                selected.append(g_scored)
                 g_art = ctx.articles_lookup.get(g_ev.article_ids[0]) if g_ev.article_ids else None
                 g_ext = EventQueryBuilder.extract_entities(g_art, event=g_ev) if g_art else []
                 g_clean = sanitize_company_entities(
@@ -1271,10 +1423,42 @@ def run_ranking_and_selection(
 
     def _intl_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         filtered = []
+        intl_rejected_count = [0]
+        reg_classifier = _get_reg_classifier()
         for scored in cands:
             ev = scored.event
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
+                continue
+
+            # Region verification
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INTERNATIONAL
+            )
+            if not is_reg_valid:
+                intl_rejected_count[0] += 1
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{ev.canonical_title}"\n'
+                    f"requested_region=INTERNATIONAL\n"
+                    f'reason="{reg_reason}"'
+                )
+                logger.info(
+                    "REGION_REJECTED: headline=\"%s\" requested_region=INTERNATIONAL reason=\"%s\"",
+                    ev.canonical_title,
+                    reg_reason,
+                )
+                if "geopolitical" in str(reg_reason).lower() or "market impact" in str(reg_reason).lower() or "market-impact" in str(reg_reason).lower():
+                    ctx.log_exec(
+                        f"[INTERNATIONAL_FINAL_ELIGIBILITY_REJECT]\n"
+                        f'title="{ev.canonical_title}"\n'
+                        f'reason="fails geopolitical quantified market-impact requirement"'
+                    )
+                    logger.info(
+                        "[INTERNATIONAL_FINAL_ELIGIBILITY_REJECT] title=%s reason=%s",
+                        ev.canonical_title,
+                        reg_reason,
+                    )
                 continue
 
             # ----------------------------------------------------------------
@@ -1283,6 +1467,18 @@ def run_ranking_and_selection(
             # ----------------------------------------------------------------
             is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(ev, cand_art)
             if not is_geo_elig:
+                intl_rejected_count[0] += 1
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{ev.canonical_title}"\n'
+                    f"requested_region=INTERNATIONAL\n"
+                    f'reason="{geo_reason}"'
+                )
+                logger.info(
+                    "REGION_REJECTED: headline=\"%s\" requested_region=INTERNATIONAL reason=\"%s\"",
+                    ev.canonical_title,
+                    geo_reason,
+                )
                 ctx.log_exec(
                     f"[INTERNATIONAL_FINAL_ELIGIBILITY_REJECT]\n"
                     f'title="{ev.canonical_title}"\n'
@@ -1303,6 +1499,20 @@ def run_ranking_and_selection(
                     break
             if is_dup:
                 continue
+
+            if intl_rejected_count[0] > 0:
+                ctx.log_exec(
+                    f"BACKFILL:\n"
+                    f"region=INTERNATIONAL\n"
+                    f"rejected={intl_rejected_count[0]}\n"
+                    f'replacement="{ev.canonical_title}"'
+                )
+                logger.info(
+                    "BACKFILL: region=INTERNATIONAL rejected=%d replacement=\"%s\"",
+                    intl_rejected_count[0],
+                    ev.canonical_title,
+                )
+                intl_rejected_count[0] = 0
             filtered.append(scored)
 
         div = select_diverse_topic_candidates(
@@ -1399,5 +1609,14 @@ def run_ranking_and_selection(
     india_sufficient    = len(india_pool) >= 5
     intl_sufficient     = len(intl_pool) >= 5
     sufficient = (dom_sufficient and india_sufficient and intl_sufficient)
+
+    final_counts_msg = (
+        f"FINAL_REGION_COUNTS:\n"
+        f"DOMESTIC={len(domestic_pool)}\n"
+        f"INDIA={len(india_pool)}\n"
+        f"INTERNATIONAL={len(intl_pool)}"
+    )
+    ctx.log_exec(final_counts_msg)
+    logger.info(final_counts_msg)
 
     return candidate_pool, domestic_pool, india_pool, intl_pool, sufficient, pipeline_status

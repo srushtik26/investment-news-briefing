@@ -123,9 +123,86 @@ class EventRegionClassifier:
         r"\b(national education policy|nep|ncert|ugc|neet|ayushman bharat|vaccination drive|icmr|who alert|public health|food security)\b",
     ]
 
+    INDIAN_STATES_AND_CITIES: List[str] = [
+        r"\b(andhra pradesh|arunachal pradesh|assam|bihar|chhattisgarh|goa|gujarat|haryana|himachal pradesh|himachal|jharkhand|karnataka|kerala|madhya pradesh|maharashtra|manipur|meghalaya|mizoram|nagaland|odisha|orissa|punjab|rajasthan|sikkim|tamil nadu|telangana|tripura|uttar pradesh|uttarakhand|bengal|west bengal|delhi|new delhi|jammu|kashmir|ladakh|puducherry|chandigarh)\b",
+        r"\b(mumbai|bengaluru|bangalore|hyderabad|chennai|kolkata|ahmedabad|pune|surat|jaipur|lucknow|kanpur|nagpur|indore|bhopal|patna|vadodara|ghaziabad|ludhiana|agra|nashik|faridabad|meerut|rajkot|varanasi|srinagar|aurangabad|dhanbad|amritsar|navi mumbai|allahabad|prayagraj|ranchi|howrah|coimbatore|jabalpur|gwalior|vijayawada|jodhpur|madurai|raipur|kota|guwahati|solapur|hubli|dharwad|bareilly|moradabad|mysore|mysuru|tiruchirappalli|tiruppur|gurgaon|gurugram|aligarh|jalandhar|bhubaneswar|salem|warangal|noida|kochi|dehradun|mohali)\b",
+        r"\b(bjp|congress|aap|aam aadmi party|tmc|trinamool|dmk|aiadmk|bsp|sp|samajwadi party|akhilesh yadav|mayawati|rahul gandhi|amit shah|narendra modi|yogi adityanath|kejriwal|mamata banerjee|sharad pawar|uddhav thackeray|nda|india bloc)\b",
+        r"\b(chief minister|cm\b|deputy cm|governor|vidhan sabha|panchayat|municipal corporation|municipal corporations|local body polls?|local body elections?|assembly elections?|bypolls?|delimitation|dalit|tribal)\b",
+    ]
+
     FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
         r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi arabia|saudi|riyadh|jeddah|cuba|cuban|havana|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka|kuwait|qatar|bahrain|oman|venezuela|turkey|turkish|egypt|south africa|nigeria|kenya|indonesia|malaysia|thailand|vietnam|philippines)\b",
     ]
+
+    @classmethod
+    def has_positive_indian_nexus(cls, text: str) -> bool:
+        """Check if text contains positive Indian domestic nexus."""
+        if not text:
+            return False
+        text_lower = text.lower()
+        if re.search(r"\b(india|indian|india's)\b", text_lower):
+            return True
+        for pat_list in (
+            cls.INDIAN_REGULATORY_AND_POLICY,
+            cls.INDIAN_CURRENCY_AND_UNITS,
+            cls.INDIAN_ENTITIES,
+            cls.INDIAN_BUSINESS_POLICY_AND_REGULATORS,
+            cls.DOMESTIC_NATIONAL_NEWS_PATTERNS,
+            cls.INDIAN_STATES_AND_CITIES,
+        ):
+            if any(re.search(pat, text_lower) for pat in pat_list):
+                return True
+        return False
+
+    def verify_region_eligibility(
+        self,
+        event: Event,
+        article: Optional[Article] = None,
+        requested_region: Any = NewsCategory.DOMESTIC,
+    ) -> Tuple[bool, str]:
+        """
+        Verify whether an event/candidate is strictly eligible for the requested briefing section.
+        Used BEFORE editorial selection to reject invalid region candidates and trigger backfill.
+        """
+        req_reg_str = (
+            requested_region.value.lower()
+            if hasattr(requested_region, "value")
+            else str(requested_region).lower()
+        )
+        title_text = f"{event.canonical_title} {article.title if article else ''}"
+        body_text = article.content_text[:3000] if (article and article.content_text) else ""
+        context_text = f"{title_text} {body_text} {event.description or ''}"
+
+        has_foreign_geo = any(re.search(pat, title_text.lower()) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        has_nexus = self.has_positive_indian_nexus(context_text)
+
+        if req_reg_str == "domestic":
+            if has_foreign_geo and not has_nexus:
+                return False, "foreign-country subject without Indian domestic nexus"
+            if not has_nexus:
+                return False, "lacks Indian domestic nexus"
+            return True, "valid Indian domestic nexus"
+
+        elif req_reg_str == "india":
+            text_to_check = f"{title_text.lower()} {body_text.lower()}"
+            has_indian_biz = (
+                bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", text_to_check))
+                or any(re.search(pat, text_to_check) for pat in self.INDIAN_ENTITIES)
+                or any(re.search(pat, text_to_check) for pat in self.INDIAN_CURRENCY_AND_UNITS)
+                or any(re.search(pat, text_to_check) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
+            )
+            if has_foreign_geo and not has_indian_biz:
+                return False, "foreign subject without Indian business nexus"
+            return True, "valid Indian business nexus"
+
+        elif req_reg_str == "international":
+            from app.verification.international import is_geopolitical_market_impact_eligible
+            is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(event, article)
+            if not is_geo_elig:
+                return False, geo_reason
+            return True, "valid International candidate"
+
+        return True, "unrestricted section"
 
     def classify_with_reason(
         self,
@@ -204,8 +281,10 @@ class EventRegionClassifier:
                 return NewsCategory.INDIA, f"Portfolio company '{pf_company}' corporate/business event ({pf_role}) routed to INDIA"
 
         has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
-        has_india_mention = bool(re.search(r"\b(india|indian|india's)\b", title_lower))
-        if has_foreign_geo and not indian_entity_matches and not has_indian_currency_local and not has_india_mention:
+        has_india_nexus_title = self.has_positive_indian_nexus(title_lower)
+        has_india_nexus_context = self.has_positive_indian_nexus(context_text)
+
+        if has_foreign_geo and not has_india_nexus_title and not has_india_nexus_context:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL"
 
         if intl_entity_matches:
@@ -219,27 +298,24 @@ class EventRegionClassifier:
                 if sponsor_matches:
                     return NewsCategory.INDIA, f"Indian target/subject entity match: '{matched_name}' with financial sponsor '{sponsor_matches[0]}'"
                 return NewsCategory.INDIA, f"Indian entity match (corporate hard event): '{matched_name}'"
-            if has_indian_currency_local or "india" in title_lower or is_business_policy_or_reg or is_commercial_legal_event:
+            if has_indian_currency_local or "india" in title_lower or is_business_policy_or_reg or is_commercial_legal_event or has_india_nexus_title:
                 return NewsCategory.INDIA, "Indian corporate action / financial market regulatory event"
 
         if is_domestic_national_news and not is_corporate_hard_event:
             return NewsCategory.DOMESTIC, "India national public affairs / policy / science / constitutional event"
 
         # Discovery is only a prior, not proof. A Domestic candidate must have
-        # real India/public-affairs evidence in its title or extracted content.
+        # real positive Indian nexus in its title or extracted content.
         if discovery_region == NewsCategory.DOMESTIC and not is_corporate_hard_event:
-            has_india_context = bool(re.search(r"\b(india|indian|india's)\b", context_text))
-            has_domestic_context = any(
-                re.search(pat, context_text) for pat in self.DOMESTIC_NATIONAL_NEWS_PATTERNS
-            )
             has_foreign_subject = any(
                 re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS
             )
+            has_nexus = has_india_nexus_title or has_india_nexus_context
 
-            if has_foreign_subject and not has_india_context and not has_domestic_context:
+            if has_foreign_subject and not has_nexus:
                 return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: foreign subject without Indian nexus"
 
-            if has_india_context or has_domestic_context:
+            if has_nexus:
                 return NewsCategory.DOMESTIC, "Domestic discovery prior confirmed by Indian nexus"
 
             return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: no Indian domestic nexus"
@@ -312,7 +388,7 @@ class EventRegionClassifier:
         combined_content = event.description or ""
         disc_region = None
         if articles:
-            combined_content += " " + " ".join((a.content_text or "")[:200] for a in articles)
+            combined_content += " " + " ".join((a.content_text or "")[:3000] for a in articles)
             for a in articles:
                 if a.category and a.category != NewsCategory.UNKNOWN:
                     disc_region = a.category
@@ -339,3 +415,21 @@ class EventRegionClassifier:
             disc_str,
         )
         return region
+
+
+_default_region_classifier = EventRegionClassifier()
+
+
+def verify_region_eligibility(
+    event: Event,
+    article: Optional[Article] = None,
+    requested_region: Any = NewsCategory.DOMESTIC,
+) -> Tuple[bool, str]:
+    return _default_region_classifier.verify_region_eligibility(
+        event=event, article=article, requested_region=requested_region
+    )
+
+
+def has_positive_indian_nexus(text: str) -> bool:
+    return _default_region_classifier.has_positive_indian_nexus(text)
+
