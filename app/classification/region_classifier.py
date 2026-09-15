@@ -163,36 +163,35 @@ class EventRegionClassifier:
         """
         Verify whether an event/candidate is strictly eligible for the requested briefing section.
         Used BEFORE editorial selection to reject invalid region candidates and trigger backfill.
+        Ensures perfect parity with Stage 9 Final Validation Checks 1 & 2.
         """
         req_reg_str = (
             requested_region.value.lower()
             if hasattr(requested_region, "value")
             else str(requested_region).lower()
         )
-        title_text = f"{event.canonical_title} {article.title if article else ''}"
-        body_text = article.content_text[:3000] if (article and article.content_text) else ""
-        context_text = f"{title_text} {body_text} {event.description or ''}"
+        title_text = f"{event.canonical_title} {article.title if article else ''}".lower()
+        body_text = article.content_text[:3000].lower() if (article and article.content_text) else ""
+        context_text = f"{title_text} {body_text} {(event.description or '').lower()}"
 
-        has_foreign_geo = any(re.search(pat, title_text.lower()) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
-        has_nexus = self.has_positive_indian_nexus(context_text)
+        has_foreign_geo = any(re.search(pat, title_text) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        has_indian_entity = any(re.search(pat, title_text) for pat in self.INDIAN_ENTITIES)
+        has_indian_currency = any(re.search(pat, title_text) for pat in self.INDIAN_CURRENCY_AND_UNITS)
 
         if req_reg_str == "domestic":
-            if has_foreign_geo and not has_nexus:
-                return False, "foreign-country subject without Indian domestic nexus"
-            if not has_nexus:
+            has_india_mention_dom = bool(re.search(r"\b(india|indian|india's|delhi|mumbai|bengaluru|isro|centre|parliament)\b", title_text))
+            # Strict parity with Stage 9 Check 1
+            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention_dom:
+                return False, "Domestic story has foreign country subject and lacks Indian domestic nexus"
+            if not self.has_positive_indian_nexus(context_text):
                 return False, "lacks Indian domestic nexus"
             return True, "valid Indian domestic nexus"
 
         elif req_reg_str == "india":
-            text_to_check = f"{title_text.lower()} {body_text.lower()}"
-            has_indian_biz = (
-                bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", text_to_check))
-                or any(re.search(pat, text_to_check) for pat in self.INDIAN_ENTITIES)
-                or any(re.search(pat, text_to_check) for pat in self.INDIAN_CURRENCY_AND_UNITS)
-                or any(re.search(pat, text_to_check) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
-            )
-            if has_foreign_geo and not has_indian_biz:
-                return False, "foreign subject without Indian business nexus"
+            has_india_mention_ind = bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", title_text))
+            # Strict parity with Stage 9 Check 2
+            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention_ind:
+                return False, "India story has foreign subject and lacks Indian business nexus"
             return True, "valid Indian business nexus"
 
         elif req_reg_str == "international":
