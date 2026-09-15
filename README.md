@@ -8,13 +8,30 @@
 
 | Dimension | Current Production State |
 |---|---|
+| **Live Web Dashboard** | **[https://plutus-news.onrender.com/](https://plutus-news.onrender.com/)** |
 | **Production Pipeline** | **Operational** (Structured modular pipeline under `app/pipeline/`) |
+| **Production Entry Point** | `python run_daily_15.py` |
 | **Section Yield** | **Validated 5 India + 5 Domestic + 5 International (15 Total)** |
 | **Final Quality Validation** | **20/20 Deterministic Integrity Checks Passing** |
-| **Automated Test Suite** | **689 passing tests** (0 failures, full local & CI regression coverage) |
-| **GitHub Actions Automation** | **Manual & scheduled production runs validated** |
+| **Automated Test Suite** | **1,037 passing tests** (0 failures, 100% full regression coverage) |
+| **GitHub Actions Automation** | **Scheduled 7 days/week (including Saturdays & Sundays)** |
 | **Automated Email Delivery** | **Validated via Gmail SMTP SSL** |
-| **Automated Schedule** | **Daily at 06:40 AM IST (Primary) and 06:55 AM IST (Recovery)** |
+| **Automated Schedule** | **Daily at 02:30 AM IST (`21:00 UTC` previous day \| `cron: '0 21 * * *'`)** |
+
+---
+
+## Live Web Dashboard
+
+The daily briefing is deployed and publicly accessible via our dedicated web dashboard:
+
+🔗 **Live URL**: **[https://plutus-news.onrender.com/](https://plutus-news.onrender.com/)**
+
+### Dashboard Features
+- **Executive Briefing Viewer**: Interactive viewing of the latest 15 curated stories (5 India Business + 5 Domestic + 5 International Business).
+- **One-Click Copy/Paste Export**: Instant formatted briefing text ready for distribution to Investment Committees, WhatsApp executive groups, and Telegram channels.
+- **Historical Briefing Archive**: Browse and search past briefings and historical records.
+- **Decoupled Architecture**: High-performance FastAPI application with zero impact on pipeline ingestion, backed by PostgreSQL / SQLite storage.
+- **Automated Synchronization**: Updated immediately after each daily briefing execution via `python run_dashboard_sync.py --file data/copy_paste_briefing.txt`.
 
 ---
 
@@ -168,29 +185,29 @@ The pipeline incorporates production-grade performance safeguards:
 The daily runner script (`run_daily.py`) handles production execution and automated email delivery:
 
 ```
-[GitHub Actions Schedule] (06:40 AM IST / 06:55 AM IST Recovery)
+[GitHub Actions Schedule] (02:30 AM IST / 21:00 UTC previous day)
                 │
                 ▼
-        [run_daily.py]
+        [run_daily_15.py]
                 │
                 ├─► 1. Load environment variables (.env / GitHub Secrets)
                 ├─► 2. Check last_email_date.txt (Idempotency Guard)
                 │      └─► If today's date exists: Exit 0 (prevents duplicate delivery)
                 ├─► 3. Validate Gmail SMTP credentials presence
-                ├─► 4. Run production pipeline (run_pipeline.py)
+                ├─► 4. Run canonical 15-story pipeline (run_daily_15.py)
                 ├─► 5. Verify data/final_briefing.txt artifact exists & is non-empty
                 ├─► 6. Confirm presence of India, Domestic, and International sections
                 ├─► 7. Send multipart HTML/Text email via Gmail SMTP SSL (Port 465)
-                └─► 8. Record delivery date in data/last_email_date.txt ONLY after SMTP success
+                ├─► 8. Record delivery date in data/last_email_date.txt ONLY after SMTP success
+                └─► 9. Sync copy/paste briefing to live dashboard (https://plutus-news.onrender.com/)
 ```
 
 ### GitHub Actions Workflow (`.github/workflows/daily_briefing.yml`)
 
 The workflow runs on `ubuntu-latest` every single day—including weekends, market holidays, and national holidays:
-- **Primary Execution**: `06:40 AM IST` (`01:10 UTC` | `cron: '10 1 * * *'`)
-- **Recovery Execution**: `06:55 AM IST` (`01:25 UTC` | `cron: '25 1 * * *'`)
+- **Daily Execution**: `02:30 AM IST` (`21:00 UTC` previous day | `cron: '0 21 * * *'`)
 
-> **Note on Scheduling**: GitHub Actions cron jobs are queued on shared runners; actual execution may begin a few minutes after the scheduled timestamp depending on runner load. The same-day idempotency check ensures that if the primary run succeeds, the recovery run exits cleanly without sending duplicate emails.
+> **Note on Scheduling**: GitHub Actions cron jobs are queued on shared runners; actual execution begins cleanly based on runner availability. The same-day idempotency check ensures that duplicate emails are never sent.
 
 ---
 
@@ -339,7 +356,7 @@ python run_daily.py
 
 ## Testing & Quality Assurance
 
-The codebase contains **689 passing tests** validating all architectural components, deterministic edge cases, regional provenance, verification thresholds, and pipeline contracts:
+The codebase contains **1,037 passing tests** (0 failures, 100% pass rate) validating all architectural components, deterministic edge cases, regional provenance, verification thresholds, and pipeline contracts:
 
 ```bash
 # Run the complete test suite
