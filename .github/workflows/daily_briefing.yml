@@ -2,7 +2,7 @@ name: Daily Investment Briefing Automation
 
 on:
   schedule:
-    - cron: '30 1 * * *'
+    - cron: '0 21 * * *'   # 2:30 AM IST every day
 
   workflow_dispatch:
 
