@@ -17,8 +17,8 @@ class PipelineContext:
     """Shared execution context passed across modular pipeline stages."""
     # Run configuration & timing
     run_reference_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    data_dir: Path = field(default_factory=lambda: Path("data"))
-    logs_dir: Path = field(default_factory=lambda: Path("logs"))
+    data_dir: Optional[Path] = field(default_factory=lambda: Path("data"))
+    logs_dir: Optional[Path] = field(default_factory=lambda: Path("logs"))
     settings: Any = field(default_factory=lambda: get_settings())
     max_india: Optional[int] = None
     max_international: Optional[int] = None
@@ -90,7 +90,12 @@ class PipelineContext:
             self.reg_clf = EventRegionClassifier()
         if self.history_store is None:
             from app.deduplication import HistoryStore
-            self.history_store = HistoryStore(db_path=str(self.data_dir / "briefing_history.json"))
+            if self.data_dir is None:
+                self.history_store = HistoryStore(db_path=":memory:")
+            else:
+                self.data_dir = Path(self.data_dir)
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                self.history_store = HistoryStore(db_path=str(self.data_dir / "briefing_history.json"))
         if self.dedup_engine is None:
             from app.deduplication import DeduplicationEngine
             self.dedup_engine = DeduplicationEngine(history_store=self.history_store)
