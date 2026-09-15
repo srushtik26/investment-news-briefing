@@ -552,7 +552,7 @@ def test_17_workflow_yaml_contains_sync_and_secrets():
     assert "DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}" in content
 
     # Schedule integrity
-    assert ("cron: '30 1 * * *'" in content or "cron: '0 7 * * *'" in content)
+    assert "cron: '0 21 * * *'" in content
     assert "workflow_dispatch:" in content
 
 

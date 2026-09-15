@@ -619,7 +619,7 @@ def test_req_9_scheduler_unchanged():
     content = workflow_path.read_text(encoding="utf-8")
 
     # Verify schedule cron entries
-    assert ("cron: '30 1 * * *'" in content or "cron: '5 1 * * *'" in content)
+    assert "cron: '0 21 * * *'" in content
 
     # Verify invocation of run_daily.py or run_daily_15.py
     assert ("python run_daily_15.py" in content or "python run_daily.py" in content)

@@ -317,7 +317,7 @@ def test_workflow_runs_run_daily_py(workflow_content):
 
 def test_workflow_has_primary_and_recovery_schedule(workflow_content):
     """10. Workflow has valid schedule."""
-    assert ("cron: '30 1 * * *'" in workflow_content or "cron: '5 1 * * *'" in workflow_content or "cron: '10 1 * * *'" in workflow_content)
+    assert "cron: '0 21 * * *'" in workflow_content
 
 
 def test_workflow_has_manual_workflow_dispatch(workflow_content):
