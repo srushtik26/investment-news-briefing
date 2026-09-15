@@ -248,6 +248,7 @@ def sync_dashboard(
     db_path: Optional[Path] = None,
     target_date: Optional[date] = None,
     replace_date: Optional[date] = None,
+    dry_run: bool = False,
 ) -> bool:
     """Parse the authoritative emailed artifact and persist it safely."""
     candidate_file: Optional[Path] = None
@@ -295,6 +296,28 @@ def sync_dashboard(
             return False
         allow_replace = True
 
+    import os
+    is_dry_run = (
+        dry_run
+        or (os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes"))
+        or (os.environ.get("APP_ENV", "").strip().lower() == "test")
+    )
+    if is_dry_run:
+        test_db = db_path or Path("data/test_briefings.db")
+        repo = DashboardRepository(db_path=test_db)
+        try:
+            briefing_id = repo.save_briefing(briefing, allow_replace=True)
+            print(f"[MOCK_DASHBOARD_SYNC] stories={briefing.story_count} status=SUCCESS (DRY RUN)")
+            if not db_path and test_db.exists():
+                try:
+                    test_db.unlink()
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            print(f"[ERROR] Mock dashboard sync failed: {exc}")
+            return False
+
     repo = DashboardRepository(db_path=db_path)
     try:
         briefing_id = repo.save_briefing(briefing, allow_replace=allow_replace)
@@ -319,6 +342,7 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=None, help="Path to dashboard.db")
     parser.add_argument("--date", type=str, default=None, help="Assert expected briefing date (YYYY-MM-DD)")
     parser.add_argument("--replace-date", type=str, default=None, help="Allow replacing this date (YYYY-MM-DD)")
+    parser.add_argument("--dry-run", action="store_true", help="Safe dry-run sync into temporary SQLite database")
     args = parser.parse_args()
 
     try:
@@ -333,6 +357,7 @@ def main() -> None:
         db_path=args.db,
         target_date=target_date,
         replace_date=replace_date,
+        dry_run=args.dry_run,
     )
     sys.exit(0 if success else 1)
 

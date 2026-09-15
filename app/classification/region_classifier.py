@@ -116,7 +116,7 @@ class EventRegionClassifier:
     DOMESTIC_NATIONAL_NEWS_PATTERNS: List[str] = [
         r"\b(supreme court|high court|chief justice|cji|law commission|judiciary|constitutional bench|sc bench|quashes|stays order|nationwide ruling|orders probe)\b",
         r"\b(isro|chandrayaan|gaganyaan|aditya-l1|satellite launch|rocket launch|pslv|gslv|space mission)\b",
-        r"\b(drdo|missile test|flight test|indian army|indian navy|indian air force|iaf|border security|anti-terror|nia|defence procurement policy|armed forces)\b",
+        r"\b(drdo|missile test|flight test|indian army|indian navy|indian air force|iaf|border security force|bsf\b|indo-tibetan border police|itbp\b|line of control|line of actual control|anti-terror|nia|defence procurement policy|armed forces)\b",
         r"\b(union cabinet|cabinet approves?|cabinet clears?|cabinet nod|parliament|lok sabha|rajya sabha|bill passed|new national law|centre notifies|centre announces|election commission|ec|eci|assembly election|bypoll|pmo)\b",
         r"\b(railway corridor|vande bharat|national highway|expressway|metro rail|bullet train|mega bridge|airport terminal|national infrastructure|smart cities)\b",
         r"\b(cyclone|landslide|cloudburst|flood|earthquake|imd alert|heatwave|red alert|rescue operation|ndrf|western ghats)\b",
@@ -185,6 +185,8 @@ class EventRegionClassifier:
                 return False, "Domestic story has foreign country subject and lacks Indian domestic nexus"
             if not self.has_positive_indian_nexus(context_text):
                 return False, "lacks Indian domestic nexus"
+            if has_foreign_geo and not self.has_positive_indian_nexus(title_text):
+                return False, "Domestic story has foreign country subject and lacks Indian domestic headline nexus"
             return True, "valid Indian domestic nexus"
 
         elif req_reg_str == "india":
@@ -284,8 +286,8 @@ class EventRegionClassifier:
         has_india_nexus_context = self.has_positive_indian_nexus(context_text)
         has_india_mention = has_india_nexus_title or has_india_nexus_context
 
-        if has_foreign_geo and not has_india_mention:
-            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL"
+        if has_foreign_geo and not has_india_nexus_title:
+            return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL: foreign subject without Indian headline nexus"
 
         if intl_entity_matches:
             matched_intl = intl_entity_matches[0]
@@ -305,17 +307,17 @@ class EventRegionClassifier:
             return NewsCategory.DOMESTIC, "India national public affairs / policy / science / constitutional event"
 
         # Discovery is only a prior, not proof. A Domestic candidate must have
-        # real positive Indian nexus in its title or extracted content.
+        # real positive Indian nexus.
         if discovery_region == NewsCategory.DOMESTIC and not is_corporate_hard_event:
             has_foreign_subject = any(
                 re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS
             )
-            has_nexus = has_india_nexus_title or has_india_nexus_context
+            # If the headline focuses on a foreign subject, India must be materially
+            # involved in the headline itself to qualify as Domestic.
+            if has_foreign_subject and not has_india_nexus_title:
+                return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: foreign subject without Indian headline nexus"
 
-            if has_foreign_subject and not has_nexus:
-                return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: foreign subject without Indian nexus"
-
-            if has_nexus:
+            if has_india_nexus_title or has_india_nexus_context:
                 return NewsCategory.DOMESTIC, "Domestic discovery prior confirmed by Indian nexus"
 
             return NewsCategory.INTERNATIONAL, "Domestic discovery prior rejected: no Indian domestic nexus"

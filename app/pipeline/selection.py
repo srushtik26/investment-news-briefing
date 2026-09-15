@@ -1619,4 +1619,11 @@ def run_ranking_and_selection(
     ctx.log_exec(final_counts_msg)
     logger.info(final_counts_msg)
 
+    if not sufficient:
+        for reg_name, pool_len in [("DOMESTIC", len(domestic_pool)), ("INDIA", len(india_pool)), ("INTERNATIONAL", len(intl_pool))]:
+            if pool_len < 5:
+                insuf_msg = f"INSUFFICIENT_VALID_STORIES: region={reg_name} required=5 available={pool_len}"
+                ctx.log_exec(insuf_msg)
+                logger.error(insuf_msg)
+
     return candidate_pool, domestic_pool, india_pool, intl_pool, sufficient, pipeline_status

@@ -86,14 +86,27 @@ class GoogleNewsRSSDiscoveryProvider(DiscoveryProvider):
         headers = {"User-Agent": self.user_agent}
 
         logger.debug("Executing RSS discovery query for %s: '%s'", country, query)
-        try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                response = client.get(url, headers=headers)
-                response.raise_for_status()
-                xml_content = response.text
-        except Exception as exc:
-            logger.warning("RSS discovery request failed for query '%s': %s", query, exc)
-            return []
+        xml_content = None
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                    response = client.get(url, headers=headers)
+                    if 400 <= response.status_code < 500 and response.status_code != 429:
+                        logger.warning("RSS discovery client error %d for query '%s'. Not retrying.", response.status_code, query)
+                        return []
+                    response.raise_for_status()
+                    xml_content = response.text
+                    break
+            except Exception as exc:
+                if attempt < max_attempts:
+                    import time
+                    sleep_time = 0.5 * (2 ** (attempt - 1))
+                    logger.debug("RSS discovery transient failure on attempt %d for query '%s': %s. Retrying in %.1fs...", attempt, query, exc, sleep_time)
+                    time.sleep(sleep_time)
+                else:
+                    logger.warning("RSS discovery request failed after %d attempts for query '%s': %s", max_attempts, query, exc)
+                    return []
 
         return self.parse_rss_feed(
             xml_content=xml_content,

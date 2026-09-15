@@ -3,10 +3,11 @@ Pipeline Context: shared runtime state and configuration across all pipeline sta
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional, Callable
 
+from config import get_settings
 from app.models import Article, Event
 from app.utils.performance_metrics import PipelineMetrics
 
@@ -15,10 +16,10 @@ from app.utils.performance_metrics import PipelineMetrics
 class PipelineContext:
     """Shared execution context passed across modular pipeline stages."""
     # Run configuration & timing
-    run_reference_time: datetime
-    data_dir: Path
-    logs_dir: Path
-    settings: Any
+    run_reference_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    data_dir: Path = field(default_factory=lambda: Path("data"))
+    logs_dir: Path = field(default_factory=lambda: Path("logs"))
+    settings: Any = field(default_factory=lambda: get_settings())
     max_india: Optional[int] = None
     max_international: Optional[int] = None
 
@@ -75,3 +76,27 @@ class PipelineContext:
     rss_international_used: int = 0
     internal_pipeline_errors: int = 0
     portfolio_discovery_executed: bool = False
+
+    def __post_init__(self):
+        """Initialize missing default engines if not provided."""
+        if self.scorer is None:
+            from app.ranking.scorer import InvestmentRelevanceScorer
+            self.scorer = InvestmentRelevanceScorer()
+        if self.ranker is None:
+            from app.ranking import CandidatePoolRanker
+            self.ranker = CandidatePoolRanker(scorer=self.scorer)
+        if self.reg_clf is None:
+            from app.classification.region_classifier import EventRegionClassifier
+            self.reg_clf = EventRegionClassifier()
+        if self.history_store is None:
+            from app.deduplication import HistoryStore
+            self.history_store = HistoryStore(db_path=str(self.data_dir / "briefing_history.json"))
+        if self.dedup_engine is None:
+            from app.deduplication import DeduplicationEngine
+            self.dedup_engine = DeduplicationEngine(history_store=self.history_store)
+        if self.verifier is None:
+            from app.verification import TwoSourceVerifier
+            self.verifier = TwoSourceVerifier()
+        if self.domestic_evaluator is None:
+            from app.verification.domestic_trending import DomesticTrendingEvaluator
+            self.domestic_evaluator = DomesticTrendingEvaluator()

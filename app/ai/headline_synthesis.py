@@ -8,11 +8,33 @@ Target length: roughly 18-32 words.
 """
 
 import re
-from typing import List, Optional
-
+from typing import List, Optional, Tuple
 from app.models.article import Article
 from app.models.event import Event
 from app.utils.text_patterns import TITLE_SUFFIX_PATTERN
+
+ANALYST_BROKERAGE_FIRMS: Tuple[str, ...] = (
+    "goldman sachs",
+    "jefferies",
+    "morgan stanley",
+    "jpmorgan",
+    "jp morgan",
+    "nomura",
+    "clsa",
+    "macquarie",
+    "ubs",
+    "hsbc",
+    "citi",
+    "citigroup",
+    "bernstein",
+    "kotak institutional equities",
+    "motilal oswal",
+    "emkay",
+    "nuvama",
+    "investec",
+    "bofa securities",
+    "bank of america",
+)
 
 
 def _clean_headline_text(raw_title: str) -> str:
@@ -26,12 +48,62 @@ def _clean_headline_text(raw_title: str) -> str:
     return cleaned
 
 
+def validate_headline_coherence(
+    headline: str,
+    event: Optional[Event] = None,
+    article: Optional[Article] = None,
+) -> Tuple[bool, str]:
+    """
+    Validate that a headline is coherent, grounded, and free from malformed artifacts:
+    - Acquirer and target not mixed up (e.g. 'Company A Agrees to Acquire Company A Announces...').
+    - Target is not a research brokerage (e.g. 'Company A Agrees to Acquire Goldman Sachs').
+    - Financial figures are valid and not unparsed fragments (e.g. 'rs,', '$', '₹').
+    - No duplicated phrases (e.g. 'X Agrees to Acquire X').
+    """
+    if not headline:
+        return False, "Headline is empty"
+
+    # 1. Duplicated entity in action (e.g. 'X Agrees to Acquire X' or 'X ... X Announces')
+    acq_match = re.search(
+        r"^(.*?)\s+(?:agrees to acquire|acquires?|buys?|takes over)\s+(.*?)(?:;|\s+for|\s+in|$)",
+        headline,
+        re.IGNORECASE,
+    )
+    if acq_match:
+        acquirer = acq_match.group(1).strip().lower()
+        target = acq_match.group(2).strip().lower()
+        target_clean = re.sub(r"[;,.]+$", "", target).strip()
+        if acquirer and target_clean:
+            if acquirer == target_clean or acquirer in target_clean or target_clean in acquirer:
+                return False, f"Malformed headline: acquirer '{acquirer}' duplicates target '{target_clean}'"
+            for broker in ANALYST_BROKERAGE_FIRMS:
+                if broker in target_clean:
+                    return False, f"Malformed headline: brokerage/analyst '{broker}' falsely treated as acquisition target"
+
+    # 2. Malformed currency/number fragments like 'for rs,' or 'for ₹' without digits
+    if re.search(r"\b(?:for|worth|of)\s+(?:rs\.?|₹|\$|€|£)\s*[,.;]?(?!\d)", headline, re.IGNORECASE):
+        return False, "Malformed headline: currency symbol without numeric digits"
+
+    # 3. Repeated repetitive phrases like 'Company A Announces Acquisition ... Company A'
+    words = [w.strip(".,;:()\"'") for w in headline.split() if len(w) > 3]
+    for i in range(len(words) - 4):
+        ngram = " ".join(words[i:i+3]).lower()
+        rest = " ".join(words[i+3:]).lower()
+        if ngram in rest and len(ngram) > 10:
+            return False, f"Malformed headline: repetitive phrasing '{ngram}'"
+
+    return True, ""
+
+
 def is_approved_institutional_headline(headline: str) -> bool:
     """
     Check if a headline already adheres to the two-clause semi-colon format
-    with target length (16 to 36 words) and substantive clauses.
+    with target length (16 to 36 words), substantive clauses, and coherence.
     """
     if not headline or ";" not in headline:
+        return False
+    is_coh, _ = validate_headline_coherence(headline)
+    if not is_coh:
         return False
     parts = headline.split(";", 1)
     if len(parts) != 2:
@@ -332,29 +404,50 @@ def synthesize_investment_headline(
     if not is_divestment_or_exit and re.search(r"\b(?:to acquire|acquires?|acquired|acquisition|buys?|bought|buyout|takeover|merger|merge|merges)\b", clean_h, re.IGNORECASE):
         acq_regex = re.search(r"^(.*?)\s+(?:to acquire|acquires?|buys?|takes over)\s+(.*?)(?:\s+for\s+(.*?))?$", clean_h, re.IGNORECASE)
         val = extracted_figures[0] if extracted_figures else None
+        if val and not any(c.isdigit() for c in val):
+            val = None
+
         target = secondary_comp or "Target Enterprise"
         if acq_regex:
-            primary_comp = acq_regex.group(1).strip()
-            target = acq_regex.group(2).strip()
+            cand_primary = acq_regex.group(1).strip()
+            cand_target = acq_regex.group(2).strip()
+            if len(cand_primary) >= 2:
+                primary_comp = cand_primary
+            if len(cand_target) >= 2:
+                target = cand_target
             if acq_regex.group(3):
-                val = acq_regex.group(3).strip()
+                val_cand = acq_regex.group(3).strip()
+                if any(c.isdigit() for c in val_cand):
+                    val = val_cand
 
-        if val:
-            c1 = f"{primary_comp} Agrees to Acquire {target} for {val}"
-        else:
-            c1 = f"{primary_comp} Agrees to Acquire {target} in Strategic Corporate Transaction"
+        # Prevent brokerages from being treated as acquisition target
+        is_target_brokerage = any(b in target.lower() for b in ANALYST_BROKERAGE_FIRMS)
+        # Prevent self-acquisition or duplicate names
+        is_self_acq = primary_comp.lower() in target.lower() or target.lower() in primary_comp.lower()
 
-        if article_implication:
-            c2 = article_implication
-        else:
-            c2 = "Transaction Consolidates Control of Key Operating Assets and Expands Sector Scale"
-        return _format_headline(c1, c2)
+        if not is_target_brokerage and not is_self_acq and target != "Target Enterprise":
+            if val:
+                c1 = f"{primary_comp} Agrees to Acquire {target} for {val}"
+            else:
+                c1 = f"{primary_comp} Agrees to Acquire {target} in Strategic Corporate Transaction"
+
+            if article_implication:
+                c2 = article_implication
+            else:
+                c2 = "Transaction Consolidates Control of Key Operating Assets and Expands Sector Scale"
+            candidate_hl = _format_headline(c1, c2)
+            is_coh, _ = validate_headline_coherence(candidate_hl, event=event, article=article)
+            if is_coh:
+                return candidate_hl
 
     # =========================================================================
     # ARCHETYPE 9: Factual Cleaned Original Fallback (Never fabricate boilerplate)
     # =========================================================================
     if article_implication:
-        return _format_headline(clean_h, article_implication)
+        candidate_hl = _format_headline(clean_h, article_implication)
+        is_coh, _ = validate_headline_coherence(candidate_hl, event=event, article=article)
+        if is_coh:
+            return candidate_hl
     return clean_h
 
 

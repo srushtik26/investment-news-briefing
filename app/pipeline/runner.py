@@ -607,6 +607,17 @@ def run_pipeline(
                 raw_t = ev.canonical_title if ev else story.headline
                 story.headline = synthesize_investment_headline(raw_t, event=ev, article=art)
 
+            from app.ai.headline_synthesis import validate_headline_coherence, _clean_headline_text
+            is_coh, coh_reason = validate_headline_coherence(story.headline, event=ev, article=art)
+            if not is_coh:
+                logger.warning(
+                    "Headline coherence check failed for '%s' (%s) — reverting to clean canonical title",
+                    story.headline,
+                    coh_reason,
+                )
+                raw_t = ev.canonical_title if ev else story.headline
+                story.headline = _clean_headline_text(raw_t)
+
             if not getattr(story, "summary", None):
                 story.summary = generate_deterministic_summary(art, ev, story.headline)
             else:
@@ -720,9 +731,20 @@ def run_pipeline(
         print(briefing_text)
         with open(data_dir / "briefing_output.txt", "w", encoding="utf-8") as f:
             f.write(briefing_text)
+        dom_c = len(selection_payload.domestic_stories) if selection_payload else 0
+        ind_c = len(selection_payload.india_stories) if selection_payload else 0
+        int_c = len(selection_payload.international_stories) if selection_payload else 0
+        print(f"FINAL_REGION_COUNTS: DOMESTIC={dom_c} INDIA={ind_c} INTERNATIONAL={int_c} TOTAL={len(all_final)}")
+        import os
+        if (os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes")) or (os.environ.get("APP_ENV", "").strip().lower() == "test"):
+            print("EMAIL=MOCKED DASHBOARD=MOCKED PIPELINE_STATUS=SUCCESS")
     else:
         print("\nFINAL BRIEFING: NOT GENERATED")
         if not sufficient:
+            for reg_name, pool_len in [("DOMESTIC", len(domestic_pool)), ("INDIA", len(india_pool)), ("INTERNATIONAL", len(intl_pool))]:
+                if pool_len < 5:
+                    print(f"INSUFFICIENT_VALID_STORIES: region={reg_name} required=5 available={pool_len}")
+                    print(f"PIPELINE_FAILED stage={reg_name}_SELECTION required=5 valid={pool_len}")
             deficient_sections = []
             if len(domestic_pool) < 5:
                 deficient_sections.append(f"Domestic ({len(domestic_pool)}/5)")
@@ -734,6 +756,7 @@ def run_pipeline(
             print(f"Reason: {section_msg}")
         elif validation_report and validation_report.failure_reason:
             print(f"Reason: {validation_report.failure_reason}")
+            print(f"PIPELINE_FAILED stage=FINAL_VALIDATION check_id={validation_report.failed_check_id} reason={validation_report.failure_reason}")
 
     metrics.stop_timer("total_seconds")
     summary_metrics = metrics.format_summary()
