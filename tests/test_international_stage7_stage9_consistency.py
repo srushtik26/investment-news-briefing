@@ -134,6 +134,32 @@ def test_non_geopolitical_story_passes():
     assert reason == ""
 
 
+def test_substring_words_not_flagged_as_geopolitical():
+    """
+    Words like 'toward', 'software', 'hardware', 'award', 'forward' contain 'war',
+    but are NOT geopolitical war stories and must not be falsely rejected for lacking digits.
+    """
+    # 1. Real failure case from run 34932401237
+    prod_headline = (
+        "MySize Announces Strategic Shift Toward Defense Technology Acquisitions; "
+        "Company to Target Growth Opportunities in High-Value Security Markets"
+    )
+    assert not is_geopolitical_story(prod_headline)
+    is_elig, reason = is_geopolitical_market_impact_eligible(prod_headline)
+    assert is_elig
+    assert reason == ""
+
+    # 2. Other substring variations
+    assert not is_geopolitical_story("Software vendor wins cloud architecture award")
+    assert not is_geopolitical_story("Hardware maker issues forward-looking guidance")
+
+    # 3. Legitimate geopolitical keywords DO match
+    assert is_geopolitical_story("Tensions flare in regional war")
+    assert is_geopolitical_story("Global trade wars escalate")
+    assert is_geopolitical_story("New sanctions target financial institutions")
+    assert is_geopolitical_story("Higher tariff imposed on electronics")
+
+
 # ---------------------------------------------------------------------------
 # CASE C: Invalid geopolitical candidate + valid reserve candidate -> Invalid skipped, reserve fills slot
 # ---------------------------------------------------------------------------

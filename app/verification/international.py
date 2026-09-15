@@ -22,13 +22,17 @@ GEOPOLITICAL_KEYWORDS: Tuple[str, ...] = (
     "ceasefire",
 )
 
+GEOPOLITICAL_PATTERN: re.Pattern = re.compile(
+    r"\b(war|wars|sanctions?|geopolitical|tariffs?|ceasefires?)\b",
+    re.IGNORECASE,
+)
+
 
 def is_geopolitical_story(text: str) -> bool:
-    """Return True if text contains any geopolitical keywords."""
+    """Return True if text contains any geopolitical keywords as distinct words."""
     if not text:
         return False
-    t_lower = text.lower()
-    return any(geo in t_lower for geo in GEOPOLITICAL_KEYWORDS)
+    return bool(GEOPOLITICAL_PATTERN.search(text))
 
 
 def is_geopolitical_market_impact_eligible(
