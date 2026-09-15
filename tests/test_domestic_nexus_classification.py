@@ -19,6 +19,18 @@ def test_foreign_subject_does_not_survive_domestic_discovery_prior():
     assert "foreign" in reason.lower() or "no indian domestic nexus" in reason.lower()
 
 
+def test_china_pulls_back_modi_xi_talks_classifies_without_error():
+    """Verify border talk headline classifies properly without NameError on has_india_mention."""
+    classifier = EventRegionClassifier()
+    category, reason = classifier.classify_with_reason(
+        title='China Pulls Back From LAC As Modi-Xi Talks Signal A Cautious Thaw',
+        content='Diplomatic and military officials reported pullback across friction points.',
+        discovery_region=None,
+    )
+    assert category in (NewsCategory.INTERNATIONAL, NewsCategory.DOMESTIC, NewsCategory.INDIA)
+    assert len(reason) > 0
+
+
 def test_valid_indian_public_affairs_story_remains_domestic():
     classifier = EventRegionClassifier()
 

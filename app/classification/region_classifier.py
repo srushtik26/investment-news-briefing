@@ -283,8 +283,9 @@ class EventRegionClassifier:
         has_foreign_geo = any(re.search(pat, title_lower) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
         has_india_nexus_title = self.has_positive_indian_nexus(title_lower)
         has_india_nexus_context = self.has_positive_indian_nexus(context_text)
+        has_india_mention = has_india_nexus_title or has_india_nexus_context
 
-        if has_foreign_geo and not has_india_nexus_title and not has_india_nexus_context:
+        if has_foreign_geo and not has_india_mention:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL"
 
         if intl_entity_matches:
