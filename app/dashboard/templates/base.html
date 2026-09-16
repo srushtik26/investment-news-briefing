@@ -1,125 +1,179 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ title }} - Plutus Wealth Management LLP</title>
+  <title>{{ title }} - MarketPulse</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260911_plutus_v4">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260916_marketpulse_v1">
   <style>
-    /* Immediate theme enforcement to guarantee zero browser caching latency */
     :root {
-      --primary-green: #183A27 !important;
-      --secondary-green: #234E37 !important;
-      --accent-gold: #B8934A !important;
-      --accent-gold-hover: #CCA85E !important;
-      --accent-gold-light: #F7EEDB !important;
-      --bg-page: #F7F9F7 !important;
+      --primary-green: #0B4F35 !important;
+      --deep-green: #073D2A !important;
+      --accent-green: #176B49 !important;
+      --gold: #B68A2C !important;
+      --soft-gold: #C9A84D !important;
+      --background: #F8FAF8 !important;
+      --surface: #FFFFFF !important;
+      --text-main: #17221C !important;
+      --text-muted: #68756E !important;
+      --border: #E3E9E5 !important;
+
+      --bg-page: #F8FAF8 !important;
       --bg-surface: #FFFFFF !important;
-      --text-primary: #14261C !important;
-      --text-secondary: #4A5F53 !important;
-      --border-light: #E3E9E4 !important;
+      --text-primary: #17221C !important;
+      --text-secondary: #68756E !important;
+      --border-light: #E3E9E5 !important;
+      --accent-gold: #B68A2C !important;
+      --accent-gold-hover: #C9A84D !important;
     }
+
     .site-header {
-      background-color: #14261C !important;
-      border-top: 4px solid #B8934A !important;
-      border-bottom: 1px solid rgba(184, 147, 74, 0.3) !important;
-      box-shadow: 0 4px 12px rgba(10, 20, 14, 0.25) !important;
+      background-color: #FFFFFF !important;
+      border-top: none !important;
+      border-bottom: 1px solid #E3E9E5 !important;
+      box-shadow: 0 1px 4px rgba(7, 61, 42, 0.04) !important;
     }
+
     .brand-logo {
-      height: 42px !important;
-      width: 42px !important;
-      max-height: 42px !important;
+      height: 48px !important;
+      width: 48px !important;
+      max-height: 52px !important;
       object-fit: contain !important;
       display: block !important;
+      border-radius: 4px !important;
     }
+
     .brand-title {
-      color: #FFFFFF !important;
-      font-size: 1.15rem !important;
+      color: #073D2A !important;
+      font-size: 1.3rem !important;
       font-weight: 800 !important;
-      letter-spacing: 0.04em !important;
-      line-height: 1.2 !important;
+      letter-spacing: 0.06em !important;
+      line-height: 1.15 !important;
     }
+
     .brand-subtitle {
-      color: #B8934A !important;
+      color: #68756E !important;
       font-size: 0.775rem !important;
-      font-weight: 700 !important;
-      letter-spacing: 0.03em !important;
+      font-weight: 600 !important;
+      letter-spacing: 0.04em !important;
       text-transform: uppercase !important;
     }
+
+    .header-accent-line {
+      height: 2px !important;
+      width: 100% !important;
+      background: linear-gradient(90deg, #0B4F35 0%, #B68A2C 40%, transparent 80%) !important;
+    }
+
     .nav-link {
-      color: #D6E4DC !important;
+      color: #68756E !important;
+      border-bottom: 2.5px solid transparent !important;
+      border-radius: 0 !important;
+      padding: 0.4rem 0.2rem !important;
     }
+
     .nav-link:hover {
-      color: #FFFFFF !important;
-      background-color: rgba(255, 255, 255, 0.08) !important;
-      border-color: rgba(184, 147, 74, 0.4) !important;
+      color: #0B4F35 !important;
+      background-color: transparent !important;
+      border-bottom-color: #B68A2C !important;
     }
+
     .nav-link.active {
-      background-color: #214431 !important;
-      color: #F7EEDB !important;
-      border: 1px solid #B8934A !important;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) !important;
+      background-color: transparent !important;
+      color: #073D2A !important;
+      border-bottom: 2.5px solid #0B4F35 !important;
+      box-shadow: none !important;
+      border-top: none !important;
+      border-left: none !important;
+      border-right: none !important;
     }
+
     .section-header {
-      border-bottom: 2.5px solid #B8934A !important;
+      border-bottom: 2px solid #B68A2C !important;
       color: #FFFFFF !important;
     }
+
     .header-india {
-      background: linear-gradient(135deg, #102619 0%, #1A402B 100%) !important;
+      background: linear-gradient(135deg, #073D2A 0%, #0B4F35 100%) !important;
     }
+
     .header-domestic {
-      background: linear-gradient(135deg, #153222 0%, #224D36 100%) !important;
+      background: linear-gradient(135deg, #09422D 0%, #10593B 100%) !important;
     }
+
     .header-international {
-      background: linear-gradient(135deg, #0C2116 0%, #173B28 100%) !important;
+      background: linear-gradient(135deg, #053323 0%, #084730 100%) !important;
     }
+
     .story-number {
-      background-color: #F0F5F2 !important;
-      color: #183A27 !important;
-      border: 1.5px solid #B8934A !important;
+      background-color: #F1F6F3 !important;
+      color: #073D2A !important;
+      border: 1.5px solid #B68A2C !important;
     }
+
     .story-headline {
-      color: #183A27 !important;
+      color: #17221C !important;
     }
-    .story-link, .archive-link {
-      color: #B8934A !important;
+
+    .story-link,
+    .archive-link {
+      color: #0B4F35 !important;
     }
+
+    .story-link:hover,
+    .archive-link:hover {
+      color: #B68A2C !important;
+    }
+
     .briefing-banner {
-      border-left: 5px solid #B8934A !important;
+      border-left: 4px solid #0B4F35 !important;
     }
+
     .briefing-date-title {
-      color: #183A27 !important;
+      color: #073D2A !important;
+    }
+
+    .source-tag {
+      color: #073D2A !important;
+      background-color: #EDF4F0 !important;
+      border: 1px solid #D7E5DD !important;
+    }
+
+    .site-footer {
+      display: none !important;
     }
   </style>
 </head>
+
 <body>
   <header class="site-header">
     <div class="header-inner">
       <div class="brand-group">
         <a href="/" class="brand-link">
-          <img src="/static/images/logo_circle.png" alt="Plutus Emblem" class="brand-logo">
+          <img src="/static/images/marketpulse_logo.png" alt="MarketPulse Logo" class="brand-logo">
           <div class="brand-text">
-            <h1 class="brand-title">PLUTUS WEALTH MANAGEMENT LLP</h1>
-            <p class="brand-subtitle">Investment Committee Intelligence &bull; Plutus Pulse</p>
+            <h1 class="brand-title">MARKETPULSE</h1>
+            <p class="brand-subtitle">Daily Investment Intelligence</p>
           </div>
         </a>
       </div>
       <nav class="nav-links">
         <a href="/" class="nav-link {% if is_latest %}active{% endif %}">Latest Briefing</a>
-        <a href="/archive" class="nav-link {% if not is_latest and title == 'Briefing Archive' %}active{% endif %}">Archive</a>
+        <a href="/archive"
+          class="nav-link {% if not is_latest and title == 'Briefing Archive' %}active{% endif %}">Archive</a>
       </nav>
     </div>
+    <div class="header-accent-line"></div>
   </header>
 
   <main class="main-content">
     {% block content %}{% endblock %}
   </main>
-
-  <footer class="site-footer">
-    <p>&copy; 2026 Plutus Wealth Management LLP. Strictly Confidential &bull; For Internal Investment Committee Use Only.</p>
-  </footer>
 </body>
+
 </html>

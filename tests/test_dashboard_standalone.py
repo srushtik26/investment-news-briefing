@@ -392,7 +392,9 @@ def test_10_homepage_and_archive_web_render(tmp_path: Path):
     # Homepage
     resp_home = client.get("/")
     assert resp_home.status_code == 200
-    assert "PLUTUS WEALTH MANAGEMENT LLP" in resp_home.text
+    assert "MARKETPULSE" in resp_home.text
+    assert "Daily Investment Intelligence" in resp_home.text
+    assert "PLUTUS WEALTH MANAGEMENT LLP" not in resp_home.text
     assert "Dangote Refinery Prepares Share Sale" in resp_home.text
     assert "Top 5 India Business Headlines" in resp_home.text
 

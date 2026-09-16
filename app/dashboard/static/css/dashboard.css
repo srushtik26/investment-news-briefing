@@ -1,33 +1,39 @@
 /* ==========================================================================
-   Plutus Wealth Management LLP - Plutus Pulse Dashboard Theme
-   Navbar: #14261C | Accent: Antique Warm Gold #B8934A
+   MARKETPULSE - Daily Investment Intelligence Dashboard Theme
+   Modern, minimal, finance-focused design system
    ========================================================================== */
 
 :root {
-  /* Logo-derived palette */
-  --primary-green: #183A27;       /* Authoritative deep forest green */
-  --secondary-green: #234E37;     /* Balanced forest shade */
-  --dark-green-surface: #14261C;  /* Navbar grounding */
-  --accent-gold: #B8934A;         /* Rich antique gold from ECG pulse and crest */
-  --accent-gold-hover: #CCA85E;   /* Elevated bright gold */
-  --accent-gold-light: #F7EEDB;   /* Pale gold surface tint */
-  --accent-gold-subtle: #E8DCBE;  /* Gold border tint */
-  
-  /* Surfaces & Layout */
-  --bg-page: #F7F9F7;             /* Executive crisp off-white with hint of sage */
-  --bg-surface: #FFFFFF;          /* Pure white card surface */
-  --text-primary: #14261C;        /* Dark forest slate for maximum readability */
-  --text-secondary: #4A5F53;      /* Muted secondary editorial tone */
-  --text-muted: #768B7E;          /* Soft metadata slate */
-  
-  /* Borders & Accents */
-  --border-light: #E3E9E4;        /* Soft card separator */
-  --border-accent: #CBD5CE;       /* Prominent divider */
+  /* MarketPulse Theme Palette */
+  --primary-green: #0B4F35;
+  --deep-green: #073D2A;
+  --accent-green: #176B49;
+
+  --gold: #B68A2C;
+  --soft-gold: #C9A84D;
+
+  --background: #F8FAF8;
+  --surface: #FFFFFF;
+  --text-main: #17221C;
+  --text-muted: #68756E;
+  --border: #E3E9E5;
+
+  /* Aliases for template & component styling */
+  --bg-page: var(--background);
+  --bg-surface: var(--surface);
+  --text-primary: var(--text-main);
+  --text-secondary: var(--text-muted);
+  --border-light: var(--border);
+  --border-accent: #CBD5CE;
+  --accent-gold: var(--gold);
+  --accent-gold-hover: var(--soft-gold);
+  --accent-gold-light: #F7EEDB;
+  --accent-gold-subtle: #E8DCBE;
   
   /* Shadows & Radius */
-  --shadow-sm: 0 1px 3px rgba(24, 58, 39, 0.05);
-  --shadow-md: 0 4px 10px -1px rgba(24, 58, 39, 0.08), 0 2px 4px -1px rgba(24, 58, 39, 0.04);
-  --shadow-lg: 0 12px 24px -4px rgba(24, 58, 39, 0.10);
+  --shadow-sm: 0 1px 3px rgba(7, 61, 42, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --shadow-md: 0 4px 10px -1px rgba(7, 61, 42, 0.06), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --shadow-lg: 0 12px 24px -4px rgba(7, 61, 42, 0.08);
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -50,19 +56,18 @@ body {
 
 /* Header & Navigation */
 .site-header {
-  background-color: #14261C;
-  border-top: 4px solid var(--accent-gold);
-  border-bottom: 1px solid rgba(184, 147, 74, 0.3);
-  padding: 0.85rem 2rem;
-  box-shadow: 0 4px 12px rgba(10, 20, 14, 0.25);
+  background-color: var(--surface);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 100;
+  box-shadow: 0 1px 4px rgba(7, 61, 42, 0.04);
 }
 
 .header-inner {
   max-width: 1240px;
   margin: 0 auto;
+  padding: 0.85rem 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -84,16 +89,17 @@ body {
 }
 
 .brand-logo {
-  height: 42px;
-  width: 42px;
-  max-height: 42px;
+  height: 48px;
+  width: 48px;
+  max-height: 52px;
   object-fit: contain;
   display: block;
+  border-radius: 4px;
   transition: transform 0.2s ease;
 }
 
 .brand-link:hover .brand-logo {
-  transform: scale(1.06);
+  transform: scale(1.04);
 }
 
 .brand-text {
@@ -102,65 +108,68 @@ body {
 }
 
 .brand-title {
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #FFFFFF;
-  line-height: 1.2;
+  letter-spacing: 0.06em;
+  color: var(--deep-green);
+  line-height: 1.15;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .brand-subtitle {
   font-size: 0.775rem;
-  color: var(--accent-gold);
-  font-weight: 700;
+  color: var(--text-muted);
+  font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
+}
+
+.header-accent-line {
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, #0B4F35 0%, #B68A2C 40%, transparent 80%);
 }
 
 .nav-links {
   display: flex;
-  gap: 0.6rem;
+  gap: 1.5rem;
   align-items: center;
 }
 
 .nav-link {
-  color: #D6E4DC;
+  color: var(--text-muted);
   text-decoration: none;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  padding: 0.45rem 1rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
+  padding: 0.4rem 0.2rem;
+  border-bottom: 2.5px solid transparent;
   transition: all 0.2s ease;
 }
 
 .nav-link:hover {
-  color: #FFFFFF;
-  background-color: rgba(255, 255, 255, 0.08);
-  border-color: rgba(184, 147, 74, 0.4);
+  color: var(--primary-green);
+  border-bottom-color: var(--gold);
 }
 
 .nav-link.active {
-  background-color: #214431;
-  color: #F7EEDB;
-  border: 1px solid var(--accent-gold);
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+  color: var(--deep-green);
+  font-weight: 700;
+  border-bottom: 2.5px solid var(--primary-green);
 }
 
 /* Main Container */
 .main-content {
   max-width: 1240px;
-  margin: 2.25rem auto;
+  margin: 2rem auto 3.5rem auto;
   padding: 0 1.5rem;
 }
 
 /* Page Meta Banner */
 .briefing-banner {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-left: 5px solid var(--accent-gold);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary-green);
   border-radius: var(--radius-md);
   padding: 1.35rem 1.75rem;
   margin-bottom: 2rem;
@@ -173,29 +182,37 @@ body {
 }
 
 .briefing-date-title {
-  font-size: 1.6rem;
+  font-size: 1.65rem;
   font-weight: 800;
-  color: var(--primary-green);
-  letter-spacing: -0.01em;
+  color: var(--deep-green);
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.briefing-hero-subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-top: 0.35rem;
 }
 
 .briefing-badge {
   display: inline-block;
-  background-color: var(--accent-gold-light);
-  color: #7A5B1D;
+  background-color: #F1F6F3;
+  color: var(--deep-green);
   font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 0.35rem 0.75rem;
   border-radius: 9999px;
-  border: 1px solid var(--accent-gold-subtle);
+  border: 1px solid var(--border);
 }
 
 .badge-live {
-  background-color: #E7F5EC;
-  color: #165633;
-  border-color: #BEE3CC;
+  background-color: #E8F4EE;
+  color: var(--primary-green);
+  border-color: #C3E2D1;
 }
 
 /* Grid & Sections */
@@ -206,8 +223,8 @@ body {
 }
 
 .section-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
@@ -219,7 +236,7 @@ body {
 }
 
 .section-header {
-  padding: 1.1rem 1.5rem;
+  padding: 1rem 1.5rem;
   font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: 0.03em;
@@ -227,19 +244,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 2.5px solid var(--accent-gold);
+  border-bottom: 2px solid var(--gold);
 }
 
 .header-india {
-  background: linear-gradient(135deg, #102619 0%, #1A402B 100%);
+  background: linear-gradient(135deg, #073D2A 0%, #0B4F35 100%);
 }
 
 .header-domestic {
-  background: linear-gradient(135deg, #153222 0%, #224D36 100%);
+  background: linear-gradient(135deg, #09422D 0%, #10593B 100%);
 }
 
 .header-international {
-  background: linear-gradient(135deg, #0C2116 0%, #173B28 100%);
+  background: linear-gradient(135deg, #053323 0%, #084730 100%);
 }
 
 /* Stories List */
@@ -268,16 +285,16 @@ body {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  background-color: #F0F5F2;
-  color: var(--primary-green);
-  border: 1.5px solid var(--accent-gold);
+  background-color: #F1F6F3;
+  color: var(--deep-green);
+  border: 1.5px solid var(--gold);
   font-weight: 800;
   font-size: 0.85rem;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 1px 2px rgba(24, 58, 39, 0.05);
+  box-shadow: 0 1px 2px rgba(7, 61, 42, 0.05);
 }
 
 .story-body {
@@ -287,14 +304,14 @@ body {
 .story-headline {
   font-size: 1.075rem;
   font-weight: 700;
-  color: var(--primary-green);
+  color: var(--text-main);
   margin-bottom: 0.45rem;
   line-height: 1.45;
 }
 
 .story-summary {
   font-size: 0.925rem;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   margin-bottom: 0.65rem;
   line-height: 1.6;
 }
@@ -308,19 +325,19 @@ body {
 }
 
 .source-tag {
-  font-weight: 700;
-  color: var(--primary-green);
-  background-color: #EBF2ED;
-  border: 1px solid #D3E0D6;
+  font-weight: 600;
+  color: var(--deep-green);
+  background-color: #EDF4F0;
+  border: 1px solid #D7E5DD;
   padding: 0.2rem 0.6rem;
   border-radius: var(--radius-sm);
   font-size: 0.775rem;
 }
 
 .story-link {
-  color: var(--accent-gold);
+  color: var(--primary-green);
   text-decoration: none;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 0.85rem;
   display: inline-flex;
   align-items: center;
@@ -329,14 +346,14 @@ body {
 }
 
 .story-link:hover {
-  color: var(--primary-green);
+  color: var(--gold);
   text-decoration: underline;
 }
 
 /* Archive View */
 .archive-table-container {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   overflow-x: auto;
@@ -349,14 +366,14 @@ body {
 }
 
 .archive-table th {
-  background-color: #EEF4F0;
-  color: var(--primary-green);
+  background-color: #F1F6F3;
+  color: var(--deep-green);
   font-weight: 800;
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 1rem 1.35rem;
-  border-bottom: 2px solid var(--accent-gold);
+  border-bottom: 2px solid var(--gold);
 }
 
 .archive-table td {
@@ -374,8 +391,8 @@ body {
 }
 
 .archive-link {
-  color: var(--accent-gold);
-  font-weight: 700;
+  color: var(--primary-green);
+  font-weight: 600;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
@@ -384,7 +401,7 @@ body {
 }
 
 .archive-link:hover {
-  color: var(--primary-green);
+  color: var(--gold);
   text-decoration: underline;
 }
 
@@ -392,7 +409,7 @@ body {
 .empty-state {
   text-align: center;
   padding: 4.5rem 2rem;
-  background: var(--bg-surface);
+  background: var(--surface);
   border: 1px dashed var(--border-accent);
   border-radius: var(--radius-md);
 }
@@ -400,52 +417,55 @@ body {
 .empty-state h3 {
   font-size: 1.35rem;
   font-weight: 800;
-  color: var(--primary-green);
+  color: var(--deep-green);
   margin-bottom: 0.5rem;
 }
 
 .empty-state p {
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: 0.95rem;
 }
 
 .empty-state code {
-  background-color: #F0F5F2;
-  color: var(--primary-green);
+  background-color: #F1F6F3;
+  color: var(--deep-green);
   padding: 0.15rem 0.4rem;
   border-radius: 4px;
   font-family: monospace;
 }
 
-/* Footer */
+/* Footer disabled */
 .site-footer {
-  text-align: center;
-  padding: 2.5rem 1rem;
-  color: var(--text-muted);
-  font-size: 0.825rem;
-  border-top: 1px solid var(--border-light);
-  background: #FFFFFF;
-  margin-top: 4rem;
+  display: none;
 }
 
 /* Responsive Adjustments */
 @media (max-width: 768px) {
-  .site-header {
-    padding: 0.85rem 1rem;
+  .header-inner {
+    padding: 0.75rem 1rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
   }
   .brand-logo {
-    height: 36px;
-    width: 36px;
+    height: 40px;
+    width: 40px;
   }
   .brand-title {
-    font-size: 1rem;
+    font-size: 1.15rem;
   }
   .brand-subtitle {
     font-size: 0.725rem;
   }
+  .nav-links {
+    width: 100%;
+    gap: 1.25rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--border);
+  }
   .main-content {
     padding: 0 1rem;
-    margin: 1.25rem auto;
+    margin: 1.25rem auto 2.5rem auto;
   }
   .briefing-banner {
     flex-direction: column;
