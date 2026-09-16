@@ -131,13 +131,13 @@ def is_testing_or_dry_run() -> bool:
 
     CRITICAL RULE:
     APP_ENV=production MUST NEVER activate mocks under any circumstances.
-    APP_ENV=testing OR PIPELINE_DRY_RUN=true safely enters dry-run behavior.
+    APP_ENV=test OR PIPELINE_DRY_RUN=true safely enters dry-run behavior.
     """
     import os
     app_env = os.environ.get("APP_ENV", "").strip().lower()
     if app_env == "production":
         return False
-    if app_env == "testing":
+    if app_env == "test":
         return True
     if os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
         return True

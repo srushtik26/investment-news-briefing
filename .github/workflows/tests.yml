@@ -30,7 +30,6 @@ jobs:
       - name: Run Pytest
         env:
           APP_ENV: testing
-          PIPELINE_DRY_RUN: 'true'
           GEMINI_API_KEY: mock_gemini_key
           SERPAPI_API_KEY: mock_serpapi_key
           GMAIL_SENDER: mock-sender@example.com
