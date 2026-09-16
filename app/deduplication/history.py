@@ -132,14 +132,18 @@ class HistoryStore:
         self,
         lookback_days: int = 3,
         target_date: Optional[date] = None,
+        reference_date: Optional[date] = None,
+        days: Optional[int] = None,
     ) -> Set[str]:
         """
         Fetch all event fingerprints and headlines recorded in the previous N days.
 
         Lookback window: [target_date - lookback_days, target_date]
         """
-        current_date = target_date or date.today()
-        start_date = current_date - timedelta(days=lookback_days)
+        effective_days = days if days is not None else lookback_days
+        effective_date = reference_date or target_date
+        current_date = effective_date or date.today()
+        start_date = current_date - timedelta(days=effective_days)
 
         start_str = start_date.isoformat()
         end_str = current_date.isoformat()
@@ -156,9 +160,17 @@ class HistoryStore:
             )
             rows = cursor.fetchall()
             fingerprints = set()
+            from app.deduplication.fingerprint import strip_date_from_fingerprint
+            import hashlib
+
             for r in rows:
                 if r[0]:
-                    fingerprints.add(r[0])
+                    fp = r[0]
+                    fingerprints.add(fp)
+                    stable_fp = strip_date_from_fingerprint(fp)
+                    if stable_fp:
+                        fingerprints.add(stable_fp)
+                        fingerprints.add(hashlib.sha256(stable_fp.encode("utf-8")).hexdigest())
                 if r[1]:
                     fingerprints.add(r[1])
             logger.debug("Found %d historical fingerprints/headlines in %d-day lookback window", len(fingerprints), lookback_days)

@@ -46,6 +46,53 @@ from app.ai.summary_grounding import is_summary_substantially_identical_to_headl
 
 logger = get_logger("validation.engine")
 
+_NUMBER_TOKEN_RE = re.compile(
+    r"(?<!\w)(?:₹|\$|rs\.?\s*)?(\d[\d,]*(?:\.\d+)?)\s*(%|crore|cr|billion|million|b|m)?(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def canonical_numeric_tokens(text: str) -> Set[str]:
+    """Extract whole numeric tokens and normalize grouping/symbols for exact comparison.
+
+    Normalizes Indian 2,2,3 grouping (e.g. 5,57,700) and Western 3,3 grouping (557,700)
+    to canonical digit strings (557700), along with standard units (cr, %, b, m).
+    """
+    values: Set[str] = set()
+    if not text:
+        return values
+
+    for match in _NUMBER_TOKEN_RE.finditer(text):
+        num_part = match.group(1).replace(",", "").strip()
+        unit_part = match.group(2)
+        if not num_part:
+            continue
+
+        unit_clean = ""
+        if unit_part:
+            u = unit_part.lower().strip()
+            if u in ("crore", "cr"):
+                unit_clean = "cr"
+            elif u in ("billion", "b"):
+                unit_clean = "b"
+            elif u in ("million", "m"):
+                unit_clean = "m"
+            elif u == "%":
+                unit_clean = "%"
+
+        if len(num_part) >= 2 or unit_clean:
+            values.add(f"{num_part}{unit_clean}")
+            if unit_clean and len(num_part) >= 2:
+                values.add(num_part)
+
+    # Also capture any comma-grouped integers or floats directly
+    for token in re.findall(r"(?<!\w)\d[\d,]*(?:\.\d+)?%?(?!\w)", text):
+        norm = token.replace(",", "").replace("%", "").strip()
+        if len(norm) >= 2:
+            values.add(norm)
+
+    return values
+
 
 class FinalValidationEngine:
     """
@@ -343,14 +390,14 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             if event and self.history_store:
                 comp = event.companies_involved[0] if event.companies_involved else "unspecified"
+                ev_type = getattr(event, "event_type", None) or "general"
                 fkey, fhash = generate_event_fingerprint(
                     company=comp,
-                    event_type="general",
-                    event_date=eval_date,
+                    event_type=ev_type,
                     key_facts=event.financial_figures,
                 )
                 recent_fps = self.history_store.get_recent_fingerprints(target_date=eval_date, lookback_days=3)
-                if fhash in recent_fps or fkey in recent_fps:
+                if fhash in recent_fps or fkey in recent_fps or (event.canonical_title and event.canonical_title in recent_fps):
                     check_results.append(ValidationCheckResult(
                         check_id=9,
                         check_name="No event appeared in previous 3 days",
@@ -362,28 +409,59 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             # CHECK 11 & 12: Headline numbers exist in facts & No fabricated numbers
             # -------------------------------------------------------------
-            if primary_art:
-                headline_numbers = set(re.findall(r"\b(?:\d+(?:\.\d+)?%?|\₹\d+|\$\d+)\b", story.headline.lower()))
-                source_text = (primary_art.title + " " + primary_art.content_text + " " + " ".join(event.financial_figures if event else [])).lower()
-                for num in headline_numbers:
-                    # Clean symbol
-                    clean_num = num.replace("₹", "").replace("$", "").replace("%", "").strip()
-                    if clean_num.isdigit() and len(clean_num) >= 2 and clean_num not in source_text:
+            headline_nums = canonical_numeric_tokens(story.headline)
+            if headline_nums:
+                if not primary_art or not event:
+                    # Missing grounding evidence CAN NEVER cause checks 11/12 to pass
+                    check_results.append(ValidationCheckResult(
+                        check_id=11,
+                        check_name="Headline numbers exist in verified article facts",
+                        passed=False,
+                        failure_reason=f"Headline contains numbers {sorted(headline_nums)} but story lacks verified event or primary article grounding",
+                        failed_story_id=story.event_id,
+                    ))
+                    check_results.append(ValidationCheckResult(
+                        check_id=12,
+                        check_name="No fabricated numbers",
+                        passed=False,
+                        failure_reason=f"Missing grounding evidence for story '{story.headline}'",
+                        failed_story_id=story.event_id,
+                    ))
+                else:
+                    source_text = (
+                        primary_art.title
+                        + " "
+                        + primary_art.content_text
+                        + " "
+                        + " ".join(event.financial_figures if event and event.financial_figures else [])
+                    )
+                    source_nums = canonical_numeric_tokens(source_text)
+                    source_clean_text = source_text.replace(",", "")
+
+                    unsupported = set()
+                    for h_num in headline_nums:
+                        if h_num in source_nums:
+                            continue
+                        raw_digits = re.sub(r"[^\d.]", "", h_num)
+                        if raw_digits and (raw_digits in source_nums or raw_digits in source_clean_text):
+                            continue
+                        unsupported.add(h_num)
+
+                    if unsupported:
                         check_results.append(ValidationCheckResult(
                             check_id=11,
                             check_name="Headline numbers exist in verified article facts",
                             passed=False,
-                            failure_reason=f"Headline contains unverified/fabricated number '{num}' not found in source text",
+                            failure_reason=f"Headline contains unverified/fabricated number(s): {', '.join(sorted(unsupported))}",
                             failed_story_id=story.event_id,
                         ))
                         check_results.append(ValidationCheckResult(
                             check_id=12,
                             check_name="No fabricated numbers",
                             passed=False,
-                            failure_reason=f"Fabricated financial number detected: '{num}'",
+                            failure_reason=f"Fabricated financial number detected: {', '.join(sorted(unsupported))}",
                             failed_story_id=story.event_id,
                         ))
-                        break
 
             # -------------------------------------------------------------
             # CHECK 13: No fabricated URLs

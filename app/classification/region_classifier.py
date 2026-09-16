@@ -203,6 +203,7 @@ class EventRegionClassifier:
                 return False, geo_reason
             return True, "valid International candidate"
 
+
         return True, "unrestricted section"
 
     def classify_with_reason(

@@ -4,7 +4,7 @@ Database Connection and Initialization Management using Python SQLite3.
 
 from pathlib import Path
 import sqlite3
-from typing import Optional
+from typing import Optional, Union
 
 from config import get_settings
 from app.logging_config import get_logger
@@ -12,10 +12,11 @@ from app.logging_config import get_logger
 logger = get_logger("database.connection")
 
 
-def resolve_db_path(database_url: Optional[str] = None) -> str:
+def resolve_db_path(database_url: Optional[Union[str, Path]] = None) -> str:
     """Resolve database URL string into local file path or shared memory URI."""
     settings = get_settings()
-    url = database_url or settings.DATABASE_URL
+    url_raw = database_url or settings.DATABASE_URL
+    url = str(url_raw)
 
     if url in (":memory:", "sqlite:///:memory:"):
         return "file:shared_mem_db?mode=memory&cache=shared"
@@ -26,7 +27,10 @@ def resolve_db_path(database_url: Optional[str] = None) -> str:
         path_obj.parent.mkdir(parents=True, exist_ok=True)
         return str(path_obj)
 
-    return url
+    path_obj = Path(url)
+    if path_obj.parent and str(path_obj.parent) != ".":
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+    return str(path_obj)
 
 
 def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:

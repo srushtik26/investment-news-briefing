@@ -78,34 +78,79 @@ def normalize_metric_facts(text: str) -> List[str]:
     return sorted(facts)
 
 
+def normalize_event_type(event_type: Optional[str]) -> str:
+    """Normalize event type category to lowercase alphanumeric slug."""
+    if not event_type:
+        return "general"
+    norm = re.sub(r"[^\w]+", "_", str(event_type).lower().strip().replace("&", "_and_")).strip("_")
+    if "earning" in norm or "quarterly_result" in norm or "financial_result" in norm:
+        return "earnings"
+    if "acquisition" in norm or "tender_offer" in norm or "buyout" in norm or "merger" in norm:
+        return "acquisition"
+    return norm or "general"
+
+
+def strip_date_from_fingerprint(fp: str) -> str:
+    """Strip YYYY-MM-DD from fingerprint string to yield canonical stable fingerprint."""
+    if not fp:
+        return ""
+    # Matches :YYYY-MM-DD: or :YYYY-MM-DD at the end
+    cleaned = re.sub(r":\d{4}-\d{2}-\d{2}(?=:|$)", "", fp)
+    return cleaned
+
+
 def generate_event_fingerprint(
     company: str,
-    event_type: str,
+    event_type: str = "general",
     event_date: Optional[date] = None,
     key_facts: Optional[List[str]] = None,
+    secondary_entity: Optional[str] = None,
+    include_date: bool = True,
 ) -> Tuple[str, str]:
     """
-    Generate deterministic fingerprint key and SHA256 hash.
+    Generate deterministic canonical fingerprint key and SHA256 hash.
 
     Args:
-        company: Standardized company name.
-        event_type: Event category string (e.g. EARNINGS, M&A).
-        event_date: Date of the event (defaults to today).
-        key_facts: List of extracted numbers/percentages.
+        company: Standardized company or entity name.
+        event_type: Event category string (e.g. EARNINGS, M_AND_A).
+        event_date: Optional date of the event (defaults to today).
+        key_facts: List of extracted numbers/percentages/facts.
+        secondary_entity: Optional second company involved (e.g. target in M&A).
+        include_date: Whether to include date into fingerprint (defaults to True).
 
     Returns:
         Tuple of (fingerprint_key, fingerprint_hash).
     """
     norm_comp = normalize_entity_name(company)
-    norm_type = re.sub(r"[^\w]+", "_", event_type.lower().strip().replace("&", "_and_")).strip("_")
+    norm_type = normalize_event_type(event_type)
+
+    if isinstance(event_date, (list, tuple, set)):
+        if key_facts is None:
+            key_facts = list(event_date)
+        event_date = None
+
     target_date = event_date or date.today()
     date_str = target_date.strftime("%Y-%m-%d")
 
     facts_str = "_".join(sorted(key_facts or []))
-    fingerprint_key = f"{norm_comp}:{norm_type}:{date_str}:{facts_str}".rstrip(":")
+
+    parts = [norm_comp, norm_type]
+    if secondary_entity:
+        norm_sec = normalize_entity_name(secondary_entity)
+        if norm_sec and norm_sec not in ("unspecified_entity", norm_comp):
+            parts.append(norm_sec)
+
+    if include_date:
+        parts.append(date_str)
+
+    if facts_str:
+        parts.append(facts_str)
+
+    fingerprint_key = ":".join(parts).rstrip(":")
     fingerprint_hash = hashlib.sha256(fingerprint_key.encode("utf-8")).hexdigest()
 
     return fingerprint_key, fingerprint_hash
+
 
 
 def are_articles_same_event(art1: Article, art2: Article) -> bool:

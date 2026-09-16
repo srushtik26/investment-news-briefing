@@ -164,21 +164,23 @@ class SerpAPICorroborator:
         try:
             logger.info("SERPAPI QUERY USED (%.0fh, tbs=%s): '%s'", eff_horizon, time_window, full_query[:80])
             import time
-            max_attempts = 2
+            max_attempts = 3
             response = None
             for attempt in range(1, max_attempts + 1):
                 try:
                     response = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
                     if response.status_code == 200:
                         break
-                    if response.status_code in (400, 401, 403):
+                    if response.status_code in (400, 401, 403, 404):
                         logger.warning("SerpAPI client error %d. Not retrying.", response.status_code)
                         break
                     if attempt < max_attempts:
-                        time.sleep(1.0)
+                        sleep_time = 0.5 * (2 ** (attempt - 1))
+                        time.sleep(sleep_time)
                 except requests.RequestException as req_err:
                     if attempt < max_attempts:
-                        time.sleep(1.0)
+                        sleep_time = 0.5 * (2 ** (attempt - 1))
+                        time.sleep(sleep_time)
                     else:
                         raise req_err
 

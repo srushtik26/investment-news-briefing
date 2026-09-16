@@ -87,7 +87,7 @@ class GoogleNewsRSSDiscoveryProvider(DiscoveryProvider):
 
         logger.debug("Executing RSS discovery query for %s: '%s'", country, query)
         xml_content = None
-        max_attempts = 2
+        max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
                 with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:

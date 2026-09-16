@@ -5,6 +5,7 @@ Provides centralized, type-safe settings management using Pydantic Settings
 and loads configuration values from environment variables or .env files.
 """
 
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
@@ -122,3 +123,38 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_directories()
     return settings
+
+
+def is_testing_or_dry_run() -> bool:
+    """
+    Determine if running in testing or dry-run mode.
+
+    CRITICAL RULE:
+    APP_ENV=production MUST NEVER activate mocks under any circumstances.
+    APP_ENV=testing OR PIPELINE_DRY_RUN=true safely enters dry-run behavior.
+    """
+    import os
+    app_env = os.environ.get("APP_ENV", "").strip().lower()
+    if app_env == "production":
+        return False
+    if app_env == "testing":
+        return True
+    if os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return False
+
+
+def get_target_date_ist(ref_time: Optional[datetime] = None) -> date:
+    """
+    Return canonical production briefing date in Asia/Kolkata (IST).
+
+    At 21:00 UTC (02:30 AM IST next calendar day), the returned date
+    is the IST date (next day).
+    """
+    from datetime import datetime as dt_cls, timezone as tz_cls, date as d_cls
+    from zoneinfo import ZoneInfo
+    dt = ref_time or dt_cls.now(tz_cls.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz_cls.utc)
+    return dt.astimezone(ZoneInfo("Asia/Kolkata")).date()
+

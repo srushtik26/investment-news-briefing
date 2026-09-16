@@ -2,7 +2,8 @@ name: Daily Investment Briefing Automation
 
 on:
   schedule:
-    - cron: '0 21 * * *'   # 2:30 AM IST every day
+    - cron: '0 21 * * *'   # 2:30 AM IST every day (primary run)
+    - cron: '45 21 * * *'  # 3:15 AM IST every day (automatic recovery run)
 
   workflow_dispatch:
 
@@ -39,13 +40,30 @@ jobs:
           echo "Current IST time:"
           TZ=Asia/Kolkata date
 
-      - name: Restore delivery state cache
+      - name: Restore history database cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/briefings.db
+            data/briefing_history.json
+          key: briefing-history-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
+          restore-keys: |
+            briefing-history-
+
+      - name: Restore daily delivery state cache
         uses: actions/cache@v4
         with:
           path: |
             data/last_email_date.txt
             data/primary_email_date.txt
-          key: daily-email-state-${{ steps.current-date.outputs.date }}
+            data/dashboard_sync_date.txt
+            data/briefing_date.txt
+            data/final_briefing.txt
+            data/final_15_stories.json
+            data/copy_paste_briefing.txt
+          key: briefing-delivery-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
+          restore-keys: |
+            briefing-delivery-${{ steps.current-date.outputs.date }}-
 
       - name: Generate and email canonical 15-story briefing
         env:
@@ -62,18 +80,54 @@ jobs:
           TZ=Asia/Kolkata date
           python run_daily_15.py
 
-      - name: Save delivery state cache
-        if: success()
+      - name: Sync emailed briefing to dashboard
+        if: always()
+        env:
+          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: |
+          if [ -f "data/copy_paste_briefing.txt" ]; then
+            python run_dashboard_sync.py --file data/copy_paste_briefing.txt
+          elif [ -f "data/final_briefing.txt" ]; then
+            python run_dashboard_sync.py --file data/final_briefing.txt
+          fi
+
+      - name: Save history database cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/briefings.db
+            data/briefing_history.json
+          key: briefing-history-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
+
+      - name: Save daily delivery state cache
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
             data/last_email_date.txt
             data/primary_email_date.txt
-          key: daily-email-state-${{ steps.current-date.outputs.date }}
+            data/dashboard_sync_date.txt
+            data/briefing_date.txt
+            data/final_briefing.txt
+            data/final_15_stories.json
+            data/copy_paste_briefing.txt
+          key: briefing-delivery-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
 
-      - name: Sync emailed briefing to dashboard
-        env:
-          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
-          TZ: Asia/Kolkata
-        run: |
-          python run_dashboard_sync.py --file data/copy_paste_briefing.txt
+      - name: Upload briefing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: briefing-artifacts-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
+          path: |
+            data/final_briefing.txt
+            data/copy_paste_briefing.txt
+            data/final_15_stories.json
+            data/briefing_date.txt
+            data/last_email_date.txt
+            data/primary_email_date.txt
+            data/dashboard_sync_date.txt
+            data/pipeline_execution_log.txt
+          retention-days: 14
+          if-no-files-found: ignore

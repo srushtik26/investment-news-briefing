@@ -5,6 +5,7 @@ Connects all system stages from discovery to formatting.
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, date, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from app.verification import (
     PORTFOLIO_RESERVED_RSS_SEARCHES,
 )
 from app.deduplication import DeduplicationEngine, HistoryStore
+from app.deduplication.fingerprint import generate_event_fingerprint
 from app.deduplication.clusterer import EventClusterer
 from app.ranking import CandidatePoolRanker, ArticlePreRanker
 from app.ranking.scorer import InvestmentRelevanceScorer
@@ -84,17 +86,21 @@ def run_pipeline(
     max_international: Optional[int] = None,
     run_reference_time: Optional[datetime] = None,
     validation_run: bool = False,
+    target_date: Optional[date] = None,
+    data_dir: Optional[Path] = None,
 ) -> int:
     """Run the automated investment news briefing pipeline end-to-end."""
     settings = get_settings()
-    data_dir = Path("data")
+    data_dir = data_dir or Path("data")
     logs_dir = Path("logs")
-    data_dir.mkdir(exist_ok=True)
-    logs_dir.mkdir(exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(log_level=settings.LOG_LEVEL, log_file=logs_dir / "app.log")
 
     run_reference_time = run_reference_time or datetime.now(timezone.utc)
-    date_str = run_reference_time.strftime("%Y-%m-%d")
+    from config import get_target_date_ist, is_testing_or_dry_run
+    target_date = target_date or get_target_date_ist(run_reference_time)
+    date_str = target_date.strftime("%Y-%m-%d")
 
     execution_log_lines: List[str] = []
 
@@ -158,6 +164,7 @@ def run_pipeline(
 
     ctx = PipelineContext(
         run_reference_time=run_reference_time,
+        target_date=target_date,
         data_dir=data_dir,
         logs_dir=logs_dir,
         settings=settings,
@@ -659,7 +666,7 @@ def run_pipeline(
             payload=selection_payload,
             events_lookup=event_by_id,
             articles_lookup=ctx.articles_lookup,
-            target_date=date.today(),
+            target_date=ctx.target_date,
             strict_5_per_section=True,
             quality_ladder_mode=True,
             run_reference_time=run_reference_time,
@@ -676,32 +683,280 @@ def run_pipeline(
         log_exec("STAGE 10: Formatter — generating final briefing text")
         log_exec("=" * 60)
         briefing_text = ""
+        formatting_succeeded = False
+        all_final = (
+            (selection_payload.domestic_stories if selection_payload else []) +
+            (selection_payload.india_stories if selection_payload else []) +
+            (selection_payload.international_stories if selection_payload else [])
+        )
+        target_briefing_date = ctx.target_date
+
+    # STAGE 7: Ranking & Selection
+    # =========================================================================
+    candidate_pool, domestic_pool, india_pool, intl_pool, sufficient, pipeline_status = run_ranking_and_selection(
+        ctx, accepted_stories, event_by_id
+    )
+
+    # Candidate audit manifest
+    print_candidate_audit(domestic_pool, india_pool, intl_pool, ctx.articles_lookup)
+
+    if not sufficient:
+        log_exec(f"  -> STAGE 8 SKIPPED: Insufficient stories (Dom={len(domestic_pool)}, India={len(india_pool)}, Intl={len(intl_pool)}).")
+        selection_payload = BriefingEditorialPayload(domestic_stories=[], india_stories=[], international_stories=[])
+        validation_report = None
+        briefing_text = ""
+    else:
+        # =========================================================================
+        # STAGE 8: Gemini Editorial
+        # =========================================================================
+        metrics.start_timer("editorial_seconds")
+        log_exec("=" * 60)
+        log_exec("STAGE 8: Gemini Editorial — final editorial curation across 3 sections")
+        log_exec("=" * 60)
+        editorial_engine = GeminiEditorialEngine()
+        time.sleep(2)
+        try:
+            editorial_res = editorial_engine.select_and_synthesize_briefing(candidate_pool, ctx.articles_lookup)
+        except Exception as e:
+            log_exec(f"  -> ERROR during editorial call: {e}")
+            editorial_res = EditorialResult(success=False, error_message=str(e), attempts=1)
+
+        # Prepare deterministic Top 5 Domestic stories
+        dom_stories_selected = []
+        for s in candidate_pool.domestic_candidates[:5]:
+            ev = s.event
+            art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            src = ev.primary_publisher or (art.source_name if art else "The Hindu")
+            u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
+            sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
+            sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+            sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+            inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
+            dom_stories_selected.append(EditorialStorySelection(
+                section="domestic",
+                event_id=ev.id,
+                headline=inst_hl,
+                summary=sum_text,
+                source=src,
+                url=u,
+                secondary_source=sec_src,
+                secondary_url=sec_u,
+            ))
+
+        selection_payload = None
+        if editorial_res and editorial_res.success and editorial_res.selection:
+            selection_payload = editorial_res.selection
+            if not getattr(selection_payload, "domestic_stories", None) or len(selection_payload.domestic_stories) < 5:
+                selection_payload.domestic_stories = dom_stories_selected
+            log_exec(f"Stage 8 Summary:")
+            log_exec(f"  Gemini selected: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
+        else:
+            err = editorial_res.error_message if editorial_res else "Unknown editorial error"
+            log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
+            india_stories_selected = []
+            for s in candidate_pool.india_candidates[:5]:
+                ev = s.event
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                src = ev.primary_publisher or (art.source_name if art else "Business Standard")
+                u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
+                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
+                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
+                sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+                sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+                india_stories_selected.append(EditorialStorySelection(
+                    section="india",
+                    event_id=ev.id,
+                    headline=inst_hl,
+                    summary=sum_text,
+                    source=src,
+                    url=u,
+                    secondary_source=sec_src,
+                    secondary_url=sec_u,
+                ))
+            intl_stories_selected = []
+            for s in candidate_pool.international_candidates[:5]:
+                ev = s.event
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                src = ev.primary_publisher or (art.source_name if art else "Reuters")
+                u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
+                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
+                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
+                sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+                sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+                intl_stories_selected.append(EditorialStorySelection(
+                    section="international",
+                    event_id=ev.id,
+                    headline=inst_hl,
+                    summary=sum_text,
+                    source=src,
+                    url=u,
+                    secondary_source=sec_src,
+                    secondary_url=sec_u,
+                ))
+            selection_payload = BriefingEditorialPayload(
+                domestic_stories=dom_stories_selected,
+                india_stories=india_stories_selected,
+                international_stories=intl_stories_selected,
+            )
+
+        # Headline institutional style verification and Summary grounding validation
+        for story in (selection_payload.domestic_stories + selection_payload.india_stories + selection_payload.international_stories):
+            ev = event_by_id.get(story.event_id)
+            art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+
+            # Verify and upgrade headline style if routine or unapproved
+            if not is_approved_institutional_headline(story.headline):
+                raw_t = ev.canonical_title if ev else story.headline
+                story.headline = synthesize_investment_headline(raw_t, event=ev, article=art)
+
+            from app.ai.headline_synthesis import validate_headline_coherence, _clean_headline_text
+            is_coh, coh_reason = validate_headline_coherence(story.headline, event=ev, article=art)
+            if not is_coh:
+                logger.warning(
+                    "Headline coherence check failed for '%s' (%s) — reverting to clean canonical title",
+                    story.headline,
+                    coh_reason,
+                )
+                raw_t = ev.canonical_title if ev else story.headline
+                story.headline = _clean_headline_text(raw_t)
+
+            if not getattr(story, "summary", None):
+                story.summary = generate_deterministic_summary(art, ev, story.headline)
+            else:
+                is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
+                is_duplicate = is_summary_substantially_identical_to_headline(story.summary, story.headline)
+                sum_len = len(story.summary.split())
+                if not is_grounded or is_duplicate or sum_len > 65:
+                    logger.warning(
+                        "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — using deterministic fallback",
+                        story.headline,
+                        is_grounded,
+                        is_duplicate,
+                        sum_len,
+                    )
+                    story.summary = generate_deterministic_summary(art, ev, story.headline)
+            if ev and ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED and ev.secondary_publisher and ev.secondary_url:
+                story.secondary_source = ev.secondary_publisher
+                story.secondary_url = ev.secondary_url
+
+        save_json_artifact(data_dir / "final_15_stories.json", {
+            "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
+            "india":         [s.model_dump() for s in selection_payload.india_stories],
+            "international": [s.model_dump() for s in selection_payload.international_stories],
+        })
+        save_json_artifact(data_dir / "final_10_stories.json", {
+            "india":         [s.model_dump() for s in selection_payload.india_stories],
+            "international": [s.model_dump() for s in selection_payload.international_stories],
+        })
+        metrics.stop_timer("editorial_seconds")
+
+        # =========================================================================
+        # STAGE 9: Final Validation
+        # =========================================================================
+        log_exec("=" * 60)
+        log_exec("STAGE 9: Final Validation — 20-check deterministic gatekeeper")
+        log_exec("=" * 60)
+        validator = FinalValidationEngine(history_store=history_store)
+        validation_report = validator.validate_briefing(
+            payload=selection_payload,
+            events_lookup=event_by_id,
+            articles_lookup=ctx.articles_lookup,
+            target_date=ctx.target_date,
+            strict_5_per_section=True,
+            quality_ladder_mode=True,
+            run_reference_time=run_reference_time,
+        )
+        log_exec(f"Stage 9 Summary:")
+        log_exec(f"  Status:        {validation_report.status.value}")
+        log_exec(f"  Passed checks: {validation_report.passed_checks} / 20")
+        log_exec(f"  Failed checks: {validation_report.failed_checks} / 20")
+
+        # =========================================================================
+        # STAGE 10: Formatter
+        # =========================================================================
+        log_exec("=" * 60)
+        log_exec("STAGE 10: Formatter — generating final briefing text")
+        log_exec("=" * 60)
+        briefing_text = ""
+        formatting_succeeded = False
+        all_final = (
+            (selection_payload.domestic_stories if selection_payload else []) +
+            (selection_payload.india_stories if selection_payload else []) +
+            (selection_payload.international_stories if selection_payload else [])
+        )
+        target_briefing_date = ctx.target_date
+
         if validation_report.is_valid:
             try:
                 formatter = BriefingFormatter()
-                formatted = formatter.format(selection_payload, briefing_date=date.today(), shorten_urls=False)
+                formatted = formatter.format(selection_payload, briefing_date=target_briefing_date, shorten_urls=False)
                 briefing_text = formatted.text
-                log_exec("Briefing successfully formatted!")
-                with open(data_dir / "final_briefing.txt", "w", encoding="utf-8") as f:
+                if not briefing_text or not briefing_text.strip():
+                    raise ValueError("Formatter produced empty briefing text")
+
+                # Atomic artifact writes via temporary files
+                tmp_final = data_dir / "final_briefing.tmp"
+                with open(tmp_final, "w", encoding="utf-8") as f:
                     f.write(briefing_text)
+                os.replace(tmp_final, data_dir / "final_briefing.txt")
+
+                # Save final_15_stories.json atomically
+                import json
+                stories_payload = [
+                    {
+                        "section": s.section,
+                        "position": idx + 1,
+                        "headline": s.headline,
+                        "summary": s.summary,
+                        "source": s.source,
+                        "url": s.url,
+                    }
+                    for idx, s in enumerate(all_final)
+                ]
+                tmp_json = data_dir / "final_15_stories.tmp"
+                with open(tmp_json, "w", encoding="utf-8") as f:
+                    json.dump(stories_payload, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_json, data_dir / "final_15_stories.json")
+
+                # Save copy_paste_briefing.txt atomically
+                from app.formatting.formatter import build_copy_paste_text
+                copy_text = build_copy_paste_text(stories_payload, briefing_date=target_briefing_date)
+                tmp_copy = data_dir / "copy_paste_briefing.tmp"
+                with open(tmp_copy, "w", encoding="utf-8") as f:
+                    f.write(copy_text)
+                os.replace(tmp_copy, data_dir / "copy_paste_briefing.txt")
+
+                # Save briefing_date.txt for freshness validation
+                (data_dir / "briefing_date.txt").write_text(target_briefing_date.isoformat(), encoding="utf-8")
+
+                formatting_succeeded = True
+                log_exec("Briefing and atomic artifacts successfully formatted!")
 
                 history_stories = []
-                for s in (selection_payload.domestic_stories + selection_payload.india_stories + selection_payload.international_stories):
+                for s in all_final:
                     ev = event_by_id.get(s.event_id)
                     comp = ev.companies_involved[0] if (ev and ev.companies_involved) else "unspecified"
+                    ev_type = getattr(ev, "event_type", None) or "general"
+                    fp_key, _ = generate_event_fingerprint(
+                        company=comp,
+                        event_type=ev_type,
+                        key_facts=ev.financial_figures if ev else None,
+                    )
                     history_stories.append({
                         "event_id":          s.event_id,
-                        "event_fingerprint": ev.canonical_title if ev else s.headline,
+                        "event_fingerprint": fp_key,
                         "headline":          s.headline,
                         "company_name":      comp,
                         "category":          s.section,
                         "source_count":      len(ev.article_ids) if ev else 1,
-                        "published_date":    date.today(),
+                        "published_date":    target_briefing_date,
                     })
-                history_store.save_briefing(date.today(), history_stories)
+                history_store.save_briefing(target_briefing_date, history_stories)
                 log_exec(f"Saved {len(history_stories)} selected stories to SQLite briefing history.")
             except Exception as e:
+                formatting_succeeded = False
                 log_exec(f"Error during briefing formatting: {e}")
+                logger.error("FORMATTING_FAILED: Exception during briefing formatting: %s", e, exc_info=True)
         else:
             log_exec(f"Briefing NOT formatted — validation failed: {validation_report.failure_reason}")
 
@@ -724,7 +979,7 @@ def run_pipeline(
     )
     print_final_story_audit(all_final, event_by_id, ctx.articles_lookup)
 
-    if briefing_text:
+    if briefing_text and formatting_succeeded:
         print("\n" + "=" * 60)
         print("FINAL BRIEFING OUTPUT")
         print("=" * 60)
@@ -735,8 +990,8 @@ def run_pipeline(
         ind_c = len(selection_payload.india_stories) if selection_payload else 0
         int_c = len(selection_payload.international_stories) if selection_payload else 0
         print(f"FINAL_REGION_COUNTS: DOMESTIC={dom_c} INDIA={ind_c} INTERNATIONAL={int_c} TOTAL={len(all_final)}")
-        import os
-        if (os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes")) or (os.environ.get("APP_ENV", "").strip().lower() == "test"):
+        from config import is_testing_or_dry_run
+        if is_testing_or_dry_run():
             print("EMAIL=MOCKED DASHBOARD=MOCKED PIPELINE_STATUS=SUCCESS")
     else:
         print("\nFINAL BRIEFING: NOT GENERATED")
@@ -757,10 +1012,13 @@ def run_pipeline(
         elif validation_report and validation_report.failure_reason:
             print(f"Reason: {validation_report.failure_reason}")
             print(f"PIPELINE_FAILED stage=FINAL_VALIDATION check_id={validation_report.failed_check_id} reason={validation_report.failure_reason}")
+        elif not formatting_succeeded:
+            print("Reason: Briefing formatting or artifact generation failed.")
+            print("PIPELINE_FAILED stage=FORMATTER reason=formatting_or_artifact_error")
 
     metrics.stop_timer("total_seconds")
     summary_metrics = metrics.format_summary()
     print("\n" + summary_metrics + "\n")
     logger.info("\n%s", summary_metrics)
 
-    return 0 if (sufficient and validation_report and validation_report.is_valid) else 1
+    return 0 if (sufficient and validation_report and validation_report.is_valid and formatting_succeeded) else 1

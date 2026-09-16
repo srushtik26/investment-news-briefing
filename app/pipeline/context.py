@@ -3,11 +3,11 @@ Pipeline Context: shared runtime state and configuration across all pipeline sta
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional, Callable
 
-from config import get_settings
+from config import get_settings, get_target_date_ist
 from app.models import Article, Event
 from app.utils.performance_metrics import PipelineMetrics
 
@@ -17,6 +17,7 @@ class PipelineContext:
     """Shared execution context passed across modular pipeline stages."""
     # Run configuration & timing
     run_reference_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    target_date: Optional[date] = None
     data_dir: Optional[Path] = field(default_factory=lambda: Path("data"))
     logs_dir: Optional[Path] = field(default_factory=lambda: Path("logs"))
     settings: Any = field(default_factory=lambda: get_settings())
@@ -79,6 +80,8 @@ class PipelineContext:
 
     def __post_init__(self):
         """Initialize missing default engines if not provided."""
+        if self.target_date is None:
+            self.target_date = get_target_date_ist(self.run_reference_time)
         if self.scorer is None:
             from app.ranking.scorer import InvestmentRelevanceScorer
             self.scorer = InvestmentRelevanceScorer()
@@ -95,7 +98,10 @@ class PipelineContext:
             else:
                 self.data_dir = Path(self.data_dir)
                 self.data_dir.mkdir(parents=True, exist_ok=True)
-                self.history_store = HistoryStore(db_path=str(self.data_dir / "briefing_history.json"))
+                db_target = self.data_dir / "briefings.db"
+                if not db_target.exists() and (self.data_dir / "briefing_history.json").exists():
+                    db_target = self.data_dir / "briefing_history.json"
+                self.history_store = HistoryStore(db_path=str(db_target))
         if self.dedup_engine is None:
             from app.deduplication import DeduplicationEngine
             self.dedup_engine = DeduplicationEngine(history_store=self.history_store)

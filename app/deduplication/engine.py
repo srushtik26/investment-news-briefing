@@ -95,8 +95,14 @@ class DeduplicationEngine:
 
             # CHECK 1: Previous 3-Day History Lookback
             is_history_repeat = False
-            history_reason = ""
-            if fp_key in historical_fps or fp_hash in historical_fps or story.get("headline") in historical_fps:
+            from app.deduplication.fingerprint import strip_date_from_fingerprint
+            stable_fp = strip_date_from_fingerprint(fp_key)
+            if (
+                fp_key in historical_fps
+                or fp_hash in historical_fps
+                or (stable_fp and stable_fp in historical_fps)
+                or story.get("headline") in historical_fps
+            ):
                 is_history_repeat = True
                 history_reason = f"Event already appeared in briefing within previous {lookback_days} days ({fp_key})"
             else:

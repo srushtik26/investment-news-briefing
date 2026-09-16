@@ -1154,6 +1154,20 @@ def run_ranking_and_selection(
                 )
                 continue
 
+            if cand_art and getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                from app.filtering.rules import StoryTypeFilterRule
+                st_res = StoryTypeFilterRule().evaluate(cand_art)
+                if not st_res.is_accepted:
+                    india_rejected_count[0] += 1
+                    rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                    ctx.log_exec(
+                        f"REGION_REJECTED:\n"
+                        f'headline="{ev.canonical_title}"\n'
+                        f"requested_region=INDIA\n"
+                        f'reason="{rej_reason}"'
+                    )
+                    continue
+
             is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(
                 ev.canonical_title,
                 cand_art.content_text if cand_art else "",
@@ -1490,6 +1504,20 @@ def run_ranking_and_selection(
                     geo_reason,
                 )
                 continue
+
+            if cand_art and getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                from app.filtering.rules import StoryTypeFilterRule
+                st_res = StoryTypeFilterRule().evaluate(cand_art)
+                if not st_res.is_accepted:
+                    intl_rejected_count[0] += 1
+                    rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                    ctx.log_exec(
+                        f"REGION_REJECTED:\n"
+                        f'headline="{ev.canonical_title}"\n'
+                        f"requested_region=INTERNATIONAL\n"
+                        f'reason="{rej_reason}"'
+                    )
+                    continue
 
             is_dup = False
             for ex in (existing + filtered):

@@ -243,7 +243,26 @@ def parse_briefing_json(json_path: Path) -> Optional[DashboardBriefing]:
     return _build_briefing(data.get("full_text") or content, briefing_date, stories)
 
 
+def get_dashboard_sync_date(data_dir: Path) -> Optional[str]:
+    """Read the date (YYYY-MM-DD) when dashboard sync was successfully completed."""
+    date_file = data_dir / "dashboard_sync_date.txt"
+    if date_file.exists():
+        try:
+            return date_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return None
+
+
+def record_dashboard_sync_date(data_dir: Path, today_str: str) -> None:
+    """Record today's date in dashboard_sync_date.txt after confirmed dashboard sync."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    date_file = data_dir / "dashboard_sync_date.txt"
+    date_file.write_text(today_str, encoding="utf-8")
+
+
 def sync_dashboard(
+
     input_file: Optional[Path] = None,
     db_path: Optional[Path] = None,
     target_date: Optional[date] = None,
@@ -296,17 +315,17 @@ def sync_dashboard(
             return False
         allow_replace = True
 
-    import os
-    is_dry_run = (
-        dry_run
-        or (os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes"))
-        or (os.environ.get("APP_ENV", "").strip().lower() == "test")
-    )
+    from config import is_testing_or_dry_run
+
+    data_dir = candidate_file.parent if candidate_file else Path("data")
+
+    is_dry_run = dry_run or is_testing_or_dry_run()
     if is_dry_run:
-        test_db = db_path or Path("data/test_briefings.db")
+        test_db = db_path or (data_dir / "test_briefings.db")
         repo = DashboardRepository(db_path=test_db)
         try:
             briefing_id = repo.save_briefing(briefing, allow_replace=True)
+            record_dashboard_sync_date(data_dir, briefing.briefing_date.isoformat())
             print(f"[MOCK_DASHBOARD_SYNC] stories={briefing.story_count} status=SUCCESS (DRY RUN)")
             if not db_path and test_db.exists():
                 try:
@@ -321,6 +340,7 @@ def sync_dashboard(
     repo = DashboardRepository(db_path=db_path)
     try:
         briefing_id = repo.save_briefing(briefing, allow_replace=allow_replace)
+        record_dashboard_sync_date(data_dir, briefing.briefing_date.isoformat())
         target_info = f"backend={repo.backend}" if repo.backend == "postgresql" else str(repo.db_path)
         print(
             f"[SYNC_SUCCESS] Briefing id={briefing_id} for date {briefing.briefing_date} "

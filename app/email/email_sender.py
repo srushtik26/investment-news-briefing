@@ -404,28 +404,38 @@ def send_briefing_email(
             parse_err,
         )
 
-    try:
-        logger.info(
-            "Connecting to %s:%d (SSL) to send briefing to %s...",
-            GMAIL_SMTP_HOST,
-            GMAIL_SMTP_PORT,
-            recipient_email,
-        )
-        with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30.0) as server:
-            server.login(sender_email, app_password)
-            server.send_message(msg)
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(
+                "Connecting to %s:%d (SSL) to send briefing to %s (attempt %d/%d)...",
+                GMAIL_SMTP_HOST,
+                GMAIL_SMTP_PORT,
+                recipient_email,
+                attempt,
+                max_attempts,
+            )
+            with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30.0) as server:
+                server.login(sender_email, app_password)
+                server.send_message(msg)
 
-        logger.info("EMAIL_DELIVERY_SUCCESS: Briefing email successfully delivered to %s", recipient_email)
-        return True
-    except smtplib.SMTPAuthenticationError:
-        logger.error(
-            "EMAIL_DELIVERY_FAILED: SMTP Authentication failed for sender %s. Check GMAIL_APP_PASSWORD.",
-            sender_email,
-        )
-        return False
-    except Exception as e:
-        logger.error("EMAIL_DELIVERY_FAILED: Failed to send email via SMTP: %s", type(e).__name__)
-        return False
+            logger.info("EMAIL_DELIVERY_SUCCESS: Briefing email successfully delivered to %s", recipient_email)
+            return True
+        except smtplib.SMTPAuthenticationError:
+            logger.error(
+                "EMAIL_DELIVERY_FAILED: SMTP Authentication failed for sender %s. Check GMAIL_APP_PASSWORD.",
+                sender_email,
+            )
+            return False
+        except Exception as e:
+            if attempt < max_attempts:
+                import time
+                sleep_time = 0.5 * (2 ** (attempt - 1))
+                logger.warning("EMAIL_DELIVERY_RETRY: SMTP transient error on attempt %d: %s. Retrying in %.1fs...", attempt, type(e).__name__, sleep_time)
+                time.sleep(sleep_time)
+            else:
+                logger.error("EMAIL_DELIVERY_FAILED: Failed to send email via SMTP after %d attempts: %s", max_attempts, type(e).__name__)
+                return False
 
 
 def send_copy_paste_email(
@@ -485,26 +495,36 @@ def send_copy_paste_email(
     # Plain text only — no HTML alternative
     msg.set_content(text_content, charset="utf-8")
 
-    try:
-        logger.info(
-            "Connecting to %s:%d (SSL) to send copy/paste text briefing to %s...",
-            GMAIL_SMTP_HOST,
-            GMAIL_SMTP_PORT,
-            recipient_email,
-        )
-        with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30.0) as server:
-            server.login(sender_email, app_password)
-            server.send_message(msg)
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(
+                "Connecting to %s:%d (SSL) to send copy/paste text briefing to %s (attempt %d/%d)...",
+                GMAIL_SMTP_HOST,
+                GMAIL_SMTP_PORT,
+                recipient_email,
+                attempt,
+                max_attempts,
+            )
+            with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30.0) as server:
+                server.login(sender_email, app_password)
+                server.send_message(msg)
 
-        logger.info("EMAIL_DELIVERY_SUCCESS: Copy/paste text email successfully delivered to %s", recipient_email)
-        return True
-    except smtplib.SMTPAuthenticationError:
-        logger.error(
-            "EMAIL_DELIVERY_FAILED: SMTP Authentication failed for sender %s. Check GMAIL_APP_PASSWORD.",
-            sender_email,
-        )
-        return False
-    except Exception as e:
-        logger.error("EMAIL_DELIVERY_FAILED: Failed to send copy/paste text email via SMTP: %s", type(e).__name__)
-        return False
+            logger.info("EMAIL_DELIVERY_SUCCESS: Copy/paste text email successfully delivered to %s", recipient_email)
+            return True
+        except smtplib.SMTPAuthenticationError:
+            logger.error(
+                "EMAIL_DELIVERY_FAILED: SMTP Authentication failed for sender %s. Check GMAIL_APP_PASSWORD.",
+                sender_email,
+            )
+            return False
+        except Exception as e:
+            if attempt < max_attempts:
+                import time
+                sleep_time = 0.5 * (2 ** (attempt - 1))
+                logger.warning("EMAIL_DELIVERY_RETRY: SMTP transient error on attempt %d: %s. Retrying in %.1fs...", attempt, type(e).__name__, sleep_time)
+                time.sleep(sleep_time)
+            else:
+                logger.error("EMAIL_DELIVERY_FAILED: Failed to send copy/paste text email via SMTP after %d attempts: %s", max_attempts, type(e).__name__)
+                return False
 

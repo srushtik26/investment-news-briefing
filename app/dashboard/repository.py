@@ -28,6 +28,9 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 
 from app.dashboard.models import DashboardBriefing, DashboardStory
+from app.logging_config import get_logger
+
+logger = get_logger("dashboard.repository")
 
 
 DEFAULT_DB_PATH = Path("data") / "dashboard.db"
@@ -232,171 +235,193 @@ class DashboardRepository:
         briefing.content_hash = new_hash
         sync_time = datetime.utcnow()
 
-        if self.backend == "postgresql" or self.engine is not None:
-            with self.engine.begin() as conn:
-                select_stmt = text(
-                    "SELECT id, story_count, content_hash FROM briefings WHERE briefing_date = :b_date"
-                )
-                row = conn.execute(select_stmt, {"b_date": date_str}).mappings().fetchone()
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if self.backend == "postgresql" or self.engine is not None:
+                    with self.engine.begin() as conn:
+                        select_stmt = text(
+                            "SELECT id, story_count, content_hash FROM briefings WHERE briefing_date = :b_date"
+                        )
+                        row = conn.execute(select_stmt, {"b_date": date_str}).mappings().fetchone()
 
-                if row:
-                    existing_id = row["id"]
-                    existing_hash = row["content_hash"]
+                        if row:
+                            existing_id = row["id"]
+                            existing_hash = row["content_hash"]
 
-                    if existing_hash and existing_hash == new_hash:
-                        return existing_id
+                            if existing_hash and existing_hash == new_hash:
+                                return existing_id
 
-                    if not allow_replace:
-                        raise DashboardSyncConflictError(
-                            f"[DASHBOARD_SYNC_CONFLICT] date={date_str} existing briefing differs from incoming briefing. "
-                            f"Use --replace-date {date_str} to overwrite."
+                            if not allow_replace:
+                                raise DashboardSyncConflictError(
+                                    f"[DASHBOARD_SYNC_CONFLICT] date={date_str} existing briefing differs from incoming briefing. "
+                                    f"Use --replace-date {date_str} to overwrite."
+                                )
+
+                            update_stmt = text(
+                                """
+                                UPDATE briefings
+                                SET generated_at = :gen_at, full_text = :full_text, story_count = :story_count,
+                                    content_hash = :content_hash, sync_source = :sync_source, synced_at = :synced_at
+                                WHERE id = :existing_id
+                                """
+                            )
+                            conn.execute(
+                                update_stmt,
+                                {
+                                    "gen_at": briefing.generated_at or sync_time,
+                                    "full_text": briefing.full_text,
+                                    "story_count": story_count,
+                                    "content_hash": new_hash,
+                                    "sync_source": briefing.sync_source or "direct_save",
+                                    "synced_at": sync_time,
+                                    "existing_id": existing_id,
+                                },
+                            )
+                            conn.execute(
+                                text("DELETE FROM stories WHERE briefing_id = :b_id"),
+                                {"b_id": existing_id},
+                            )
+                            briefing_id = existing_id
+                        else:
+                            insert_stmt = text(
+                                """
+                                INSERT INTO briefings (briefing_date, generated_at, full_text, story_count, content_hash, sync_source, synced_at)
+                                VALUES (:b_date, :gen_at, :full_text, :story_count, :content_hash, :sync_source, :synced_at)
+                                RETURNING id
+                                """
+                            )
+                            res = conn.execute(
+                                insert_stmt,
+                                {
+                                    "b_date": date_str,
+                                    "gen_at": briefing.generated_at or sync_time,
+                                    "full_text": briefing.full_text,
+                                    "story_count": story_count,
+                                    "content_hash": new_hash,
+                                    "sync_source": briefing.sync_source or "direct_save",
+                                    "synced_at": sync_time,
+                                },
+                            )
+                            briefing_id = res.scalar()
+
+                        insert_story_stmt = text(
+                            """
+                            INSERT INTO stories (briefing_id, section, position, headline, summary, source, url)
+                            VALUES (:b_id, :sec, :pos, :headline, :summary, :source, :url)
+                            """
+                        )
+                        for story in briefing.stories:
+                            conn.execute(
+                                insert_story_stmt,
+                                {
+                                    "b_id": briefing_id,
+                                    "sec": story.section.lower(),
+                                    "pos": story.position,
+                                    "headline": story.headline,
+                                    "summary": story.summary,
+                                    "source": story.source,
+                                    "url": story.url,
+                                },
+                            )
+
+                        return briefing_id
+
+                # SQLite implementation
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT id, story_count, content_hash FROM briefings WHERE briefing_date = ?",
+                        (date_str,),
+                    )
+                    row = cursor.fetchone()
+
+                    if row:
+                        existing_id = row["id"]
+                        existing_hash = row["content_hash"]
+
+                        if existing_hash and existing_hash == new_hash:
+                            return existing_id
+
+                        if not allow_replace:
+                            raise DashboardSyncConflictError(
+                                f"[DASHBOARD_SYNC_CONFLICT] date={date_str} existing briefing differs from incoming briefing. "
+                                f"Use --replace-date {date_str} to overwrite."
+                            )
+
+                        cursor.execute(
+                            """
+                            UPDATE briefings
+                            SET generated_at = ?, full_text = ?, story_count = ?, content_hash = ?, sync_source = ?, synced_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                briefing.generated_at or sync_time,
+                                briefing.full_text,
+                                story_count,
+                                new_hash,
+                                briefing.sync_source or "direct_save",
+                                sync_time,
+                                existing_id,
+                            ),
+                        )
+                        cursor.execute("DELETE FROM stories WHERE briefing_id = ?", (existing_id,))
+                        briefing_id = existing_id
+                    else:
+                        cursor.execute(
+                            """
+                            INSERT INTO briefings (briefing_date, generated_at, full_text, story_count, content_hash, sync_source, synced_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                date_str,
+                                briefing.generated_at or sync_time,
+                                briefing.full_text,
+                                story_count,
+                                new_hash,
+                                briefing.sync_source or "direct_save",
+                                sync_time,
+                            ),
+                        )
+                        briefing_id = cursor.lastrowid
+
+                    for story in briefing.stories:
+                        cursor.execute(
+                            """
+                            INSERT OR REPLACE INTO stories (briefing_id, section, position, headline, summary, source, url)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                briefing_id,
+                                story.section.lower(),
+                                story.position,
+                                story.headline,
+                                story.summary,
+                                story.source,
+                                story.url,
+                            ),
                         )
 
-                    update_stmt = text(
-                        """
-                        UPDATE briefings
-                        SET generated_at = :gen_at, full_text = :full_text, story_count = :story_count,
-                            content_hash = :content_hash, sync_source = :sync_source, synced_at = :synced_at
-                        WHERE id = :existing_id
-                        """
+                    return briefing_id
+            except DashboardSyncConflictError:
+                raise
+            except Exception as e:
+                is_transient = (
+                    "connection" in str(e).lower()
+                    or "operational" in type(e).__name__.lower()
+                    or "timeout" in str(e).lower()
+                    or "locked" in str(e).lower()
+                )
+                if attempt < max_attempts and is_transient:
+                    import time
+                    sleep_time = 0.5 * (2 ** (attempt - 1))
+                    logger.warning(
+                        "DB_RETRY: Transient database error on attempt %d: %s. Retrying in %.1fs...",
+                        attempt, e, sleep_time
                     )
-                    conn.execute(
-                        update_stmt,
-                        {
-                            "gen_at": briefing.generated_at or sync_time,
-                            "full_text": briefing.full_text,
-                            "story_count": story_count,
-                            "content_hash": new_hash,
-                            "sync_source": briefing.sync_source or "direct_save",
-                            "synced_at": sync_time,
-                            "existing_id": existing_id,
-                        },
-                    )
-                    conn.execute(
-                        text("DELETE FROM stories WHERE briefing_id = :b_id"),
-                        {"b_id": existing_id},
-                    )
-                    briefing_id = existing_id
+                    time.sleep(sleep_time)
                 else:
-                    insert_stmt = text(
-                        """
-                        INSERT INTO briefings (briefing_date, generated_at, full_text, story_count, content_hash, sync_source, synced_at)
-                        VALUES (:b_date, :gen_at, :full_text, :story_count, :content_hash, :sync_source, :synced_at)
-                        RETURNING id
-                        """
-                    )
-                    res = conn.execute(
-                        insert_stmt,
-                        {
-                            "b_date": date_str,
-                            "gen_at": briefing.generated_at or sync_time,
-                            "full_text": briefing.full_text,
-                            "story_count": story_count,
-                            "content_hash": new_hash,
-                            "sync_source": briefing.sync_source or "direct_save",
-                            "synced_at": sync_time,
-                        },
-                    )
-                    briefing_id = res.scalar()
-
-                insert_story_stmt = text(
-                    """
-                    INSERT INTO stories (briefing_id, section, position, headline, summary, source, url)
-                    VALUES (:b_id, :sec, :pos, :headline, :summary, :source, :url)
-                    """
-                )
-                for story in briefing.stories:
-                    conn.execute(
-                        insert_story_stmt,
-                        {
-                            "b_id": briefing_id,
-                            "sec": story.section.lower(),
-                            "pos": story.position,
-                            "headline": story.headline,
-                            "summary": story.summary,
-                            "source": story.source,
-                            "url": story.url,
-                        },
-                    )
-
-                return briefing_id
-
-        # SQLite implementation
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, story_count, content_hash FROM briefings WHERE briefing_date = ?",
-                (date_str,),
-            )
-            row = cursor.fetchone()
-
-            if row:
-                existing_id = row["id"]
-                existing_hash = row["content_hash"]
-
-                if existing_hash and existing_hash == new_hash:
-                    return existing_id
-
-                if not allow_replace:
-                    raise DashboardSyncConflictError(
-                        f"[DASHBOARD_SYNC_CONFLICT] date={date_str} existing briefing differs from incoming briefing. "
-                        f"Use --replace-date {date_str} to overwrite."
-                    )
-
-                cursor.execute(
-                    """
-                    UPDATE briefings
-                    SET generated_at = ?, full_text = ?, story_count = ?, content_hash = ?, sync_source = ?, synced_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        briefing.generated_at or sync_time,
-                        briefing.full_text,
-                        story_count,
-                        new_hash,
-                        briefing.sync_source or "direct_save",
-                        sync_time,
-                        existing_id,
-                    ),
-                )
-                cursor.execute("DELETE FROM stories WHERE briefing_id = ?", (existing_id,))
-                briefing_id = existing_id
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO briefings (briefing_date, generated_at, full_text, story_count, content_hash, sync_source, synced_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        date_str,
-                        briefing.generated_at or sync_time,
-                        briefing.full_text,
-                        story_count,
-                        new_hash,
-                        briefing.sync_source or "direct_save",
-                        sync_time,
-                    ),
-                )
-                briefing_id = cursor.lastrowid
-
-            for story in briefing.stories:
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO stories (briefing_id, section, position, headline, summary, source, url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        briefing_id,
-                        story.section.lower(),
-                        story.position,
-                        story.headline,
-                        story.summary,
-                        story.source,
-                        story.url,
-                    ),
-                )
-
-            return briefing_id
+                    raise
 
     def get_latest_briefing(self) -> Optional[DashboardBriefing]:
         """Fetch the most recent briefing with all associated stories."""

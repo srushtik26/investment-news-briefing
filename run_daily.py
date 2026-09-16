@@ -30,6 +30,7 @@ except ImportError:
 from app.logging_config import setup_logging, get_logger
 from app.email.email_sender import send_briefing_email, send_copy_paste_email
 from app.formatting.formatter import build_copy_paste_text
+from config import get_target_date_ist, is_testing_or_dry_run
 
 logger = get_logger("daily.runner")
 
@@ -53,7 +54,6 @@ def record_primary_email_date(data_dir: Path, today_str: str) -> None:
     logger.info("Recorded primary email delivery date in %s: %s", date_file, today_str)
 
 
-
 def get_last_email_date(data_dir: Path) -> Optional[str]:
     """Read the last successfully emailed briefing date (YYYY-MM-DD)."""
     date_file = data_dir / "last_email_date.txt"
@@ -71,6 +71,44 @@ def record_successful_email_date(data_dir: Path, today_str: str) -> None:
     date_file = data_dir / "last_email_date.txt"
     date_file.write_text(today_str, encoding="utf-8")
     logger.info("Recorded successful delivery date in %s: %s", date_file, today_str)
+
+
+def get_dashboard_sync_date(data_dir: Path) -> Optional[str]:
+    """Read the date (YYYY-MM-DD) when dashboard sync was successfully completed."""
+    date_file = data_dir / "dashboard_sync_date.txt"
+    if date_file.exists():
+        try:
+            return date_file.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning("Could not read dashboard_sync_date.txt: %s", e)
+    return None
+
+
+def record_dashboard_sync_date(data_dir: Path, today_str: str) -> None:
+    """Record today's date in dashboard_sync_date.txt after confirmed dashboard sync."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    date_file = data_dir / "dashboard_sync_date.txt"
+    date_file.write_text(today_str, encoding="utf-8")
+    logger.info("Recorded dashboard sync date in %s: %s", date_file, today_str)
+
+
+def extract_briefing_date_from_artifact(data_dir: Path) -> Optional[date]:
+    """Check briefing_date.txt or extract date from final_briefing.txt header."""
+    date_file = data_dir / "briefing_date.txt"
+    if date_file.exists():
+        try:
+            return date.fromisoformat(date_file.read_text(encoding="utf-8").strip())
+        except Exception as exc:
+            logger.warning("Could not read briefing_date.txt: %s", exc)
+    final_briefing = data_dir / "final_briefing.txt"
+    if final_briefing.exists():
+        try:
+            from run_dashboard_sync import extract_date_from_briefing_text
+            content = final_briefing.read_text(encoding="utf-8")
+            return extract_date_from_briefing_text(content)
+        except Exception as exc:
+            logger.warning("Could not extract date from final_briefing.txt: %s", exc)
+    return None
 
 
 def format_subject_date(d: date) -> str:
@@ -96,7 +134,8 @@ def run_daily_briefing(
         int: 0 on success or already sent today, 1 on failure.
     """
     setup_logging()
-    today = target_date or date.today()
+    ref_time_utc = datetime.now(timezone.utc)
+    today = target_date or get_target_date_ist(ref_time_utc)
     today_str = today.strftime("%Y-%m-%d")
     data_dir = data_dir_override or (Path(__file__).resolve().parent / "data")
 
@@ -108,14 +147,32 @@ def run_daily_briefing(
     last_sent = get_last_email_date(data_dir)
     if last_sent == today_str:
         logger.info("EMAIL_ALREADY_SENT_TODAY: Briefing already delivered for date %s. Exiting cleanly.", today_str)
+        # Ensure copy_paste_briefing.txt exists for dashboard recovery / retries
+        copy_paste_file = data_dir / "copy_paste_briefing.txt"
+        if not copy_paste_file.exists():
+            final_15_file = data_dir / "final_15_stories.json"
+            final_briefing_file = data_dir / "final_briefing.txt"
+            if final_15_file.exists():
+                try:
+                    stories_data = json.loads(final_15_file.read_text(encoding="utf-8"))
+                    copy_paste_text = build_copy_paste_text(stories_data, briefing_date=today)
+                    copy_paste_file.write_text(copy_paste_text, encoding="utf-8")
+                    logger.info("Restored copy_paste_briefing.txt from final_15_stories.json for dashboard retry.")
+                except Exception as exc:
+                    logger.warning("Could not reconstruct copy_paste_briefing.txt: %s", exc)
+            elif final_briefing_file.exists():
+                try:
+                    copy_paste_text = build_copy_paste_text(final_briefing_file.read_text(encoding="utf-8"), briefing_date=today)
+                    copy_paste_file.write_text(copy_paste_text, encoding="utf-8")
+                    logger.info("Restored copy_paste_briefing.txt from final_briefing.txt for dashboard retry.")
+                except Exception as exc:
+                    logger.warning("Could not reconstruct copy_paste_briefing.txt from text: %s", exc)
+
         print(f"\nSTATUS: EMAIL_ALREADY_SENT_TODAY (Date: {today_str})\n")
         return 0
 
     # 2. Check Email Credentials Presence Early
-    is_dry_run = (
-        os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
-        or os.environ.get("APP_ENV", "").strip().lower() == "test"
-    )
+    is_dry_run = is_testing_or_dry_run()
 
     sender = os.environ.get("GMAIL_SENDER", "").strip()
     recipient = os.environ.get("GMAIL_RECIPIENTS", "").strip() or os.environ.get("GMAIL_RECIPIENT", "").strip()
@@ -139,13 +196,27 @@ def run_daily_briefing(
         recipient = recipient or "mock-recipient@example.com"
         password = password or "mock-password"
 
-    # 3. Execute Existing Pipeline (if not skipped for testing)
+    # 3. Execute Existing Pipeline (if not skipped for testing or same-day retry)
+    primary_sent_today = (get_primary_email_date(data_dir) == today_str)
+    final_briefing_path = data_dir / "final_briefing.txt"
+
+    if primary_sent_today and final_briefing_path.exists():
+        artifact_date = extract_briefing_date_from_artifact(data_dir)
+        if artifact_date is None or artifact_date == today:
+            logger.info(
+                "PIPELINE_SKIP: Primary email already delivered today (%s) and valid briefing artifact exists. Skipping pipeline rerun.",
+                today_str,
+            )
+            skip_pipeline_execution = True
+
     if not skip_pipeline_execution:
         try:
             from run_pipeline import run_pipeline
             pipeline_exit_code = run_pipeline(
-                max_india=max_india,
-                max_international=max_international,
+                max_india=max_india or 5,
+                max_international=max_international or 5,
+                target_date=today,
+                data_dir=data_dir,
             )
         except Exception as e:
             logger.error("PIPELINE_EXECUTION_CRASH: Unhandled exception during run_pipeline: %s", e)
@@ -157,8 +228,7 @@ def run_daily_briefing(
             print(f"\nERROR: Pipeline execution failed with exit code {pipeline_exit_code}.\n")
             return 1
 
-    # 4. Verify Final Briefing Artifact
-    final_briefing_path = data_dir / "final_briefing.txt"
+    # 4. Verify Final Briefing Artifact & Freshness
     if not final_briefing_path.exists():
         logger.error("BRIEFING_FILE_MISSING: %s does not exist.", final_briefing_path)
         print(f"\nERROR: Final briefing file missing at {final_briefing_path}.\n")
@@ -168,6 +238,12 @@ def run_daily_briefing(
     if not briefing_text:
         logger.error("BRIEFING_FILE_EMPTY: %s is empty.", final_briefing_path)
         print(f"\nERROR: Final briefing file is empty.\n")
+        return 1
+
+    artifact_date = extract_briefing_date_from_artifact(data_dir)
+    if artifact_date is not None and artifact_date != today:
+        logger.error("STALE_BRIEFING_ARTIFACT: Artifact date %s does not match expected target date %s", artifact_date, today)
+        print(f"\nERROR: STALE_BRIEFING_ARTIFACT: Artifact date {artifact_date} does not match {today}.\n")
         return 1
 
     # 5. Verify Section Structure & Story Count Contract

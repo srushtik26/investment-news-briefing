@@ -102,10 +102,11 @@ def test_sunday_pipeline_dry_run_simulation(tmp_path, capsys):
         "GMAIL_APP_PASSWORD": "secretpassword",
     }
 
+    from datetime import date
     with patch.dict(os.environ, env_vars), \
          patch("run_daily.Path", return_value=data_dir):
         # Call run_daily_briefing with skip_pipeline_execution=True to test the dry-run packaging
-        code = run_daily_briefing(skip_pipeline_execution=True)
+        code = run_daily_briefing(skip_pipeline_execution=True, target_date=date(2026, 9, 13))
         assert code == 0
 
     captured = capsys.readouterr().out

@@ -92,13 +92,16 @@ class ArticleFetcher:
                         logger.debug("Successfully fetched %d bytes from %s", len(response.text), url)
                         return True, response.text, 200, None
 
-                    # If client error (e.g. 404, 403, 410), don't retry
-                    if 400 <= response.status_code < 500:
-                        logger.warning("HTTP %d client error for %s. Not retrying.", response.status_code, url)
+                    if response.status_code == 429:
+                        logger.warning("HTTP 429 Rate limited on attempt %d for %s. Retrying with backoff.", attempt, url)
+                        last_error = f"HTTP 429 Rate limited"
+                    elif 400 <= response.status_code < 500:
+                        # Non-retryable client error (e.g. 400, 401, 403, 404)
+                        logger.warning("HTTP %d permanent client error for %s. Not retrying.", response.status_code, url)
                         return False, None, response.status_code, f"HTTP {response.status_code} client error"
-
-                    logger.warning("HTTP %d server error on attempt %d for %s", response.status_code, attempt, url)
-                    last_error = f"HTTP {response.status_code} server error"
+                    else:
+                        logger.warning("HTTP %d server error on attempt %d for %s", response.status_code, attempt, url)
+                        last_error = f"HTTP {response.status_code} server error"
 
             except httpx.TimeoutException as exc:
                 last_error = f"Request timed out after {self.timeout}s"
