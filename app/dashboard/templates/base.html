@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260916_marketpulse_v1">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=20260916_marketpulse_v2">
   <style>
     :root {
       --primary-green: #0B4F35 !important;
@@ -94,6 +94,25 @@
       color: #FFFFFF !important;
       border: 1px solid #B68A2C !important;
       box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) !important;
+    }
+
+    @media (max-width: 768px) {
+      .brand-group,
+      .brand-link,
+      .brand-text,
+      .brand-subtitle {
+        border-bottom: none !important;
+      }
+      .nav-links {
+        border-top: none !important;
+        padding-top: 0 !important;
+      }
+      .nav-links::before,
+      .nav-links::after,
+      .brand-group::after {
+        display: none !important;
+        content: none !important;
+      }
     }
 
     .section-header {

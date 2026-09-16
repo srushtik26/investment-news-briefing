@@ -465,11 +465,17 @@ body {
   .brand-subtitle {
     font-size: 0.725rem;
   }
+  .brand-group,
+  .brand-link,
+  .brand-text,
+  .brand-subtitle {
+    border-bottom: none;
+  }
   .nav-links {
     width: 100%;
     gap: 1.25rem;
-    padding-top: 0.35rem;
-    border-top: 1px solid var(--border);
+    padding-top: 0;
+    border-top: none;
   }
   .main-content {
     padding: 0 1rem;
