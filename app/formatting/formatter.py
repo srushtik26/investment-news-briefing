@@ -444,8 +444,9 @@ class BriefingFormatter:
 
 
 def build_copy_paste_text(
-    stories: Union[BriefingEditorialPayload, Dict[str, Any], str],
+    stories: Union[BriefingEditorialPayload, Dict[str, Any], List[Dict[str, Any]], str],
     briefing_date: Optional[Union[date, str]] = None,
+    require_15: Optional[bool] = None,
 ) -> str:
     """
     Build a clean plain-text Investment Committee Briefing formatted specifically
@@ -482,6 +483,11 @@ def build_copy_paste_text(
     """
     formatter = BriefingFormatter()
 
+    def _get_val(obj: Any, key: str, default: Any = "") -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
     # 1. Resolve date string
     header_date_str = ""
     if isinstance(briefing_date, date):
@@ -494,7 +500,16 @@ def build_copy_paste_text(
     domestic_stories: List[Any] = []
     intl_stories: List[Any] = []
 
-    if isinstance(stories, str):
+    if isinstance(stories, list):
+        for item in stories:
+            sec_raw = str(_get_val(item, "section", "")).strip().lower()
+            if "india" in sec_raw:
+                india_stories.append(item)
+            elif "domestic" in sec_raw:
+                domestic_stories.append(item)
+            elif "international" in sec_raw or "intl" in sec_raw:
+                intl_stories.append(item)
+    elif isinstance(stories, str):
         # Plain text input (e.g. from final_briefing.txt)
         from app.email.email_sender import parse_briefing_text
         parsed = parse_briefing_text(stories)
@@ -505,16 +520,25 @@ def build_copy_paste_text(
                 sec_key = sec.get("key", "").upper()
                 sec_stories = sec.get("stories", [])
                 if "INDIA" in sec_key:
-                    india_stories = sec_stories
+                    india_stories = list(sec_stories)
                 elif "DOMESTIC" in sec_key:
-                    domestic_stories = sec_stories
+                    domestic_stories = list(sec_stories)
                 elif "INTERNATIONAL" in sec_key:
-                    intl_stories = sec_stories
+                    intl_stories = list(sec_stories)
     elif isinstance(stories, dict):
-        # Structured dictionary (e.g. from final_15_stories.json)
-        india_stories = list(stories.get("india", []))
-        domestic_stories = list(stories.get("domestic", []))
-        intl_stories = list(stories.get("international", []))
+        if "stories" in stories and isinstance(stories["stories"], list):
+            for item in stories["stories"]:
+                sec_raw = str(_get_val(item, "section", "")).strip().lower()
+                if "india" in sec_raw:
+                    india_stories.append(item)
+                elif "domestic" in sec_raw:
+                    domestic_stories.append(item)
+                elif "international" in sec_raw or "intl" in sec_raw:
+                    intl_stories.append(item)
+        else:
+            india_stories = list(stories.get("india", []))
+            domestic_stories = list(stories.get("domestic", []))
+            intl_stories = list(stories.get("international", []))
         if not header_date_str and stories.get("date"):
             raw_d = stories["date"]
             if isinstance(raw_d, date):
@@ -530,10 +554,33 @@ def build_copy_paste_text(
     if not header_date_str:
         header_date_str = formatter._format_date(datetime.now(timezone.utc).date())
 
-    def _get_val(obj: Any, key: str, default: Any = "") -> Any:
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        return getattr(obj, key, default)
+    def _sort_pos(s: Any) -> int:
+        pos = _get_val(s, "position", 999)
+        try:
+            return int(pos)
+        except (ValueError, TypeError):
+            return 999
+
+    india_stories.sort(key=_sort_pos)
+    domestic_stories.sort(key=_sort_pos)
+    intl_stories.sort(key=_sort_pos)
+
+    total_stories = len(india_stories) + len(domestic_stories) + len(intl_stories)
+    if total_stories == 0:
+        raise ValueError("Cannot produce copy/paste briefing: 0 stories found in input data.")
+
+    is_list_input = isinstance(stories, list) or (
+        isinstance(stories, dict) and "stories" in stories and isinstance(stories["stories"], list)
+    )
+    should_require_15 = require_15 is True or (require_15 is None and is_list_input)
+
+    if should_require_15:
+        if len(india_stories) != 5 or len(domestic_stories) != 5 or len(intl_stories) != 5:
+            raise ValueError(
+                f"Cannot produce 15-story copy/paste briefing: expected exactly 5 India, 5 Domestic, "
+                f"and 5 International stories, but found {len(india_stories)} India, "
+                f"{len(domestic_stories)} Domestic, and {len(intl_stories)} International."
+            )
 
     def _render_story_lines(story_obj: Any, idx: int) -> List[str]:
         raw_headline = str(_get_val(story_obj, "headline", ""))
@@ -583,6 +630,10 @@ def build_copy_paste_text(
     ]
 
     for title, sec_story_list in sections_data:
+        if not sec_story_list:
+            if should_require_15:
+                raise ValueError(f"Cannot produce copy/paste briefing: required section '{title}' is empty.")
+            continue
         out_lines.append(title)
         out_lines.append("")
         for idx, st_obj in enumerate(sec_story_list[:5], start=1):

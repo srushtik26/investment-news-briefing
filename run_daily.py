@@ -119,6 +119,26 @@ def format_subject_date(d: date) -> str:
     return f"{day} {month} {year}"
 
 
+def validate_copy_paste_briefing(text: str) -> bool:
+    """Validate that copy/paste text contains exactly 5 India + 5 Domestic + 5 International (15 total)."""
+    if not text or not text.strip():
+        return False
+    try:
+        from run_dashboard_sync import parse_briefing_text
+        briefing = parse_briefing_text(text)
+        if not briefing or briefing.story_count != 15:
+            return False
+        counts = {
+            "india": sum(1 for s in briefing.stories if s.section == "india"),
+            "domestic": sum(1 for s in briefing.stories if s.section == "domestic"),
+            "international": sum(1 for s in briefing.stories if s.section == "international"),
+        }
+        return counts.get("india") == 5 and counts.get("domestic") == 5 and counts.get("international") == 5
+    except Exception as exc:
+        logger.warning("Error validating copy/paste briefing text: %s", exc)
+        return False
+
+
 def run_daily_briefing(
     data_dir_override: Optional[Path] = None,
     target_date: Optional[date] = None,
@@ -147,26 +167,46 @@ def run_daily_briefing(
     last_sent = get_last_email_date(data_dir)
     if last_sent == today_str:
         logger.info("EMAIL_ALREADY_SENT_TODAY: Briefing already delivered for date %s. Exiting cleanly.", today_str)
-        # Ensure copy_paste_briefing.txt exists for dashboard recovery / retries
+        # Ensure copy_paste_briefing.txt exists and is valid for dashboard recovery / retries
         copy_paste_file = data_dir / "copy_paste_briefing.txt"
-        if not copy_paste_file.exists():
+        needs_restore = not copy_paste_file.exists()
+        if not needs_restore:
+            try:
+                current_cp = copy_paste_file.read_text(encoding="utf-8")
+                if not validate_copy_paste_briefing(current_cp):
+                    logger.warning("Existing copy_paste_briefing.txt is malformed or incomplete. Reconstructing...")
+                    needs_restore = True
+            except Exception:
+                needs_restore = True
+
+        if needs_restore:
             final_15_file = data_dir / "final_15_stories.json"
             final_briefing_file = data_dir / "final_briefing.txt"
+            restored_text = ""
             if final_15_file.exists():
                 try:
                     stories_data = json.loads(final_15_file.read_text(encoding="utf-8"))
-                    copy_paste_text = build_copy_paste_text(stories_data, briefing_date=today)
-                    copy_paste_file.write_text(copy_paste_text, encoding="utf-8")
-                    logger.info("Restored copy_paste_briefing.txt from final_15_stories.json for dashboard retry.")
+                    cand_text = build_copy_paste_text(stories_data, briefing_date=today, require_15=True)
+                    if validate_copy_paste_briefing(cand_text):
+                        restored_text = cand_text
+                        logger.info("Reconstructed valid copy_paste_briefing.txt from final_15_stories.json.")
                 except Exception as exc:
-                    logger.warning("Could not reconstruct copy_paste_briefing.txt: %s", exc)
-            elif final_briefing_file.exists():
+                    logger.warning("Could not reconstruct copy_paste_briefing.txt from json: %s", exc)
+
+            if not restored_text and final_briefing_file.exists():
                 try:
-                    copy_paste_text = build_copy_paste_text(final_briefing_file.read_text(encoding="utf-8"), briefing_date=today)
-                    copy_paste_file.write_text(copy_paste_text, encoding="utf-8")
-                    logger.info("Restored copy_paste_briefing.txt from final_briefing.txt for dashboard retry.")
+                    cand_text = build_copy_paste_text(final_briefing_file.read_text(encoding="utf-8"), briefing_date=today, require_15=True)
+                    if validate_copy_paste_briefing(cand_text):
+                        restored_text = cand_text
+                        logger.info("Reconstructed valid copy_paste_briefing.txt from final_briefing.txt.")
                 except Exception as exc:
                     logger.warning("Could not reconstruct copy_paste_briefing.txt from text: %s", exc)
+
+            if restored_text:
+                copy_paste_file.write_text(restored_text, encoding="utf-8")
+                logger.info("Successfully restored valid 15-story copy_paste_briefing.txt for dashboard retry.")
+            else:
+                logger.error("Could not restore a valid 15-story copy_paste_briefing.txt.")
 
         print(f"\nSTATUS: EMAIL_ALREADY_SENT_TODAY (Date: {today_str})\n")
         return 0
@@ -265,21 +305,38 @@ def run_daily_briefing(
 
     # Generate copy/paste text version reusing structured data if available, or briefing_text
     final_15_path = data_dir / "final_15_stories.json"
+    copy_paste_text = ""
     if final_15_path.exists():
         try:
             stories_data = json.loads(final_15_path.read_text(encoding="utf-8"))
-            copy_paste_text = build_copy_paste_text(stories_data, briefing_date=today)
+            cand_text = build_copy_paste_text(stories_data, briefing_date=today)
+            if validate_copy_paste_briefing(cand_text):
+                copy_paste_text = cand_text
+            else:
+                logger.warning("copy_paste_text from final_15_stories.json failed 15-story validation; falling back to briefing_text")
         except Exception as json_err:
-            logger.warning("Could not load final_15_stories.json (%s); falling back to briefing_text", json_err)
-            copy_paste_text = build_copy_paste_text(briefing_text, briefing_date=today)
-    else:
-        copy_paste_text = build_copy_paste_text(briefing_text, briefing_date=today)
+            logger.warning("Could not build copy_paste from final_15_stories.json (%s); falling back to briefing_text", json_err)
+
+    if not copy_paste_text:
+        try:
+            cand_text = build_copy_paste_text(briefing_text, briefing_date=today)
+            copy_paste_text = cand_text
+        except Exception as txt_err:
+            logger.error("Could not build copy_paste from briefing_text: %s", txt_err)
 
     # Save copy_paste_briefing.txt artifact alongside final_briefing.txt for inspection
-    try:
-        (data_dir / "copy_paste_briefing.txt").write_text(copy_paste_text, encoding="utf-8")
-    except Exception as save_err:
-        logger.warning("Could not write copy_paste_briefing.txt: %s", save_err)
+    copy_paste_file = data_dir / "copy_paste_briefing.txt"
+    if copy_paste_text and validate_copy_paste_briefing(copy_paste_text):
+        try:
+            copy_paste_file.write_text(copy_paste_text, encoding="utf-8")
+            logger.info("Successfully saved validated 15-story copy_paste_briefing.txt")
+        except Exception as save_err:
+            logger.warning("Could not write copy_paste_briefing.txt: %s", save_err)
+    else:
+        logger.error(
+            "COPY_PASTE_VALIDATION_FAILED: copy_paste_text does not contain exactly 15 stories (5 India + 5 Domestic + 5 Intl). "
+            "Refusing to save or overwrite copy_paste_briefing.txt with invalid content."
+        )
 
     if is_dry_run:
         recipient_count = len([r for r in recipient.split(",") if r.strip()])

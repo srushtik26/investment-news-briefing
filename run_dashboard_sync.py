@@ -270,32 +270,46 @@ def sync_dashboard(
     dry_run: bool = False,
 ) -> bool:
     """Parse the authoritative emailed artifact and persist it safely."""
-    candidate_file: Optional[Path] = None
+    candidates: List[Path] = []
     if input_file:
         candidate_file = Path(input_file)
         if not candidate_file.exists():
             print(f"[ERROR] Specified input file '{candidate_file}' does not exist.")
             return False
+        candidates = [candidate_file]
     else:
         for path in (Path("data/copy_paste_briefing.txt"), Path("data/final_briefing.txt")):
             if path.exists():
-                candidate_file = path
-                break
+                candidates.append(path)
 
-    if not candidate_file:
+    if not candidates:
         print("[ERROR] No authoritative email briefing file found in data/.")
         return False
 
-    if candidate_file.suffix.lower() == ".json":
-        briefing = parse_briefing_json(candidate_file)
-    else:
-        text = candidate_file.read_text(encoding="utf-8")
-        briefing = parse_briefing_text(text, default_date=target_date or replace_date)
+    briefing: Optional[DashboardBriefing] = None
+    selected_file: Optional[Path] = None
 
-    if not briefing or briefing.story_count not in (10, 15):
-        print(f"[ERROR] Could not extract a complete 10-story briefing from {candidate_file}.")
+    for candidate_file in candidates:
+        if candidate_file.suffix.lower() == ".json":
+            b = parse_briefing_json(candidate_file)
+        else:
+            text = candidate_file.read_text(encoding="utf-8")
+            b = parse_briefing_text(text, default_date=target_date or replace_date)
+
+        if b and b.story_count in (10, 15):
+            briefing = b
+            selected_file = candidate_file
+            break
+        else:
+            print(
+                f"[ERROR] Could not extract a complete dashboard briefing from {candidate_file} "
+                f"(expected 15 stories: 5 India + 5 Domestic + 5 International)."
+            )
+
+    if not briefing or not selected_file:
         return False
 
+    candidate_file = selected_file
     briefing.sync_source = candidate_file.name
 
     if target_date and briefing.briefing_date != target_date:

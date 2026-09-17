@@ -86,10 +86,32 @@ jobs:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
+          SYNC_SUCCESS=false
           if [ -f "data/copy_paste_briefing.txt" ]; then
-            python run_dashboard_sync.py --file data/copy_paste_briefing.txt
-          elif [ -f "data/final_briefing.txt" ]; then
-            python run_dashboard_sync.py --file data/final_briefing.txt
+            echo "Attempting dashboard sync with data/copy_paste_briefing.txt..."
+            if python run_dashboard_sync.py --file data/copy_paste_briefing.txt; then
+              SYNC_SUCCESS=true
+            else
+              echo "copy_paste briefing invalid or sync failed; falling back to final_briefing.txt"
+            fi
+          fi
+
+          if [ "$SYNC_SUCCESS" != "true" ]; then
+            if [ -f "data/final_briefing.txt" ]; then
+              echo "Attempting dashboard sync with data/final_briefing.txt..."
+              if python run_dashboard_sync.py --file data/final_briefing.txt; then
+                SYNC_SUCCESS=true
+              else
+                echo "final_briefing sync failed"
+              fi
+            else
+              echo "No valid dashboard briefing artifact found"
+            fi
+          fi
+
+          if [ "$SYNC_SUCCESS" != "true" ]; then
+            echo "ERROR: Dashboard sync failed for all candidate artifacts."
+            exit 1
           fi
 
       - name: Save history database cache
