@@ -364,7 +364,8 @@ class AIArticleClassifier:
 
                 is_400_range = any(code in exc_str for code in ("400", "401", "403", "404"))
                 is_429 = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
-                is_5xx = any(code in exc_str for code in ("500", "502", "503", "UNAVAILABLE", "INTERNAL"))
+                is_5xx = any(code in exc_str for code in ("500", "502", "503", "504", "UNAVAILABLE", "INTERNAL"))
+                is_transient = is_429 or is_5xx or any(err in exc_str.lower() for err in ("timeout", "timed out", "connection", "remoteendclosed", "reset by peer"))
                 is_daily_quota = is_429 and any(
                     marker.lower() in exc_str.lower()
                     for marker in ("generaterequestsperday", "quotaid", "daily quota", "per day", "freetier")
@@ -384,22 +385,22 @@ class AIArticleClassifier:
                 if is_400_range or is_daily_quota:
                     if is_daily_quota:
                         logger.warning(
-                            "GEMINI_DAILY_QUOTA_EXHAUSTED on attempt %d for '%s'. Switching immediately to offline fallback without retries.",
+                            "GEMINI_DAILY_QUOTA_EXHAUSTED on attempt %d for '%s'. Switching to offline deterministic evaluation.",
                             attempt, article.title[:40],
                         )
                     else:
                         logger.warning(
-                            "Client/Auth error on attempt %d for '%s'. Switching to offline fallback: %s",
+                            "Client/Auth error on attempt %d for '%s'. Switching to offline deterministic evaluation: %s",
                             attempt, article.title[:40], exc,
                         )
                     self._force_offline_mode = True
                     return self._run_offline_fallback(article)
 
-                if attempt == 1 and (is_429 or is_5xx):
-                    backoff = self.RATE_LIMIT_BACKOFF_SECONDS if (is_429 and not self.mock_responder) else (2 if (is_5xx and not self.mock_responder) else 0)
+                if attempt == 1 and is_transient:
+                    backoff = self.RATE_LIMIT_BACKOFF_SECONDS if (is_429 and not self.mock_responder) else (2 if not self.mock_responder else 0)
                     logger.warning(
                         "API error (%s) on attempt 1 for '%s'. Backing off %ds before retry...",
-                        "429 Rate Limit" if is_429 else "5xx Server Error",
+                        "429 Rate Limit" if is_429 else "Transient Network/Server Error",
                         article.title[:40],
                         backoff,
                     )

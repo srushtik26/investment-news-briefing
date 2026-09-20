@@ -23,6 +23,7 @@ class PipelineContext:
     settings: Any = field(default_factory=lambda: get_settings())
     max_india: Optional[int] = None
     max_international: Optional[int] = None
+    is_weekend: bool = False
 
     # Logging callback
     log_exec: Callable[[str], None] = field(default=lambda m: None)
@@ -82,6 +83,8 @@ class PipelineContext:
         """Initialize missing default engines if not provided."""
         if self.target_date is None:
             self.target_date = get_target_date_ist(self.run_reference_time)
+        if self.target_date is not None:
+            self.is_weekend = self.target_date.weekday() in (5, 6)
         if self.scorer is None:
             from app.ranking.scorer import InvestmentRelevanceScorer
             self.scorer = InvestmentRelevanceScorer()

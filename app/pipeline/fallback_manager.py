@@ -50,6 +50,7 @@ def get_quality_level(
     two_source_count: int,
     articles_lookup: Dict[str, Article],
     now_utc: Optional[datetime] = None,
+    is_weekend: bool = False,
 ) -> str:
     """Return the strongest quality level represented by a selected section."""
     if len(scored_events) < 5:
@@ -61,7 +62,8 @@ def get_quality_level(
         age = get_article_age_hours(article, now_utc=now_utc) if article else None
         ages.append(age if age is not None else 999.0)
     oldest = max(ages, default=0.0)
-    if oldest > 72.0:
+    max_allowed = 96.0 if is_weekend else 72.0
+    if oldest > max_allowed:
         return "DATA_UNAVAILABLE"
     if oldest <= 24.0 and two_source_count >= 3:
         return "STRICT_SUCCESS"
@@ -71,7 +73,9 @@ def get_quality_level(
         return "FALLBACK_SUCCESS_36H"
     if oldest <= 48.0:
         return "FALLBACK_SUCCESS_48H"
-    return "EMERGENCY_SUCCESS_72H"
+    if oldest <= 72.0:
+        return "EMERGENCY_SUCCESS_72H"
+    return "WEEKEND_RESCUE_96H"
 
 
 def get_section_quality_state(
@@ -609,16 +613,31 @@ def run_expansion_and_fallbacks(
     india_frozen = (india_unique_count >= 5)
     intl_frozen = (intl_unique_count >= 5)
 
-    FALLBACK_HORIZONS = [36.0, 48.0, 72.0]
+    if ctx.is_weekend:
+        ctx.log_exec("WEEKEND_MODE=true")
+        ctx.log_exec(f"WEEKEND_INITIAL_COUNTS DOMESTIC={dom_unique_count} INDIA={india_unique_count} INTERNATIONAL={intl_unique_count}")
+
+    FALLBACK_HORIZONS = [36.0, 48.0, 72.0, 96.0] if ctx.is_weekend else [36.0, 48.0, 72.0]
 
     for horizon in FALLBACK_HORIZONS:
         if dom_frozen and india_frozen and intl_frozen:
             break
 
-        tag = "[FALLBACK_36H]" if horizon == 36.0 else ("[FALLBACK_48H]" if horizon == 48.0 else "[EMERGENCY_72H]")
+        if horizon == 36.0:
+            tag = "[FALLBACK_36H]"
+        elif horizon == 48.0:
+            tag = "[FALLBACK_48H]"
+        elif horizon == 72.0:
+            tag = "[WEEKEND_BACKFILL_72H]" if ctx.is_weekend else "[EMERGENCY_72H]"
+        else:
+            tag = "[WEEKEND_RESCUE_96H]"
 
         # 1. India Fallback
         if not india_frozen:
+            if ctx.is_weekend and horizon == 72.0:
+                ctx.log_exec("WEEKEND_BACKFILL_72H section=INDIA")
+            elif ctx.is_weekend and horizon == 96.0:
+                ctx.log_exec("WEEKEND_RESCUE_96H section=INDIA")
             ctx.log_exec(f"{tag} India deficient ({india_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon, ctx)
             india_unique_count = count_unique_section_events_fn(NewsCategory.INDIA)
@@ -632,7 +651,7 @@ def run_expansion_and_fallbacks(
 
             # FREE horizon-aware Google News RSS discovery for deficient India
             if india_unique_count < 5:
-                when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else 3)
+                when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
                 when_param = f"when:{when_days}d"
                 INDIA_FALLBACK_QUERIES = [
                     f"site:business-standard.com India acquisition {when_param}",
@@ -642,6 +661,9 @@ def run_expansion_and_fallbacks(
                     f"India company acquisition {when_param}",
                     f"India regulatory approval {when_param}",
                     f"India contract award {when_param}",
+                    f"site:moneycontrol.com India quarterly profit {when_param}",
+                    f"site:thehindubusinessline.com India stake sale {when_param}",
+                    f"site:financialexpress.com India debt capex {when_param}",
                 ]
                 for ifq in INDIA_FALLBACK_QUERIES:
                     if count_unique_section_events_fn(NewsCategory.INDIA) >= 5:
@@ -671,6 +693,10 @@ def run_expansion_and_fallbacks(
 
         # 2. International Fallback
         if not intl_frozen:
+            if ctx.is_weekend and horizon == 72.0:
+                ctx.log_exec("WEEKEND_BACKFILL_72H section=INTERNATIONAL")
+            elif ctx.is_weekend and horizon == 96.0:
+                ctx.log_exec("WEEKEND_RESCUE_96H section=INTERNATIONAL")
             ctx.log_exec(f"{tag} International deficient ({intl_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.INTERNATIONAL, horizon, ctx)
             intl_unique_count = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
@@ -685,7 +711,7 @@ def run_expansion_and_fallbacks(
             # FREE horizon-aware Google News RSS discovery for deficient International
             if intl_unique_count < 5:
                 ctx.log_exec(f"[INTL_FALLBACK_RSS] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching Google News RSS...")
-                when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else 3)
+                when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
                 when_param = f"when:{when_days}d"
                 if ctx.extractor.is_domain_degraded("reuters.com"):
                     INTL_FALLBACK_QUERIES = [
@@ -766,11 +792,18 @@ def run_expansion_and_fallbacks(
                                 "company acquisition deal",
                                 "company funding round",
                             ]
+                        elif horizon <= 72.0:
+                            SERP_DISCOVERY_QUERIES = [
+                                "company quarterly earnings results",
+                                "acquisition merger agreement",
+                                "company financial guidance",
+                            ]
                         else:
                             SERP_DISCOVERY_QUERIES = [
                                 "company quarterly earnings results",
                                 "acquisition merger agreement",
                                 "company financial guidance",
+                                "company investment contract award",
                             ]
                         for sq in SERP_DISCOVERY_QUERIES:
                             if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
@@ -795,6 +828,10 @@ def run_expansion_and_fallbacks(
 
         # 3. Domestic Fallback (only if not frozen and < 5)
         if not dom_frozen and dom_unique_count < 5:
+            if ctx.is_weekend and horizon == 72.0:
+                ctx.log_exec("WEEKEND_BACKFILL_72H section=DOMESTIC")
+            elif ctx.is_weekend and horizon == 96.0:
+                ctx.log_exec("WEEKEND_RESCUE_96H section=DOMESTIC")
             ctx.log_exec(f"{tag} Domestic deficient ({dom_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.DOMESTIC, horizon, ctx)
             dom_unique_count = len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC))
@@ -821,12 +858,13 @@ def run_expansion_and_fallbacks(
             intl_frozen = True
 
     # Check terminal exhaustion
+    limit_h = 96 if ctx.is_weekend else 72
     if india_unique_count < 5:
-        ctx.log_exec(f"[EXHAUSTED] India remained {india_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
+        ctx.log_exec(f"[EXHAUSTED] India remained {india_unique_count}/5 after {limit_h}h -> DATA_UNAVAILABLE")
     if intl_unique_count < 5:
-        ctx.log_exec(f"[EXHAUSTED] International remained {intl_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
+        ctx.log_exec(f"[EXHAUSTED] International remained {intl_unique_count}/5 after {limit_h}h -> DATA_UNAVAILABLE")
     if dom_unique_count < 5:
-        ctx.log_exec(f"[EXHAUSTED] Domestic remained {dom_unique_count}/5 after 72h -> DATA_UNAVAILABLE")
+        ctx.log_exec(f"[EXHAUSTED] Domestic remained {dom_unique_count}/5 after {limit_h}h -> DATA_UNAVAILABLE")
 
     # Reclassify and update categories
     for e in ctx.verified_events:
@@ -841,5 +879,8 @@ def run_expansion_and_fallbacks(
         pipeline_status = "STRICT_SUCCESS"
     else:
         pipeline_status = "DATA_UNAVAILABLE"
+
+    if ctx.is_weekend:
+        ctx.log_exec(f"WEEKEND_FINAL_COUNTS DOMESTIC={dom_unique_count} INDIA={india_unique_count} INTERNATIONAL={intl_unique_count}")
 
     return pipeline_status

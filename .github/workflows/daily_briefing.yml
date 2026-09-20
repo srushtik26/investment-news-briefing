@@ -15,7 +15,7 @@ jobs:
   run-daily-briefing:
     name: Generate & Deliver Daily Briefing
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Check out repository
@@ -61,6 +61,7 @@ jobs:
             data/final_briefing.txt
             data/final_15_stories.json
             data/copy_paste_briefing.txt
+            data/partial_weekend_state.json
           key: briefing-delivery-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
             briefing-delivery-${{ steps.current-date.outputs.date }}-
@@ -86,6 +87,17 @@ jobs:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
+          CURRENT_DATE="${{ steps.current-date.outputs.date }}"
+          BRIEFING_DATE=""
+          if [ -f "data/briefing_date.txt" ]; then
+            BRIEFING_DATE=$(cat data/briefing_date.txt | tr -d '[:space:]')
+          fi
+
+          if [ "$BRIEFING_DATE" != "$CURRENT_DATE" ]; then
+            echo "DASHBOARD_SYNC_SKIPPED: no valid current-date briefing artifact because pipeline failed (expected $CURRENT_DATE, got $BRIEFING_DATE)"
+            exit 0
+          fi
+
           SYNC_SUCCESS=false
           if [ -f "data/copy_paste_briefing.txt" ]; then
             echo "Attempting dashboard sync with data/copy_paste_briefing.txt..."
@@ -115,7 +127,7 @@ jobs:
           fi
 
       - name: Save history database cache
-        if: always()
+        if: always() && hashFiles('data/briefings.db', 'data/briefing_history.json') != ''
         uses: actions/cache/save@v4
         with:
           path: |
@@ -124,7 +136,7 @@ jobs:
           key: briefing-history-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
 
       - name: Save daily delivery state cache
-        if: always()
+        if: always() && hashFiles('data/last_email_date.txt', 'data/primary_email_date.txt', 'data/dashboard_sync_date.txt', 'data/briefing_date.txt', 'data/final_briefing.txt', 'data/final_15_stories.json', 'data/copy_paste_briefing.txt', 'data/partial_weekend_state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: |
@@ -135,6 +147,7 @@ jobs:
             data/final_briefing.txt
             data/final_15_stories.json
             data/copy_paste_briefing.txt
+            data/partial_weekend_state.json
           key: briefing-delivery-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
 
       - name: Upload briefing artifacts
@@ -151,5 +164,6 @@ jobs:
             data/primary_email_date.txt
             data/dashboard_sync_date.txt
             data/pipeline_execution_log.txt
+            data/partial_weekend_state.json
           retention-days: 14
           if-no-files-found: ignore

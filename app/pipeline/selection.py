@@ -720,6 +720,12 @@ def run_ranking_and_selection(
             horizon_rank = 2
         elif age_hours <= 48:
             horizon_rank = 3
+        elif age_hours <= 72:
+            horizon_rank = 4
+        elif age_hours <= 96:
+            horizon_rank = 5
+        else:
+            horizon_rank = 6
         tier_rank = 0 if event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else 1
         has_penalty = bool(getattr(scored_event.score_breakdown, "relevance_penalties", 0.0) > 0.0)
         penalty_rank = 1 if has_penalty else 0
@@ -1586,9 +1592,9 @@ def run_ranking_and_selection(
     intl_two_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     intl_sng_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
 
-    dom_quality_level = get_quality_level(domestic_pool, dom_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time)
-    india_quality_level = get_quality_level(india_pool, india_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time)
-    intl_quality_level = get_quality_level(intl_pool, intl_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time)
+    dom_quality_level = get_quality_level(domestic_pool, dom_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
+    india_quality_level = get_quality_level(india_pool, india_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
+    intl_quality_level = get_quality_level(intl_pool, intl_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
     quality_levels = [dom_quality_level, india_quality_level, intl_quality_level]
 
     _QUALITY_LEVEL_HORIZONS: Dict[str, float] = {
@@ -1597,6 +1603,7 @@ def run_ranking_and_selection(
         "FALLBACK_SUCCESS_36H":  36.0,
         "FALLBACK_SUCCESS_48H":  48.0,
         "EMERGENCY_SUCCESS_72H": 72.0,
+        "WEEKEND_RESCUE_96H":    96.0,
         "DATA_UNAVAILABLE":      24.0,
     }
     for section_pool, section_quality_level in [
@@ -1615,6 +1622,8 @@ def run_ranking_and_selection(
 
     if "DATA_UNAVAILABLE" in quality_levels:
         pipeline_status = "DATA_UNAVAILABLE"
+    elif "WEEKEND_RESCUE_96H" in quality_levels:
+        pipeline_status = "WEEKEND_RESCUE_96H"
     elif "EMERGENCY_SUCCESS_72H" in quality_levels:
         pipeline_status = "EMERGENCY_SUCCESS_72H"
     elif "FALLBACK_SUCCESS_48H" in quality_levels:

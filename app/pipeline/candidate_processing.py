@@ -164,6 +164,104 @@ def _extract_candidates(
     return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen
 
 
+def _recover_alternate_source(
+    cand: Any,
+    cand_section: str,
+    ctx: PipelineContext,
+    active_horizon: float = 24.0,
+) -> Optional[Article]:
+    """
+    When a candidate publisher returns 401/403 or is degraded,
+    search for alternate approved coverage of the same underlying event.
+    Priority:
+    1. Already discovered / extracted candidates or reserves
+    2. Google News RSS discovery
+    3. SerpAPI only when still needed
+    """
+    title = getattr(cand, "title", "") or ""
+    cand_tokens = set(re.findall(r"\w{4,}", title.lower()))
+    if not cand_tokens:
+        return None
+
+    blocked_source = normalize_publisher_name(getattr(cand, "source", "") or "")
+
+    # 1. Check already extracted articles from non-blocked publishers
+    for existing_art in ctx.all_extracted:
+        if existing_art.source_name == blocked_source:
+            continue
+        art_tokens = set(re.findall(r"\w{4,}", existing_art.title.lower()))
+        overlap = len(cand_tokens & art_tokens) / max(1, len(cand_tokens))
+        if overlap >= 0.4:
+            age_h = get_article_age_hours(existing_art, now_utc=ctx.run_reference_time)
+            if age_h is not None and age_h <= active_horizon:
+                ctx.log_exec(f"  [ALTERNATE_SOURCE_RECOVERED] Existing coverage from '{existing_art.source_name}' matches blocked '{blocked_source}'")
+                return existing_art
+
+    # 2. Check reserves for alternate publisher coverage
+    reserves = (
+        ctx.india_reserve_pool if cand_section == "india"
+        else (ctx.intl_reserve_pool if cand_section == "international" else ctx.domestic_reserve_pool)
+    )
+    for res_cand in reserves:
+        res_source = normalize_publisher_name(getattr(res_cand, "source", "") or "")
+        if res_source == blocked_source:
+            continue
+        res_tokens = set(re.findall(r"\w{4,}", (getattr(res_cand, "title", "") or "").lower()))
+        overlap = len(cand_tokens & res_tokens) / max(1, len(cand_tokens))
+        if overlap >= 0.4:
+            res_url_norm = res_cand.url.strip().lower().rstrip("/")
+            if res_url_norm not in ctx.seen_urls:
+                ctx.seen_urls.add(res_url_norm)
+                try:
+                    alt_res = ctx.extractor.extract(
+                        url=res_cand.url,
+                        source_name=res_source,
+                        candidate_title=res_cand.title,
+                        candidate_category=cand_section.title(),
+                        max_age_hours=active_horizon,
+                    )
+                    if alt_res.success and alt_res.article:
+                        ctx.all_extracted.append(alt_res.article)
+                        ctx.articles_lookup[alt_res.article.id] = alt_res.article
+                        ctx.log_exec(f"  [ALTERNATE_SOURCE_RECOVERED] Reserve candidate from '{res_source}' replaces blocked '{blocked_source}'")
+                        return alt_res.article
+                except Exception:
+                    pass
+
+    # 3. Google News RSS search for alternative coverage
+    if hasattr(ctx, "discovery_service") and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
+        top_tokens = [t for t in re.findall(r"\b[A-Za-z0-9]{4,}\b", title) if t.lower() not in {"today", "reports", "after", "before", "about", "could", "would", "first", "second"}]
+        if len(top_tokens) >= 2:
+            alt_query = " ".join(top_tokens[:4])
+            country = "India" if cand_section in ("india", "domestic") else "US"
+            try:
+                items = ctx.discovery_service.provider.discover(query=alt_query, country=country, max_results=5)
+                for it in items:
+                    it_source = normalize_publisher_name(it.source)
+                    if it_source == blocked_source:
+                        continue
+                    it_url_norm = it.url.strip().lower().rstrip("/")
+                    if it_url_norm in ctx.seen_urls:
+                        continue
+                    ctx.seen_urls.add(it_url_norm)
+                    alt_res = ctx.extractor.extract(
+                        url=it.url,
+                        source_name=it_source,
+                        candidate_title=it.title,
+                        candidate_category=cand_section.title(),
+                        max_age_hours=active_horizon,
+                    )
+                    if alt_res.success and alt_res.article:
+                        ctx.all_extracted.append(alt_res.article)
+                        ctx.articles_lookup[alt_res.article.id] = alt_res.article
+                        ctx.log_exec(f"  [ALTERNATE_SOURCE_RECOVERED] RSS coverage from '{it_source}' replaces blocked '{blocked_source}' for '{title[:45]}'")
+                        return alt_res.article
+            except Exception as e:
+                ctx.log_exec(f"  [ALTERNATE_SOURCE_ERROR] {e}")
+
+    return None
+
+
 def process_candidate_item(
     cand: Any,
     cand_section: str,
@@ -227,9 +325,27 @@ def process_candidate_item(
         )
 
     if not ext_res.success or not ext_res.article:
-        return None
+        is_blocked = (
+            ext_res.status_code in (401, 403)
+            or (
+                ext_res.error_message
+                and any(
+                    code in ext_res.error_message.lower()
+                    for code in ("401", "403", "forbidden", "unauthorized", "degraded", "blocked")
+                )
+            )
+        )
+        if is_blocked:
+            alt_article = _recover_alternate_source(cand, cand_section, ctx, active_horizon)
+            if alt_article:
+                art = alt_article
+            else:
+                return None
+        else:
+            return None
+    else:
+        art = ext_res.article
 
-    art = ext_res.article
     ctx.all_extracted.append(art)
     ctx.articles_lookup[art.id] = art
 

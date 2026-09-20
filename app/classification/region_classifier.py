@@ -130,9 +130,24 @@ class EventRegionClassifier:
         r"\b(chief minister|cm\b|deputy cm|governor|vidhan sabha|panchayat|municipal corporation|municipal corporations|local body polls?|local body elections?|assembly elections?|bypolls?|delimitation|dalit|tribal)\b",
     ]
 
+    GENERIC_INDIAN_PRINCIPAL_PATTERNS: List[str] = [
+        r"\b(?:indian\s+(?:company|companies|firm|firms|group|groups|conglomerate|conglomerates|startup|startups|corp|corporation|corporations|bank|banks|lender|lenders|major|majors|player|players|it\s+major|operator|operators|entity|entities|pharma\s+(?:company|firm)|tech\s+(?:company|firm)|refiner|refiners|carmaker|carmakers|automaker|automakers))\b",
+        r"\b(?:india-based|indian-origin|indian-owned)\b",
+    ]
+
+    INDIAN_PRINCIPAL_ACTION_PATTERNS: List[str] = [
+        r"\b(?:acquires?|acquired|acquisition|to acquire|buys?|bought|buyout|takeover)\b",
+        r"\b(?:invests?|invested|investment|investing|to invest|joint venture|jv)\b",
+        r"\b(?:wins?|won|secures?|secured|signs?|signed|bags?|bagged)\s+(?:[\w\s\$₹€£\d\.,]+)?(?:contract|order|orders|deal|pact|mandate|project)\b",
+        r"\b(?:raises?|raised|raising|fundraise|funding|capital|debt|equity|bonds?|notes?)\b",
+        r"\b(?:reports?|reported|reporting)\s+(?:[\w\s]+)?(?:earnings|results|profit|revenue|pat|net income)\b",
+        r"\b(?:expands?|expanded|expanding|expansion|sets? up|establishes?|launches?|opens?)\s+(?:[\w\s]+)?(?:abroad|overseas|globally|foreign|in\s+[a-z]+|operations|facility|plant|hub|office)\b",
+    ]
+
     FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
         r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi arabia|saudi|riyadh|jeddah|cuba|cuban|havana|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka|kuwait|qatar|bahrain|oman|venezuela|turkey|turkish|egypt|south africa|nigeria|kenya|indonesia|malaysia|thailand|vietnam|philippines)\b",
     ]
+
 
     @classmethod
     def has_positive_indian_nexus(cls, text: str) -> bool:
@@ -153,6 +168,66 @@ class EventRegionClassifier:
             if any(re.search(pat, text_lower) for pat in pat_list):
                 return True
         return False
+
+    @classmethod
+    def is_indian_principal_acting_abroad(
+        cls,
+        title: str,
+        companies: Optional[List[str]] = None,
+        content: Optional[str] = None,
+    ) -> bool:
+        """
+        Generic rule: An Indian principal company acting abroad qualifies as India business.
+        Examples that qualify:
+        - Indian company acquires foreign target
+        - Indian company invests overseas
+        - Indian company wins overseas contract
+        - Indian company raises capital / debt
+        - Indian company reports earnings
+        - Indian company expands abroad
+
+        Still rejects:
+        - Foreign company with only incidental India mention
+        - Stories where India is not economically central
+        """
+        if not title:
+            return False
+        title_lower = title.lower()
+        companies_text = " ".join(companies or []).lower()
+        combined_text = f"{title_lower} {companies_text}"
+
+        # 1. Check if an Indian entity or generic Indian principal is present in title or companies
+        has_named_indian_entity = any(re.search(pat, combined_text) for pat in cls.INDIAN_ENTITIES)
+        has_generic_indian_principal = any(re.search(pat, combined_text) for pat in cls.GENERIC_INDIAN_PRINCIPAL_PATTERNS)
+        has_india_nexus = has_named_indian_entity or has_generic_indian_principal
+
+        if not has_india_nexus:
+            return False
+
+        # 2. Check for incidental foreign company mention:
+        # If an international entity is the primary grammatical subject and Indian entity/mention is incidental:
+        # e.g., "Apple reports earnings in US, mentions India supply chain" -> Apple is subject, not Indian principal.
+        has_intl_entity = any(re.search(pat, title_lower) for pat in cls.INTERNATIONAL_ENTITIES)
+        if has_intl_entity:
+            for intl_pat in cls.INTERNATIONAL_ENTITIES:
+                m_intl = re.search(intl_pat, title_lower)
+                if m_intl:
+                    intl_start = m_intl.start()
+                    indian_pos = -1
+                    for ind_pat in (cls.INDIAN_ENTITIES + cls.GENERIC_INDIAN_PRINCIPAL_PATTERNS):
+                        m_ind = re.search(ind_pat, title_lower)
+                        if m_ind:
+                            indian_pos = m_ind.start()
+                            break
+                    # If intl entity appears near beginning (pos < 25) and Indian mention is later (after intl entity)
+                    if intl_start < 25 and (indian_pos == -1 or indian_pos > intl_start + 15):
+                        return False
+
+        # 3. Check for corporate business action
+        has_action = any(re.search(pat, title_lower) for pat in cls.INDIAN_PRINCIPAL_ACTION_PATTERNS) or any(
+            re.search(pat, title_lower) for pat in cls.CORPORATE_HARD_ACTION_PATTERNS
+        )
+        return bool(has_action)
 
     def verify_region_eligibility(
         self,
@@ -191,8 +266,13 @@ class EventRegionClassifier:
 
         elif req_reg_str == "india":
             has_india_mention_ind = bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", title_text))
+            has_indian_principal = self.is_indian_principal_acting_abroad(
+                title_text,
+                companies=event.companies_involved if event else None,
+                content=body_text,
+            )
             # Strict parity with Stage 9 Check 2
-            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention_ind:
+            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention_ind and not has_indian_principal:
                 return False, "India story has foreign subject and lacks Indian business nexus"
             return True, "valid Indian business nexus"
 
@@ -286,6 +366,13 @@ class EventRegionClassifier:
         has_india_nexus_title = self.has_positive_indian_nexus(title_lower)
         has_india_nexus_context = self.has_positive_indian_nexus(context_text)
         has_india_mention = has_india_nexus_title or has_india_nexus_context
+
+        # Check if an Indian principal company is acting abroad (e.g. cross-border acquisition, investment, contract, debt, expansion)
+        # Rescues cross-border transactions from being classified as INTERNATIONAL due to foreign geography, foreign counterparties, or dollar currency
+        if (has_foreign_geo or intl_entity_matches or has_dollar_local) and self.is_indian_principal_acting_abroad(
+            title_lower, companies=companies, content=content_lower
+        ):
+            return NewsCategory.INDIA, "Indian principal company acting abroad qualifies as India business"
 
         if has_foreign_geo and not has_india_nexus_title:
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL: foreign subject without Indian headline nexus"
