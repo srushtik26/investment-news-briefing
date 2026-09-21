@@ -53,7 +53,7 @@ from app.ai.headline_synthesis import (
 )
 from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
 from app.validation import FinalValidationEngine
-from app.validation.engine import calculate_semantic_token_overlap
+from app.validation.shared import calculate_semantic_token_overlap
 from app.formatting.formatter import BriefingFormatter
 from app.verification.domestic_trending import DomesticTrendingEvaluator
 from app.verification.single_source import SingleSourceEvaluator, is_multi_event_roundup

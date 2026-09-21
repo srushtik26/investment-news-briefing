@@ -16,7 +16,10 @@ from app.logging_config import get_logger
 from app.models.article import Article
 from app.models.event import Event
 from app.utils.text_patterns import TITLE_SUFFIX_PATTERN
-from app.validation.engine import calculate_semantic_token_overlap, canonical_numeric_tokens
+from app.validation.shared import (
+    calculate_semantic_token_overlap,
+    canonical_numeric_tokens,
+)
 
 logger = get_logger("ai.headline_synthesis")
 
