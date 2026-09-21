@@ -47,6 +47,7 @@ from app.ai.summary_grounding import is_summary_substantially_identical_to_headl
 logger = get_logger("validation.engine")
 
 from app.validation.shared import (
+    build_headline_grounding_source,
     calculate_semantic_token_overlap,
     canonical_numeric_tokens,
 )

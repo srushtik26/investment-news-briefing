@@ -51,6 +51,8 @@ PROHIBITED_GENERIC_HEADLINE_PHRASES: Tuple[str, ...] = (
     "target enterprise",
     "corporate entity",
     "unspecified entity",
+    "penalty on most",
+    "spending commits",
 )
 
 PROHIBITED_GENERIC_ENTITIES: Set[str] = {
@@ -63,6 +65,16 @@ PROHIBITED_GENERIC_ENTITIES: Set[str] = {
     "regulator",
     "central authority",
     "authority",
+    "most",
+    "spending",
+    "capital spending",
+    "many",
+    "some",
+    "all",
+    "several",
+    "both",
+    "each",
+    "every",
 }
 
 
@@ -200,6 +212,10 @@ def validate_numeric_grounding(
         if not re.search(r"\b(?:billion|bn|\$|usd)\b", source_text, re.IGNORECASE):
             if re.search(r"\b(?:crore|cr|₹|rs\.?)\b", source_text, re.IGNORECASE):
                 return False, "Headline converted crore to billion"
+
+    # 3. Prevent basis points or percent treated as monetary penalty
+    if re.search(r"\b\d+\s*(?:bps|basis points|%|percent)\s+penalt(?:y|ies)\b", headline, re.IGNORECASE):
+        return False, "Headline treats basis points or percentage as a monetary penalty"
 
     return True, ""
 
@@ -628,6 +644,8 @@ def synthesize_investment_headline(
                     target = cand_tgt
 
         val = extracted_figures[0] if extracted_figures else None
+        if val and re.search(r"\b(?:bps|basis points|%|percent)\b", val, re.IGNORECASE):
+            val = None
 
         if target:
             if val:

@@ -57,8 +57,8 @@ def test_archetype5_no_market_entity_fabrication():
     )
     art = Article(
         title="RBI imposes Rs 100 crore penalty on standard chartered bank for regulatory lapse",
-        body_text="The Reserve Bank of India has penalised Standard Chartered Bank Rs 100 crore.",
-        lead_paragraph="The Reserve Bank of India has penalised Standard Chartered Bank.",
+        content_text="The Reserve Bank of India has penalised Standard Chartered Bank Rs 100 crore.",
+        summary="The Reserve Bank of India has penalised Standard Chartered Bank.",
         source_name="Livemint",
         url="https://livemint.com/rbi-penalty",
     )
@@ -82,8 +82,8 @@ def test_safety_ladder_level_1_level_2_level_3():
     )
     art = Article(
         title="Infosys signs $1.5 billion deal with global enterprise client",
-        body_text="Infosys on Monday announced an enterprise deal valued at $1.5 billion.",
-        lead_paragraph="Infosys announced a major contract.",
+        content_text="Infosys on Monday announced an enterprise deal valued at $1.5 billion.",
+        summary="Infosys announced a major contract.",
         source_name="Economic Times",
         url="https://economictimes.indiatimes.com/infosys-deal",
     )
@@ -113,8 +113,8 @@ def test_level_3_reverts_to_clean_canonical_when_synthesis_diverges():
     )
     art = Article(
         title=raw,
-        body_text="Adani Ports and Special Economic Zone has acquired Astro Offshore.",
-        lead_paragraph="Adani Ports acquisition.",
+        content_text="Adani Ports and Special Economic Zone has acquired Astro Offshore.",
+        summary="Adani Ports acquisition.",
         source_name="Business Standard",
         url="https://business-standard.com/adani-astro",
     )
@@ -134,8 +134,8 @@ def test_check_6_not_weakened_rejects_zero_overlap():
     )
     art = Article(
         title="TCS signs multi-year digital transformation partnership with European bank",
-        body_text="Tata Consultancy Services announced a major banking contract.",
-        lead_paragraph="TCS banking partnership.",
+        content_text="Tata Consultancy Services announced a major banking contract.",
+        summary="TCS banking partnership.",
         source_name="Moneycontrol",
         url="https://moneycontrol.com/tcs-deal",
     )
@@ -176,8 +176,8 @@ def test_editorial_offline_fallback_produces_fully_grounded_15_stories():
         art = Article(
             id=art_id,
             title=f"Domestic Corporate Event {i}: Major Expansion in Gujarat Plant",
-            body_text=f"A domestic company announced a major expansion of its Gujarat manufacturing facility numbered {i}.",
-            lead_paragraph=f"Expansion announcement {i}.",
+            content_text=f"A domestic company announced a major expansion of its Gujarat manufacturing facility numbered {i}.",
+            summary=f"Expansion announcement {i}.",
             source_name="Livemint",
             url=f"https://livemint.com/dom-{i}",
         )
@@ -200,8 +200,8 @@ def test_editorial_offline_fallback_produces_fully_grounded_15_stories():
         art = Article(
             id=art_id,
             title=f"India Macro Event {i}: RBI Announces Liquidity Measures for Banking Sector",
-            body_text=f"The Reserve Bank of India introduced targeted liquidity facilities for commercial banks {i}.",
-            lead_paragraph=f"RBI liquidity facility {i}.",
+            content_text=f"The Reserve Bank of India introduced targeted liquidity facilities for commercial banks {i}.",
+            summary=f"RBI liquidity facility {i}.",
             source_name="Economic Times",
             url=f"https://economictimes.indiatimes.com/india-{i}",
         )
@@ -224,8 +224,8 @@ def test_editorial_offline_fallback_produces_fully_grounded_15_stories():
         art = Article(
             id=art_id,
             title=f"Global Markets Event {i}: Federal Reserve Signals Policy Path on Inflation",
-            body_text=f"The US Federal Reserve released its latest monetary policy statement regarding interest rates {i}.",
-            lead_paragraph=f"Fed interest rate policy {i}.",
+            content_text=f"The US Federal Reserve released its latest monetary policy statement regarding interest rates {i}.",
+            summary=f"Fed interest rate policy {i}.",
             source_name="Reuters",
             url=f"https://reuters.com/intl-{i}",
         )
@@ -266,3 +266,114 @@ def test_editorial_offline_fallback_produces_fully_grounded_15_stories():
         has_ov, count, _ = calculate_semantic_token_overlap(s.headline, art)
         assert has_ov is True, f"Headline '{s.headline}' failed semantic overlap with article"
         assert count >= 1
+
+
+def test_headline_grounding_uses_real_article_schema():
+    """Ensure build_headline_grounding_source works with real Article model without AttributeError."""
+    from app.validation.shared import build_headline_grounding_source
+
+    article = Article(
+        title="RBI imposes monetary penalty on regulated entity",
+        url="https://example.com/rbi-penalty",
+        source_name="Business Standard",
+        content_text="The Reserve Bank of India imposed a monetary penalty for non-compliance with statutory directions.",
+        summary="RBI imposes statutory penalty on regulated financial entity.",
+    )
+    event = Event(
+        canonical_title="RBI imposes monetary penalty on regulated entity",
+        summary_bullets=["Monetary penalty imposed"],
+        description="RBI penalty action",
+        category=NewsCategory.INDIA,
+    )
+
+    # Prove real Article does not define lead_paragraph or body_text
+    assert not hasattr(article, "lead_paragraph")
+    assert not hasattr(article, "body_text")
+
+    target_text = build_headline_grounding_source(event, article)
+    assert article.title in target_text
+    assert article.summary in target_text
+    assert "monetary penalty" in target_text
+
+    has_ov, count, _ = calculate_semantic_token_overlap(
+        "RBI Imposes Monetary Penalty on Regulated Financial Entity",
+        target_text,
+    )
+    assert has_ov is True
+    assert count >= 2
+
+
+def test_build_headline_grounding_source_handles_none_safely():
+    """Verify build_headline_grounding_source handles None event or article safely."""
+    from app.validation.shared import build_headline_grounding_source
+
+    assert build_headline_grounding_source(None, None) == ""
+
+    ev = Event(
+        canonical_title="Canonical Event Title",
+        summary_bullets=["Summary"],
+        description="Event description",
+        category=NewsCategory.INDIA,
+    )
+    assert build_headline_grounding_source(ev, None) == "Canonical Event Title"
+
+    art = Article(
+        title="Article Title",
+        url="https://example.com/art",
+        source_name="Reuters",
+        content_text="Article content text.",
+    )
+    assert "Article Title" in build_headline_grounding_source(None, art)
+    assert "Article content text." in build_headline_grounding_source(None, art)
+
+
+def test_rejection_of_bad_level_1_headlines():
+    """Verify questionable Level-1 headlines (basis points as penalty, generic non-entities) are rejected."""
+    # Basis points treated as penalty
+    bad_penalty_hl = "RBI Imposes 100 basis points Penalty on Most; Regulatory Order Mandates Operational Compliance"
+    num_ok, _ = validate_numeric_grounding(bad_penalty_hl, "RBI cuts repo rate by 100 basis points for most banks")
+    assert num_ok is False
+
+    ent_ok, _ = validate_entity_grounding(bad_penalty_hl, "RBI cuts repo rate by 100 basis points for most banks")
+    assert ent_ok is False
+
+    # Non-entity 'Spending' as acquirer/committer
+    bad_spending_hl = "Spending Commits Major Capital Expenditure to Expand Production Facility"
+    ent_ok2, _ = validate_entity_grounding(bad_spending_hl, "Capital spending in industrial sector expected to rise")
+    assert ent_ok2 is False
+
+
+def test_production_like_post_editorial_loop():
+    """Simulate Stage 8/9 post-editorial loop using real Article objects and verify no AttributeError."""
+    from app.validation.shared import build_headline_grounding_source
+    from app.ai.headline_synthesis import is_approved_institutional_headline, validate_headline_coherence, _clean_headline_text
+
+    art = Article(
+        title="Standard Chartered Bank penalized by RBI for regulatory lapse",
+        url="https://example.com/scb",
+        source_name="Livemint",
+        content_text="The Reserve Bank of India has imposed a penalty of Rs 100 crore on Standard Chartered Bank.",
+        summary="Standard Chartered Bank faces RBI penalty.",
+    )
+    ev = Event(
+        canonical_title="Standard Chartered Bank penalized by RBI for regulatory lapse",
+        summary_bullets=["Penalty imposed"],
+        description="RBI enforcement action",
+        category=NewsCategory.INDIA,
+    )
+
+    candidate_headline = "Standard Chartered Bank Penalized by Reserve Bank of India"
+    target_text = build_headline_grounding_source(ev, art)
+    has_overlap, ov_count, _ = calculate_semantic_token_overlap(candidate_headline, target_text)
+
+    if not is_approved_institutional_headline(candidate_headline) or not has_overlap:
+        candidate_headline = generate_grounded_fallback_headline(event=ev, article=art, candidate_headline=candidate_headline)
+
+    is_coh, _ = validate_headline_coherence(candidate_headline, event=ev, article=art)
+    if not is_coh:
+        candidate_headline = _clean_headline_text(ev.canonical_title)
+
+    has_final_overlap, final_ov_count, _ = calculate_semantic_token_overlap(candidate_headline, target_text)
+    assert has_final_overlap is True
+    assert final_ov_count >= 1
+

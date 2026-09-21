@@ -53,7 +53,10 @@ from app.ai.headline_synthesis import (
 )
 from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
 from app.validation import FinalValidationEngine
-from app.validation.shared import calculate_semantic_token_overlap
+from app.validation.shared import (
+    calculate_semantic_token_overlap,
+    build_headline_grounding_source,
+)
 from app.formatting.formatter import BriefingFormatter
 from app.verification.domestic_trending import DomesticTrendingEvaluator
 from app.verification.single_source import SingleSourceEvaluator, is_multi_event_roundup
@@ -626,7 +629,7 @@ def run_pipeline(
             art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
 
             # Verify and upgrade headline style if routine or unapproved, or if semantic overlap fails
-            target_text = f"{ev.canonical_title if ev else ''} {art.title if art else ''} {art.lead_paragraph if art else ''} {art.body_text[:1000] if art and art.body_text else ''}"
+            target_text = build_headline_grounding_source(ev, art)
             has_overlap, ov_count, _ = calculate_semantic_token_overlap(story.headline, target_text)
 
             if not is_approved_institutional_headline(story.headline) or not has_overlap:

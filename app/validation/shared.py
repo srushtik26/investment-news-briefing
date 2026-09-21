@@ -87,3 +87,35 @@ def calculate_semantic_token_overlap(
     art_tokens = set(re.findall(r"\w{4,}", source_text.lower()))
     shared = headline_tokens & art_tokens
     return bool(shared), len(shared), shared
+
+
+def build_headline_grounding_source(
+    event: Any = None,
+    article: Any = None,
+) -> str:
+    """
+    Construct robust grounding source text using actual Article and Event schemas.
+    Safely handles None and avoids non-existent attributes (e.g. lead_paragraph, body_text).
+    """
+    parts = []
+
+    if event:
+        canon_t = getattr(event, "canonical_title", "") or ""
+        if canon_t:
+            parts.append(canon_t)
+
+    if article:
+        art_t = getattr(article, "title", "") or ""
+        if art_t:
+            parts.append(art_t)
+
+        art_sum = getattr(article, "summary", "") or ""
+        if art_sum:
+            parts.append(art_sum)
+
+        art_content = getattr(article, "content_text", "") or ""
+        if art_content:
+            parts.append(art_content[:1500])
+
+    return " ".join(parts)
+
