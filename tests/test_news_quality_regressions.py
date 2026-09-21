@@ -412,3 +412,15 @@ def test_check_20_requires_non_empty_summary_and_blocks_boilerplate():
     report_ad = validator.validate_briefing(payload_ad, events_lookup={}, articles_lookup={}, run_reference_time=datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc))
     assert report_ad.is_valid is False
     assert any(c.check_id == 20 and not c.passed and "boilerplate" in (c.failure_reason or "").lower() for c in report_ad.check_results)
+
+
+def test_land_acquisition_tightened_routing():
+    """Verify tightened land-acquisition regex: explicit signals pass, non-acquisition discussions rejected."""
+    from app.ai.headline_synthesis import is_land_acquisition_signal
+    assert is_land_acquisition_signal("M3M acquires Noida land for Rs 2,000 crore") is True
+    assert is_land_acquisition_signal("Ashiana Housing buys Gurugram land parcel") is True
+    assert is_land_acquisition_signal("government land policy debate") is False
+    assert is_land_acquisition_signal("wetland conservation project") is False
+    assert is_land_acquisition_signal("agricultural land reform discussion") is False
+    assert is_land_acquisition_signal("M3M acquires 73-acre Noida land") is True
+

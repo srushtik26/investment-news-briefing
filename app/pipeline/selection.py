@@ -1143,26 +1143,6 @@ def run_ranking_and_selection(
             if not cand_art:
                 continue
 
-            # Region verification
-            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
-                ev, cand_art, requested_region=NewsCategory.INDIA
-            )
-            if not is_reg_valid:
-                india_rejected_count[0] += 1
-                rejected_india_event_ids.add(ev.id)
-                ctx.log_exec(
-                    f"REGION_REJECTED:\n"
-                    f'headline="{ev.canonical_title}"\n'
-                    f"requested_region=INDIA\n"
-                    f'reason="{reg_reason}"'
-                )
-                logger.info(
-                    "REGION_REJECTED: headline=\"%s\" requested_region=INDIA reason=\"%s\"",
-                    ev.canonical_title,
-                    reg_reason,
-                )
-                continue
-
             if cand_art:
                 from app.filtering.rules import StoryTypeFilterRule
                 st_rule = StoryTypeFilterRule()
@@ -1209,6 +1189,7 @@ def run_ranking_and_selection(
                         )
                         continue
 
+            # Materiality Gate (threshold = 60.0)
             mat_score = (ev.metadata or {}).get("investment_materiality_score")
             if mat_score is None:
                 from app.verification.materiality import evaluate_investment_materiality
@@ -1230,6 +1211,36 @@ def run_ranking_and_selection(
                 logger.info(rej_msg)
                 india_rejected_count[0] += 1
                 rejected_india_event_ids.add(ev.id)
+                continue
+
+            # Region consistency verification (evaluated after materiality >= 60 gate)
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INDIA
+            )
+            if not is_reg_valid:
+                india_rejected_count[0] += 1
+                rejected_india_event_ids.add(ev.id)
+                ctx.log_exec(
+                    f"REGION_REJECTED:\n"
+                    f'headline="{ev.canonical_title}"\n'
+                    f"requested_region=INDIA\n"
+                    f'reason="{reg_reason}"'
+                )
+                logger.info(
+                    "REGION_REJECTED: headline=\"%s\" requested_region=INDIA reason=\"%s\"",
+                    ev.canonical_title,
+                    reg_reason,
+                )
+                ctx.log_exec(
+                    f"[INDIA_FINAL_ELIGIBILITY_REJECT]\n"
+                    f'title="{ev.canonical_title}"\n'
+                    f'reason="{reg_reason}"'
+                )
+                logger.info(
+                    "[INDIA_FINAL_ELIGIBILITY_REJECT] title=%s reason=%s",
+                    ev.canonical_title,
+                    reg_reason,
+                )
                 continue
 
             is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(

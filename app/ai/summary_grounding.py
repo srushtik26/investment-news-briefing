@@ -432,7 +432,7 @@ def build_descriptive_investment_summary(
     # =========================================================================
     is_land_acq = bool(
         re.search(
-            r"\b(?:land\s+parcel|land\s+acquisition|acquires?\s+land|buys?\s+land|purchases?\s+land|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
+            r"\b(?:land\s+parcel|land\s+acquisition|(?:acquires?|buys?|purchases?)\s+(?:[\w-]+\s+){0,3}land|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
             clean_h,
             re.IGNORECASE,
         )

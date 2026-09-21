@@ -393,6 +393,19 @@ def _extract_strategic_implication_from_article(
     return None
 
 
+LAND_ACQUISITION_PATTERN = re.compile(
+    r"\b(?:land\s+parcel|land\s+acquisition|(?:acquires?|buys?|purchases?)\s+(?:[\w-]+\s+){0,3}land|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
+    re.IGNORECASE,
+)
+
+
+def is_land_acquisition_signal(text: str) -> bool:
+    """Check if text contains explicit real-estate / land acquisition signals."""
+    if not text:
+        return False
+    return bool(LAND_ACQUISITION_PATTERN.search(text))
+
+
 def synthesize_investment_headline(
     raw_title: str,
     event: Optional[Event] = None,
@@ -588,13 +601,7 @@ def synthesize_investment_headline(
     # =========================================================================
     # ARCHETYPE 3: Land Acquisition / Real Estate Development
     # =========================================================================
-    is_land_acq = bool(
-        re.search(
-            r"\b(?:land\s+parcel|land\s+acquisition|(?:acquires?|buys?|purchases?)\s+(?:\w+\s+)?land|\b\w+\s+land\b|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
-            clean_h,
-            re.IGNORECASE,
-        )
-    )
+    is_land_acq = is_land_acquisition_signal(clean_h)
     if is_land_acq:
         if not _is_valid_named_entity(primary_comp):
             return clean_h
