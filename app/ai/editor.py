@@ -34,7 +34,11 @@ from app.ai.prompts import (
     build_editorial_user_prompt,
 )
 from app.ai.usage_logger import GeminiUsageLogger
-from app.ai.headline_synthesis import synthesize_investment_headline, is_approved_institutional_headline
+from app.ai.headline_synthesis import (
+    synthesize_investment_headline,
+    is_approved_institutional_headline,
+    generate_grounded_fallback_headline,
+)
 
 logger = get_logger("ai.editor")
 
@@ -215,7 +219,7 @@ class GeminiEditorialEngine:
                         art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                         src = e.primary_publisher or (art.source_name if art else "The Hindu")
                         u = e.primary_url or (art.url if art else f"https://example.com/dom-{e.id}")
-                        headline_text = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+                        headline_text = generate_grounded_fallback_headline(event=e, article=art)
                         sum_text = generate_deterministic_summary(art, e, headline_text)
                         dom_stories.append(EditorialStorySelection(
                             section="domestic",
@@ -233,7 +237,7 @@ class GeminiEditorialEngine:
                     scored = valid_events_map.get(story.event_id)
                     ev = scored.event if scored else None
                     art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
-                    story.headline = synthesize_investment_headline(story.headline, event=ev, article=art)
+                    story.headline = generate_grounded_fallback_headline(event=ev, article=art, candidate_headline=story.headline)
                     if not getattr(story, "summary", None):
                         story.summary = generate_deterministic_summary(art, ev, story.headline)
                     else:
@@ -486,8 +490,8 @@ class GeminiEditorialEngine:
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Business Standard"
             url = art.url if art else f"https://example.com/domestic-{e.id}"
-            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
-            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+            inst_headline = generate_grounded_fallback_headline(event=e, article=art)
+            sum_text = generate_deterministic_summary(art, e, inst_headline)
 
             domestic_selected.append({
                 "section": "domestic",
@@ -524,8 +528,8 @@ class GeminiEditorialEngine:
                 seen_india_comps.add(normalize_entity_name(comp))
 
             url = art.url if art else f"https://example.com/india-{e.id}"
-            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
-            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+            inst_headline = generate_grounded_fallback_headline(event=e, article=art)
+            sum_text = generate_deterministic_summary(art, e, inst_headline)
 
             india_selected.append({
                 "section": "india",
@@ -548,8 +552,8 @@ class GeminiEditorialEngine:
                 art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                 source_name = art.source_name if art else "Business Standard"
                 url = art.url if art else f"https://example.com/india-{e.id}"
-                sum_text = generate_deterministic_summary(art, e, e.canonical_title)
-                inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+                inst_headline = generate_grounded_fallback_headline(event=e, article=art)
+                sum_text = generate_deterministic_summary(art, e, inst_headline)
                 india_selected.append({
                     "section": "india",
                     "event_id": e.id,
@@ -566,8 +570,8 @@ class GeminiEditorialEngine:
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Reuters"
             url = art.url if art else f"https://example.com/intl-{e.id}"
-            sum_text = generate_deterministic_summary(art, e, e.canonical_title)
-            inst_headline = synthesize_investment_headline(e.canonical_title, event=e, article=art)
+            inst_headline = generate_grounded_fallback_headline(event=e, article=art)
+            sum_text = generate_deterministic_summary(art, e, inst_headline)
 
             intl_selected.append({
                 "section": "international",

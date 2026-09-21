@@ -26,7 +26,7 @@ Enforces all 20 mandatory programmatic checks before any briefing can be sent to
 
 from datetime import date, datetime, timedelta, timezone
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from app.logging_config import get_logger
@@ -92,6 +92,39 @@ def canonical_numeric_tokens(text: str) -> Set[str]:
             values.add(norm)
 
     return values
+
+
+def calculate_semantic_token_overlap(
+    headline: str,
+    article_or_text: Any,
+) -> Tuple[bool, int, Set[str]]:
+    """
+    Evaluate semantic token overlap between headline and source article/text.
+    Matches the exact tokenization rules of Stage 9 Check #6:
+        headline_tokens = set(re.findall(r"\w{4,}", headline.lower()))
+        art_tokens = set(re.findall(r"\w{4,}", source_text.lower()))
+    Returns:
+        (has_overlap: bool, overlap_count: int, shared_tokens: Set[str])
+    """
+    if not headline:
+        return False, 0, set()
+
+    headline_tokens = set(re.findall(r"\w{4,}", headline.lower()))
+    if not headline_tokens:
+        return False, 0, set()
+
+    if isinstance(article_or_text, str):
+        source_text = article_or_text
+    elif hasattr(article_or_text, "title") or hasattr(article_or_text, "content_text"):
+        t = getattr(article_or_text, "title", "") or ""
+        c = getattr(article_or_text, "content_text", "") or ""
+        source_text = f"{t} {c}"
+    else:
+        source_text = str(article_or_text or "")
+
+    art_tokens = set(re.findall(r"\w{4,}", source_text.lower()))
+    shared = headline_tokens & art_tokens
+    return bool(shared), len(shared), shared
 
 
 class FinalValidationEngine:
@@ -308,9 +341,8 @@ class FinalValidationEngine:
                     failed_story_id=story.event_id,
                 ))
             elif primary_art:
-                headline_tokens = set(re.findall(r"\w{4,}", story.headline.lower()))
-                art_tokens = set(re.findall(r"\w{4,}", (primary_art.title + " " + primary_art.content_text).lower()))
-                if not (headline_tokens & art_tokens):
+                has_overlap, _, _ = calculate_semantic_token_overlap(story.headline, primary_art)
+                if not has_overlap:
                     check_results.append(ValidationCheckResult(
                         check_id=6,
                         check_name="Article title matches selected event",

@@ -46,9 +46,14 @@ from app.ai import (
     EditorialStorySelection,
 )
 from app.ai.editor import generate_deterministic_summary
-from app.ai.headline_synthesis import synthesize_investment_headline, is_approved_institutional_headline
+from app.ai.headline_synthesis import (
+    synthesize_investment_headline,
+    is_approved_institutional_headline,
+    generate_grounded_fallback_headline,
+)
 from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
 from app.validation import FinalValidationEngine
+from app.validation.engine import calculate_semantic_token_overlap
 from app.formatting.formatter import BriefingFormatter
 from app.verification.domestic_trending import DomesticTrendingEvaluator
 from app.verification.single_source import SingleSourceEvaluator, is_multi_event_roundup
@@ -575,8 +580,8 @@ def run_pipeline(
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 src = ev.primary_publisher or (art.source_name if art else "Business Standard")
                 u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
-                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
-                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
+                inst_hl = generate_grounded_fallback_headline(event=ev, article=art)
+                sum_text = generate_deterministic_summary(art, ev, inst_hl)
                 sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 india_stories_selected.append(EditorialStorySelection(
@@ -595,8 +600,8 @@ def run_pipeline(
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 src = ev.primary_publisher or (art.source_name if art else "Reuters")
                 u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
-                sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
-                inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
+                inst_hl = generate_grounded_fallback_headline(event=ev, article=art)
+                sum_text = generate_deterministic_summary(art, ev, inst_hl)
                 sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
                 intl_stories_selected.append(EditorialStorySelection(
@@ -620,10 +625,18 @@ def run_pipeline(
             ev = event_by_id.get(story.event_id)
             art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
 
-            # Verify and upgrade headline style if routine or unapproved
-            if not is_approved_institutional_headline(story.headline):
-                raw_t = ev.canonical_title if ev else story.headline
-                story.headline = synthesize_investment_headline(raw_t, event=ev, article=art)
+            # Verify and upgrade headline style if routine or unapproved, or if semantic overlap fails
+            target_text = f"{ev.canonical_title if ev else ''} {art.title if art else ''} {art.lead_paragraph if art else ''} {art.body_text[:1000] if art and art.body_text else ''}"
+            has_overlap, ov_count, _ = calculate_semantic_token_overlap(story.headline, target_text)
+
+            if not is_approved_institutional_headline(story.headline) or not has_overlap:
+                logger.info(
+                    "EDITORIAL_HEADLINE_PRECHECK: triggered for '%s' (approved=%s, overlap=%d) — generating grounded fallback headline",
+                    story.headline, is_approved_institutional_headline(story.headline), ov_count
+                )
+                story.headline = generate_grounded_fallback_headline(
+                    event=ev, article=art, candidate_headline=story.headline
+                )
 
             from app.ai.headline_synthesis import validate_headline_coherence, _clean_headline_text
             is_coh, coh_reason = validate_headline_coherence(story.headline, event=ev, article=art)
@@ -633,8 +646,11 @@ def run_pipeline(
                     story.headline,
                     coh_reason,
                 )
-                raw_t = ev.canonical_title if ev else story.headline
+                raw_t = ev.canonical_title if ev else (art.title if art else story.headline)
                 story.headline = _clean_headline_text(raw_t)
+
+            has_final_overlap, final_ov_count, _ = calculate_semantic_token_overlap(story.headline, target_text)
+            logger.info("EDITORIAL_HEADLINE_OVERLAP: story='%s' overlap=%d", story.headline, final_ov_count)
 
             if not getattr(story, "summary", None):
                 story.summary = generate_deterministic_summary(art, ev, story.headline)
