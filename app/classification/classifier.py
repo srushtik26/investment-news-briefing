@@ -368,7 +368,11 @@ class AIArticleClassifier:
                 is_transient = is_429 or is_5xx or any(err in exc_str.lower() for err in ("timeout", "timed out", "connection", "remoteendclosed", "reset by peer"))
                 is_daily_quota = is_429 and any(
                     marker.lower() in exc_str.lower()
-                    for marker in ("generaterequestsperday", "quotaid", "daily quota", "per day", "freetier")
+                    for marker in (
+                        "generaterequestsperday", "quotaid", "daily quota", "daily_quota",
+                        "gemini_daily_quota_exhausted", "per day", "freetier",
+                        "quota exceeded", "quota_exhausted", "exceeded your current quota"
+                    )
                 )
 
                 http_code = 429 if is_429 else (503 if is_5xx else (403 if is_400_range else None))
@@ -397,9 +401,15 @@ class AIArticleClassifier:
                     return self._run_offline_fallback(article)
 
                 if attempt == 1 and is_transient:
-                    backoff = self.RATE_LIMIT_BACKOFF_SECONDS if (is_429 and not self.mock_responder) else (2 if not self.mock_responder else 0)
+                    import random
+                    if is_429 and not self.mock_responder and self.RATE_LIMIT_BACKOFF_SECONDS > 0:
+                        backoff = min(float(self.RATE_LIMIT_BACKOFF_SECONDS), 2.0 + random.uniform(0.1, 1.0))
+                    elif not self.mock_responder and self.RATE_LIMIT_BACKOFF_SECONDS > 0:
+                        backoff = 1.0 + random.uniform(0.1, 0.5)
+                    else:
+                        backoff = 0
                     logger.warning(
-                        "API error (%s) on attempt 1 for '%s'. Backing off %ds before retry...",
+                        "API error (%s) on attempt 1 for '%s'. Backing off %.1fs before retry...",
                         "429 Rate Limit" if is_429 else "Transient Network/Server Error",
                         article.title[:40],
                         backoff,

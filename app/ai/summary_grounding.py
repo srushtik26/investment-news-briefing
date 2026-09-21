@@ -232,10 +232,19 @@ def select_grounded_summary_sentence(
     Select grounded factual sentence(s) from article body targeting 35-55 words (max 65 words).
     Rejects candidates substantially identical to the headline.
     """
-    if not article or not article.content_text:
+    raw_body = ""
+    if article and article.content_text:
+        raw_body = article.content_text.strip()
+    elif article and getattr(article, "summary", None):
+        raw_body = article.summary.strip()
+    elif event and event.description:
+        raw_body = event.description.strip()
+    elif event and event.summary_bullets:
+        raw_body = " ".join(event.summary_bullets).strip()
+
+    if not raw_body:
         return None
 
-    raw_body = article.content_text.strip()
     cleaned_body = re.sub(r"([a-z0-9])\.([A-Z])", r"\1. \2", raw_body)
 
     # Split into candidate sentences
@@ -327,6 +336,8 @@ def build_descriptive_investment_summary(
     2. What is the scale/magnitude? (using only verified facts, zero invented numbers)
     3. Why does it matter for the company, sector, market, or investor?
     """
+    from app.models.entity_sanitizer import GENERIC_STANDALONE_ENTITY_BLACKLIST
+
     clean_h = headline.strip().rstrip(" .!?:;-—")
 
     # 1. Extract verified companies/entities
@@ -350,8 +361,14 @@ def build_descriptive_investment_summary(
             )
             if comp_match:
                 companies = [comp_match.group(1).strip()]
-    primary_comp = companies[0] if companies else "The company"
-    target_comp = companies[1] if len(companies) > 1 else None
+
+    clean_comps = [
+        c for c in companies
+        if c.lower() not in GENERIC_STANDALONE_ENTITY_BLACKLIST
+        and not any(c.lower().startswith(b + " ") for b in GENERIC_STANDALONE_ENTITY_BLACKLIST)
+    ]
+    primary_comp = clean_comps[0] if clean_comps else "The company"
+    target_comp = clean_comps[1] if len(clean_comps) > 1 else None
 
     # 2. Extract verified financial figures, capacities, percentages (NEVER invent digits)
     source_text = clean_h + " " + (article.content_text[:800] if article and article.content_text else "")
@@ -365,6 +382,9 @@ def build_descriptive_investment_summary(
         re.IGNORECASE,
     )
     for cm in curr_matches:
+        # Reject bare single-digit amounts like '$1' or '₹2' without denomination
+        if re.search(r"^[\$₹€£]\s*[1-9]\b(?!\s*(?:crore|cr|lakh|billion|million|bn|m|trillion))", cm.strip(), re.IGNORECASE):
+            continue
         if cm not in extracted_figures:
             extracted_figures.append(cm)
 
@@ -393,6 +413,48 @@ def build_descriptive_investment_summary(
         re.IGNORECASE,
     )
     authority = auth_match.group(0) if auth_match else "Regulatory authorities"
+
+    # =========================================================================
+    # ARCHETYPE: Bankruptcy / Debt Restructuring / Insolvency
+    # =========================================================================
+    if re.search(r"\b(?:bankruptcy|chapter 11|insolvency|insolvent|liquidation|debt restructuring)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = f"{primary_comp} entered court-supervised restructuring proceedings under applicable insolvency frameworks."
+        if val:
+            s2 = f"The filing addresses outstanding liabilities of {val} while establishing a structured framework to reorganize business operations."
+        else:
+            s2 = "The filing initiates an operational and balance-sheet reorganization aimed at addressing outstanding financial obligations and stabilizing core operations."
+        s3 = "The court-supervised process enables the enterprise to negotiate with creditors, protect core operational continuity, and restructure liabilities under judicial oversight."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
+    # ARCHETYPE: Land Acquisition / Real Estate Development (MUST precede Capex)
+    # =========================================================================
+    is_land_acq = bool(
+        re.search(
+            r"\b(?:land\s+parcel|land\s+acquisition|acquires?\s+land|buys?\s+land|purchases?\s+land|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
+            clean_h,
+            re.IGNORECASE,
+        )
+    )
+    if is_land_acq:
+        val = extracted_figures[0] if extracted_figures else None
+        cap = cap_matches[0] if cap_matches else None
+        loc_match = re.search(r"\b(?:in|at|near)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b", clean_h)
+        loc_str = f" in {loc_match.group(1).strip()}" if loc_match else ""
+
+        if val and cap:
+            s1 = f"{primary_comp} acquired a strategic land parcel{loc_str} spanning {cap} for an investment of {val}."
+        elif val:
+            s1 = f"{primary_comp} completed the acquisition of a strategic land parcel{loc_str} valued at {val}."
+        elif cap:
+            s1 = f"{primary_comp} completed the acquisition of a strategic land parcel{loc_str} spanning {cap}."
+        else:
+            s1 = f"{primary_comp} completed the acquisition of a strategic land parcel{loc_str} for planned real estate development."
+
+        s2 = "The land parcel expands the company's executable development pipeline and supports multi-year residential and commercial project launches."
+        s3 = "The strategic land investment strengthens the developer's market footprint, aligns with sustained housing demand, and enhances revenue visibility across upcoming development phases."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
 
     # =========================================================================
     # ARCHETYPE 1: Quarterly Results / Financial Results / Earnings
@@ -442,12 +504,25 @@ def build_descriptive_investment_summary(
     if re.search(r"\b(?:capex|capital expenditure|invest|invests|investment|plant|facility|manufacturing|expand|expands|expansion|greenfield)\b", clean_h, re.IGNORECASE):
         val = extracted_figures[0] if extracted_figures else None
         cap = cap_matches[0] if cap_matches else None
+        has_manufacturing = bool(
+            re.search(r"\b(?:manufacturing|plant|factory|industrial unit)\b", source_text, re.IGNORECASE)
+        )
+        has_renewable = bool(
+            re.search(r"\b(?:renewable|solar|wind|green\s+energy|clean\s+generation)\b", source_text, re.IGNORECASE)
+        )
 
-        s1 = f"{primary_comp} initiated a major capital expenditure program to construct a new manufacturing facility."
+        if has_renewable:
+            project_desc = "a major renewable energy generation project"
+        elif has_manufacturing:
+            project_desc = "a new manufacturing facility"
+        else:
+            project_desc = "a major capital expenditure program to expand operational capacity"
+
+        s1 = f"{primary_comp} initiated {project_desc} to support growing industrial demand."
         if val and cap:
             s2 = f"The project entails a capital commitment of {val} with an anticipated production capacity of {cap}."
         elif val:
-            s2 = f"The project entails a capital investment outlay of {val} to scale commercial production."
+            s2 = f"The project entails a capital investment outlay of {val} to scale commercial operations."
         elif cap:
             s2 = f"The project adds an anticipated production capacity of {cap} to support industrial delivery."
         else:

@@ -706,6 +706,15 @@ def run_pipeline(
         log_exec(f"  Passed checks: {validation_report.passed_checks} / 20")
         log_exec(f"  Failed checks: {validation_report.failed_checks} / 20")
 
+        # Structured Validation Audit Logging
+        for res in validation_report.check_results:
+            audit_msg = (
+                f"[VALIDATION_AUDIT] check_id={res.check_id} name=\"{res.check_name}\" passed={res.passed} "
+                f"details=\"{res.failure_reason if not res.passed else 'OK'}\""
+            )
+            log_exec(audit_msg)
+            logger.info(audit_msg)
+
         # =========================================================================
         # STAGE 10: Formatter
         # =========================================================================
@@ -721,7 +730,25 @@ def run_pipeline(
         )
         target_briefing_date = ctx.target_date
 
+        # Structured Story Decision Logging
+        for s in all_final:
+            ev = event_by_id.get(s.event_id)
+            mat_score = (ev.metadata or {}).get("investment_materiality_score") if ev else None
+            tier_str = ev.verification_tier.value if ev and hasattr(ev.verification_tier, "value") else str(getattr(ev, "verification_tier", "UNKNOWN"))
+            log_msg = (
+                f"[STORY_DECISION] section={s.section} title=\"{s.headline}\" publisher=\"{s.source}\" "
+                f"materiality={mat_score} tier={tier_str} decision=ACCEPTED"
+            )
+            log_exec(log_msg)
+            logger.info(log_msg)
+
         if validation_report.is_valid:
+            delivery_msg = (
+                f"[DELIVERY_DECISION] payload_size={len(all_final)} is_valid=True "
+                f"status=DELIVERED reason=\"All 20 validation checks passed\""
+            )
+            log_exec(delivery_msg)
+            logger.info(delivery_msg)
             try:
                 formatter = BriefingFormatter()
                 formatted = formatter.format(selection_payload, briefing_date=target_briefing_date, shorten_urls=False)
@@ -795,6 +822,12 @@ def run_pipeline(
                 log_exec(f"Error during briefing formatting: {e}")
                 logger.error("FORMATTING_FAILED: Exception during briefing formatting: %s", e, exc_info=True)
         else:
+            delivery_msg = (
+                f"[DELIVERY_DECISION] payload_size={len(all_final)} is_valid=False "
+                f"status=BLOCKED reason=\"Validation failed on check #{validation_report.failed_check_id}: {validation_report.failure_reason}\""
+            )
+            log_exec(delivery_msg)
+            logger.info(delivery_msg)
             log_exec(f"Briefing NOT formatted — validation failed: {validation_report.failure_reason}")
             if ctx.is_weekend:
                 save_partial_weekend_state(ctx, len(domestic_pool), len(india_pool), len(intl_pool), data_dir)

@@ -617,8 +617,8 @@ class FinalValidationEngine:
                     failure_reason=f"Story contains unresolved mojibake tokens in headline or source: '{story.headline}'",
                     failed_story_id=story.event_id,
                 ))
-            elif getattr(story, "summary", None):
-                sum_text = story.summary.strip()
+            sum_text = (getattr(story, "summary", None) or "").strip()
+            if sum_text:
                 if "\n" in sum_text:
                     check_results.append(ValidationCheckResult(
                         check_id=20,
@@ -665,6 +665,14 @@ class FinalValidationEngine:
                         check_name="Final format is exactly correct",
                         passed=False,
                         failure_reason=f"Story summary exceeds maximum 65 words ({len(sum_text.split())} words): '{sum_text}'",
+                        failed_story_id=story.event_id,
+                    ))
+                elif any(b in sum_text.lower() for b in ("click here", "subscribe", "all rights reserved", "read more", "advertisement", "download app")):
+                    check_results.append(ValidationCheckResult(
+                        check_id=20,
+                        check_name="Final format is exactly correct",
+                        passed=False,
+                        failure_reason=f"Story summary contains boilerplate advertisement text: '{sum_text}'",
                         failed_story_id=story.event_id,
                     ))
                 elif not sum_text.endswith((".", "!", "?", '"', "'")):

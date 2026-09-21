@@ -68,6 +68,17 @@ PROHIBITED_GENERIC_ENTITIES: Set[str] = {
     "most",
     "spending",
     "capital spending",
+    "expenditure",
+    "expenditures",
+    "demand",
+    "supply",
+    "inflation",
+    "growth",
+    "economy",
+    "trade",
+    "investment",
+    "investments",
+    "capital",
     "many",
     "some",
     "all",
@@ -177,6 +188,10 @@ def validate_headline_coherence(
         rest = " ".join(words[i+3:]).lower()
         if ngram in rest and len(ngram) > 10:
             return False, f"Malformed headline: repetitive phrasing '{ngram}'"
+
+    # 4. Prohibited malformed bankruptcy text fragments
+    if re.search(r"\b(?:files chapter 11 bankruptcy to|bankruptcy for rs|bankruptcy for \$)\b", headline, re.IGNORECASE):
+        return False, "Malformed headline: contains ungrammatical bankruptcy fragment"
 
     return True, ""
 
@@ -555,32 +570,55 @@ def synthesize_investment_headline(
         return _format_headline(c1, c2)
 
     # =========================================================================
-    # ARCHETYPE 3: Land Acquisition / Commercial Real Estate
+    # ARCHETYPE: Bankruptcy / Debt Restructuring / Insolvency
     # =========================================================================
     if re.search(
-        r"\b(?:acquires?\s+noida\s+land|land\s+parcel|noida\s+land|commercial\s+land)\b",
+        r"\b(?:bankruptcy|chapter 11|insolvency|insolvent|liquidation|debt restructuring)\b",
         clean_h,
         re.IGNORECASE,
     ):
+        if article_implication:
+            cand = _format_headline(clean_h, article_implication)
+            is_coh, _ = validate_headline_coherence(cand, event=event, article=article)
+            if is_coh:
+                return cand
+        c2 = "Filing Initiates Court-Supervised Restructuring Under Applicable Insolvency Laws"
+        return _format_headline(clean_h, c2)
+
+    # =========================================================================
+    # ARCHETYPE 3: Land Acquisition / Real Estate Development
+    # =========================================================================
+    is_land_acq = bool(
+        re.search(
+            r"\b(?:land\s+parcel|land\s+acquisition|(?:acquires?|buys?|purchases?)\s+(?:\w+\s+)?land|\b\w+\s+land\b|commercial\s+land|residential\s+land|housing\s+project|real\s+estate\s+development)\b",
+            clean_h,
+            re.IGNORECASE,
+        )
+    )
+    if is_land_acq:
         if not _is_valid_named_entity(primary_comp):
             return clean_h
 
         val = extracted_figures[0] if extracted_figures else None
+        loc_match = re.search(r"\b(?:in|at|near)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b", clean_h)
+        if not loc_match:
+            loc_match = re.search(r"\b([A-Z][a-zA-Z]+)\s+land\b", clean_h)
+        loc_str = f" in {loc_match.group(1).strip()}" if loc_match else ""
         if val:
-            c1 = f"{primary_comp} Acquires Prime Noida Commercial Land Parcel for {val}"
+            c1 = f"{primary_comp} Acquires Strategic Land Parcel{loc_str} for {val}"
         else:
-            c1 = f"{primary_comp} Acquires Prime Noida Commercial Land Parcel"
+            c1 = f"{primary_comp} Acquires Strategic Land Parcel{loc_str}"
 
         if article_implication:
             c2 = article_implication
         else:
-            c2 = "Developer Plans Major Mixed-Use Commercial Project to Expand NCR Market Footprint"
+            c2 = "Acquisition Expands Development Pipeline to Support Multi-Year Project Delivery"
         return _format_headline(c1, c2)
 
     # =========================================================================
     # ARCHETYPE 4: Capex / Greenfield / Plant Expansion / Commissioning
     # =========================================================================
-    if re.search(
+    if not is_land_acq and re.search(
         r"\b(?:capex|capital expenditure|invest|invests|investment|plant|facility|manufacturing|expand|expands|expansion|greenfield|commissioning|commissions?|commissioned)\b",
         clean_h,
         re.IGNORECASE,
@@ -593,16 +631,28 @@ def synthesize_investment_headline(
         if val and ("trillion" in val.lower() or "$1 trillion" in val.lower()):
             if "$1 trillion" not in clean_h.lower() and "trillion" not in clean_h.lower():
                 val = None
+        # Reject bare single-digit numbers like '$1' or '₹2' without magnitude
+        if val and re.search(r"^[\$₹€£]\s*[1-9]\b(?!\s*(?:crore|cr|lakh|billion|million|bn|m|trillion))", val.strip(), re.IGNORECASE):
+            val = None
 
         cap = cap_matches[0] if cap_matches else None
+        has_manufacturing = bool(
+            re.search(r"\b(?:manufacturing|plant|factory|industrial unit)\b", source_text, re.IGNORECASE)
+        )
         has_renewable = bool(
             re.search(r"\b(?:renewable|solar|wind|green\s+energy|clean\s+generation)\b", source_text, re.IGNORECASE)
         )
-        facility_type = "Renewable Facility" if has_renewable else "Production Facility"
-        if val:
-            c1 = f"{primary_comp} Commits {val} Capital Expenditure to Construct {facility_type}"
+        if has_renewable:
+            facility_type = "Renewable Facility"
+        elif has_manufacturing:
+            facility_type = "Manufacturing Facility"
         else:
-            c1 = f"{primary_comp} Commits Major Capital Expenditure to Expand Production Facility"
+            facility_type = "Capacity Expansion"
+
+        if val:
+            c1 = f"{primary_comp} Commits {val} Capital Expenditure for {facility_type}"
+        else:
+            c1 = f"{primary_comp} Commits Major Capital Expenditure for {facility_type}"
 
         if article_implication:
             c2 = article_implication
@@ -610,8 +660,11 @@ def synthesize_investment_headline(
         elif cap and has_renewable:
             c2 = f"Project Adds {cap} Clean Generation Capacity to Expand Regional Footprint"
             return _format_headline(c1, c2)
-        else:
+        elif has_manufacturing:
             c2 = "Capital Program Scales Production Facilities to Meet Growing Industrial Sector Demand"
+            return _format_headline(c1, c2)
+        else:
+            c2 = "Capital Program Expands Operating Infrastructure to Support Multi-Year Demand Growth"
             return _format_headline(c1, c2)
 
     # =========================================================================

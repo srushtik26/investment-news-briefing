@@ -4,6 +4,7 @@ Selection, deduplication, ranking, and topic diversity coordination.
 
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple, Set, Optional
+import re
 
 try:
     from zoneinfo import ZoneInfo
@@ -1133,6 +1134,7 @@ def run_ranking_and_selection(
         portfolio_cands: List[Tuple[ScoredEvent, str]] = []
         general_cands: List[ScoredEvent] = []
         india_rejected_count = [0]
+        rejected_india_event_ids: Set[str] = set()
         reg_classifier = _get_reg_classifier()
 
         for scored in cands:
@@ -1147,6 +1149,7 @@ def run_ranking_and_selection(
             )
             if not is_reg_valid:
                 india_rejected_count[0] += 1
+                rejected_india_event_ids.add(ev.id)
                 ctx.log_exec(
                     f"REGION_REJECTED:\n"
                     f'headline="{ev.canonical_title}"\n'
@@ -1160,24 +1163,52 @@ def run_ranking_and_selection(
                 )
                 continue
 
-            if cand_art and getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+            if cand_art:
                 from app.filtering.rules import StoryTypeFilterRule
-                st_res = StoryTypeFilterRule().evaluate(cand_art)
-                if not st_res.is_accepted:
+                st_rule = StoryTypeFilterRule()
+                eval_text = f"{cand_art.title} {(cand_art.content_text or '')[:500]}".lower()
+                is_noise = False
+                noise_reason = ""
+                for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+                    m = re.search(pat_regex, eval_text, re.IGNORECASE)
+                    if m:
+                        if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                            has_completed = bool(re.search(
+                                r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                                eval_text,
+                                re.IGNORECASE,
+                            ))
+                            if has_completed:
+                                continue
+                        is_noise = True
+                        noise_reason = f"Prohibited noise pattern '{pat_name}'"
+                        break
+
+                if is_noise:
                     india_rejected_count[0] += 1
-                    rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                    rejected_india_event_ids.add(ev.id)
                     ctx.log_exec(
                         f"REGION_REJECTED:\n"
                         f'headline="{ev.canonical_title}"\n'
                         f"requested_region=INDIA\n"
-                        f'reason="{rej_reason}"'
+                        f'reason="{noise_reason}"'
                     )
                     continue
 
-            is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(
-                ev.canonical_title,
-                cand_art.content_text if cand_art else "",
-            )
+                if getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                    st_res = st_rule.evaluate(cand_art)
+                    if not st_res.is_accepted:
+                        india_rejected_count[0] += 1
+                        rejected_india_event_ids.add(ev.id)
+                        rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                        ctx.log_exec(
+                            f"REGION_REJECTED:\n"
+                            f'headline="{ev.canonical_title}"\n'
+                            f"requested_region=INDIA\n"
+                            f'reason="{rej_reason}"'
+                        )
+                        continue
+
             mat_score = (ev.metadata or {}).get("investment_materiality_score")
             if mat_score is None:
                 from app.verification.materiality import evaluate_investment_materiality
@@ -1187,12 +1218,31 @@ def run_ranking_and_selection(
                     ev.metadata = {}
                 ev.metadata["investment_materiality_score"] = mat_score
 
+            if mat_score < 60.0:
+                rej_msg = (
+                    f"[INDIA_MATERIALITY_REJECT]\n"
+                    f'title="{ev.canonical_title}"\n'
+                    f"materiality_score={mat_score}\n"
+                    f'threshold=60.0\n'
+                    f'reason="India candidates must have materiality score >= 60.0"'
+                )
+                ctx.log_exec(rej_msg)
+                logger.info(rej_msg)
+                india_rejected_count[0] += 1
+                rejected_india_event_ids.add(ev.id)
+                continue
+
+            is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(
+                ev.canonical_title,
+                cand_art.content_text if cand_art else "",
+            )
+
             if is_pf:
                 role_log = format_portfolio_role_log(pf_company, pf_role, pf_eligible and (mat_score >= 60.0))
                 ctx.log_exec(role_log)
                 logger.info(role_log)
 
-            if is_pf and pf_eligible and mat_score >= 60.0:
+            if is_pf and pf_eligible:
                 portfolio_cands.append((scored, pf_company))
             else:
                 general_cands.append(scored)
@@ -1267,6 +1317,8 @@ def run_ranking_and_selection(
             filtered_general: List[ScoredEvent] = []
             for scored in general_cands:
                 ev = scored.event
+                if ev.id in rejected_india_event_ids:
+                    continue
                 cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 if not cand_art:
                     continue
@@ -1511,19 +1563,49 @@ def run_ranking_and_selection(
                 )
                 continue
 
-            if cand_art and getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+            if cand_art:
                 from app.filtering.rules import StoryTypeFilterRule
-                st_res = StoryTypeFilterRule().evaluate(cand_art)
-                if not st_res.is_accepted:
+                st_rule = StoryTypeFilterRule()
+                eval_text = f"{cand_art.title} {(cand_art.content_text or '')[:500]}".lower()
+                is_noise = False
+                noise_reason = ""
+                for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+                    m = re.search(pat_regex, eval_text, re.IGNORECASE)
+                    if m:
+                        if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                            has_completed = bool(re.search(
+                                r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                                eval_text,
+                                re.IGNORECASE,
+                            ))
+                            if has_completed:
+                                continue
+                        is_noise = True
+                        noise_reason = f"Prohibited noise pattern '{pat_name}'"
+                        break
+
+                if is_noise:
                     intl_rejected_count[0] += 1
-                    rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
                     ctx.log_exec(
                         f"REGION_REJECTED:\n"
                         f'headline="{ev.canonical_title}"\n'
                         f"requested_region=INTERNATIONAL\n"
-                        f'reason="{rej_reason}"'
+                        f'reason="{noise_reason}"'
                     )
                     continue
+
+                if getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                    st_res = st_rule.evaluate(cand_art)
+                    if not st_res.is_accepted:
+                        intl_rejected_count[0] += 1
+                        rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                        ctx.log_exec(
+                            f"REGION_REJECTED:\n"
+                            f'headline="{ev.canonical_title}"\n'
+                            f"requested_region=INTERNATIONAL\n"
+                            f'reason="{rej_reason}"'
+                        )
+                        continue
 
             is_dup = False
             for ex in (existing + filtered):

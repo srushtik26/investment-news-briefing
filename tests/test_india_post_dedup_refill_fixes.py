@@ -58,6 +58,7 @@ def _make_evt(
     comp: str = "OrgX",
     tier: VerificationTier = VerificationTier.TWO_SOURCE_VERIFIED,
     conf: float = 90.0,
+    figures: Optional[List[str]] = None,
 ) -> Event:
     return Event(
         id=eid,
@@ -70,6 +71,7 @@ def _make_evt(
         verification_confidence=conf,
         single_source_confidence_score=conf,
         published_date=art.published_at.date(),
+        financial_figures=figures or [],
     )
 
 
@@ -479,7 +481,7 @@ def test_9_exact_5_5_5_unchanged():
             content_text=f"Reported corporate business text for {headline}.", published_at=t_now,
             is_verified_url=True, date_verified=True, is_valid_date=True,
         )
-        evt = _make_evt(eid, art, comp)
+        evt = _make_evt(eid, art, comp, figures=["Rs 800 crore"])
         ctx.articles_lookup[art.id] = art
         accepted_stories.append({
             "event_id": eid, "headline": headline, "company_name": comp,

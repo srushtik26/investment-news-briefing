@@ -607,7 +607,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "investment_advice_and_stock_picks",
-            r"\b(stocks? to buy|best stocks? to buy|top stocks?|top stock picks?|stock picks?|dividend stocks?|portfolio boost|portfolio picks?|analyst recommends?|buy these stocks?|stocks? analysts? love|stocks? poised to rise|investment ideas?|portfolio ideas?|stocks? could give your portfolio a boost|these .* stocks could)\b",
+            r"\b(stocks? to buy|best stocks? to buy|top stocks?|top stock picks?|stock picks?|dividend stocks?|portfolio boost|portfolio picks?|analyst recommends?|buy these stocks?|stocks? analysts? love|stocks? poised to rise|investment ideas?|portfolio ideas?|stocks? could give your portfolio a boost|these .* stocks could|table-?pounding buy|screaming buy|strong buy|must-?buy stocks?|stocks? to buy right now|analysts? say buy|brokerages? recommends? buy|top picks? for \d{4})\b",
         ),
         (
             "price_target",
@@ -652,6 +652,10 @@ class StoryTypeFilterRule(BaseFilterRule):
 
     # HARD BUSINESS EVENT ACCEPTANCE PATTERNS
     ACCEPT_EVENT_PATTERNS: List[Tuple[str, str]] = [
+        (
+            "bankruptcy_insolvency",
+            r"\b(chapter 11|bankruptcy|files for bankruptcy|insolvency|insolvent|liquidation|debt restructuring|nclt insolvency|court-supervised restructuring)\b",
+        ),
         (
             "earnings_figures",
             r"\b(net profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|margin|surges|jumps|rises \d+%|falls \d+%|reports profit of|profit rises|profit falls|revenue rises|revenue falls|profit jumps|profit drops|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|beats? expectations|tops? estimates|tops? expectations|₹\s*[\d,]+|rs\.?\s*[\d,]+|\$\s*[\d,]+|crore|billion|million|quarterly results|annual results|net income|operating income|gross profit|comparable sales|same-store sales)\b",
@@ -699,6 +703,10 @@ class StoryTypeFilterRule(BaseFilterRule):
         (
             "macroeconomic_data",
             r"\b(gdp growth|cpi inflation|retail inflation|iip data|trade deficit|industrial output)\b",
+        ),
+        (
+            "central_bank_macro",
+            r"\b(federal reserve|fed rate|interest rate|rate cut|rate hike|central bank|ecb|bank of england|growth forecast|inflation forecast|rate decision|monetary policy)\b",
         ),
         (
             "geopolitical_quantified",

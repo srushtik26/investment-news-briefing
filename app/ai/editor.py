@@ -292,7 +292,11 @@ class GeminiEditorialEngine:
                 is_rate_limit = "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
                 is_daily_quota = is_rate_limit and any(
                     marker.lower() in exc_str.lower()
-                    for marker in ("generaterequestsperday", "quotaid", "daily quota", "per day", "freetier")
+                    for marker in (
+                        "generaterequestsperday", "quotaid", "daily quota", "daily_quota",
+                        "gemini_daily_quota_exhausted", "per day", "freetier",
+                        "quota exceeded", "quota_exhausted", "exceeded your current quota"
+                    )
                 )
 
                 if is_daily_quota:
@@ -326,12 +330,15 @@ class GeminiEditorialEngine:
                         )
                         last_error = f"{RATE_LIMITED_PREFIX} 429 RESOURCE_EXHAUSTED"
                         break
-                    # First 429 → wait then retry
+                    # First 429 → wait then retry with jitter
+                    import random
+                    backoff = min(float(self.RATE_LIMIT_BACKOFF_SECONDS), 2.0 + random.uniform(0.1, 1.0)) if (self.RATE_LIMIT_BACKOFF_SECONDS > 0 and not self.mock_responder) else 0
                     logger.warning(
-                        "Rate limit 429 on editorial attempt %d. Backing off %ds...",
-                        attempt, self.RATE_LIMIT_BACKOFF_SECONDS,
+                        "Rate limit 429 on editorial attempt %d. Backing off %.1fs...",
+                        attempt, backoff,
                     )
-                    time.sleep(self.RATE_LIMIT_BACKOFF_SECONDS)
+                    if backoff > 0:
+                        time.sleep(backoff)
                     last_error = f"Rate limit (429) on attempt {attempt}"
                 else:
                     last_error = f"API error on attempt {attempt}: {exc}"

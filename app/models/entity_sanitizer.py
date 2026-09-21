@@ -30,6 +30,8 @@ GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
     "block deals", "block deal", "bulk deals", "bulk deal", "block", "bulk", "promoter stake sale",
     "quarterly results", "annual results", "financial results", "ai", "wall street",
     "today", "deals", "deal", "lost", "stake",
+    "spending", "capital spending", "expenditure", "expenditures", "demand", "supply",
+    "inflation", "growth", "economy", "trade", "investment", "investments", "capital",
 }
 
 

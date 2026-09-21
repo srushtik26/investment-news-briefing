@@ -608,7 +608,7 @@ def test_portfolio_company_diversity_skips_second_story():
             source_name="The Economic Times",
             published_at=now,
             category=NewsCategory.INDIA,
-            content_text=f"{company} announced major institutional development. {title}",
+            content_text=f"{company} announced major institutional development and Rs 2,500 crore capex investment. {title}",
             is_verified_url=True,
         )
         ev = Event(
@@ -620,6 +620,7 @@ def test_portfolio_company_diversity_skips_second_story():
             event_category=NewsCategory.INDIA,
             verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
             verification_confidence=95.0,
+            financial_figures=["Rs 2,500 crore"],
         )
         articles[art.id] = art
         events[eid] = ev
@@ -724,7 +725,7 @@ def test_adani_canonical_grouping_diversity():
             source_name="The Economic Times",
             published_at=now,
             category=NewsCategory.INDIA,
-            content_text=f"{company} corporate action. {title}",
+            content_text=f"{company} corporate action and Rs 2,500 crore capex investment. {title}",
             is_verified_url=True,
         )
         ev = Event(
@@ -736,6 +737,7 @@ def test_adani_canonical_grouping_diversity():
             event_category=NewsCategory.INDIA,
             verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
             verification_confidence=95.0,
+            financial_figures=["Rs 2,500 crore"],
         )
         articles[art.id] = art
         events[eid] = ev
@@ -812,7 +814,7 @@ def _build_test_harness(now):
             source_name="The Economic Times",
             published_at=now,
             category=category,
-            content_text=f"{company} corporate development announcement. {title}",
+            content_text=f"{company} corporate development announcement and Rs 2,500 crore strategic capex investment. {title}",
             is_verified_url=True,
         )
         ev = Event(
@@ -824,6 +826,7 @@ def _build_test_harness(now):
             event_category=category,
             verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
             verification_confidence=95.0,
+            financial_figures=["Rs 2,500 crore"],
         )
         articles[art.id] = art
         events[eid] = ev

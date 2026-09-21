@@ -226,6 +226,26 @@ DOMESTIC_NOISE_PATTERNS: List[str] = [
     r"\b(?:reacts? to (?:remarks?|statement|comment|tweet|post|speech|charge|allegation)|hits? back at (?:remarks?|comment|statement|charge))\b",
     r"\b(?:claims? (?:bjp|congress|opposition|conspiracy)|alleges? (?:bjp|congress|pm|opposition|conspiracy))\b",
     r"^(?:bjp|congress|aap|tmc)\s+(?:slams|attacks|hits out|corners|demands resignation|lashes out)\b",
+    r"\b(?:slams?|attacks?|hits? out at|lashes? out at|criticises?|targets?|corners?|takes? dig at|takes? a jibe at)\s+(?:opposition|ruling party|rivals?|centre|govt|government)\b",
+    r"\b(?:alleges? scam|claims? victory|demands? apology|accuses? govt of|targets? govt over|hits? out at rivals?)\b",
+
+    # Election alliance chatter, seat sharing & coalition negotiations without policy outcome
+    r"\b(seat sharing|seat-sharing|alliance talks?|alliance talks fail|alliance call|coalition talks|poll pact|contesting \d+ seats|alliance rift|rift in alliance|unity question|sparks? debate)\b",
+
+    # Entertainment / celebrity / standup comedian controversies & mimicry rows
+    r"\b(comedian|mimicry row|cancels? (?:.*?\s+)?shows?|stand-up comedian|actor controversy|celebrity row)\b",
+
+    # Student and campus politics (DUSU, JNUSU, ABVP, NSUI, student clashes)
+    r"\b(dusu|jnusu|abvp|nsui|aisf|sfi|student union|campus clash|student politics|campus election|college election|university election)\b",
+
+    # Ceremonial campaigns, yatras, padyatras, rallies & commemorative events
+    r"\b(seva sankalp|padyatra|pad yatra|rath yatra|jan aashirwad|viksit bharat sankalp|yatra flagged off|memorial lecture|inaugurates exhibition|felicitates|felicitation ceremony|commemorative event|birth anniversary|death anniversary)\b",
+
+    # Courtesy calls & procedural delegations without economic or policy decisions
+    r"\b(calls on pm|calls on president|calls on governor|calls on chief minister|courtesy call|meets governor|delegation meets|calls on minister|pays courtesy visit)\b",
+
+    # Local crime, murders, drownings, accidents without systemic/market impact
+    r"\b(murder|killed in clash|body found|dead body|drowning|drowned in|drowns in|suicide|arrested for murder|strangled|stabbed|chopped body|man killed|woman killed|youth killed|gang rape|rape case|hit-and-run|honour killing)\b",
 
     # Generic explainers, listicles & evergreen features
     r"\b(top \d+ (?:tourist|holiday|travel|places|destinations)|things to know before|explained: how does|a complete guide to|history of|all you need to know about (?:why|how))\b",
