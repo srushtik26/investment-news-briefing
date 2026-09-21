@@ -184,13 +184,15 @@ The codebase adheres to strict software reliability principles implemented direc
 
 ## Security
 
+The project adheres to security best practices to protect credentials, infrastructure, and ingested data:
 - **Secrets Isolation**: All sensitive credentials (`GEMINI_API_KEY`, `GMAIL_APP_PASSWORD`, `SERPAPI_API_KEY`, `DASHBOARD_DATABASE_URL`) are loaded from environment variables or GitHub Actions Secrets. None are committed to the codebase.
 - **Git Exclusion Guard**: The repository `.gitignore` strictly excludes `.env`, `data/`, `logs/`, SQLite database files, and local artifacts from version control.
 - **Application-Specific Email Passwords**: Email dispatch requires a dedicated 16-character Google Account App Password under 2-Step Verification rather than primary account credentials.
 - **URL & Input Validation**: Inbound URLs are validated against allowed schemes (`http`, `https`), valid network locations, and structural article indicators, discarding directory roots, calendar hubs, and dead links.
 - **Dependency Pinning**: All production packages are explicitly pinned in `requirements.txt` to mitigate supply-chain drift.
-- **Vulnerability Reporting**: If you discover a security issue or credential exposure, please contact the maintainer directly and privately. **Do not create public GitHub issues containing credentials, tokens, or sensitive logs.**
-  *(Note: A formal `SECURITY.md` policy file will be added as open-source governance expands.)*
+- **Untrusted Ingestion Protections**: Untrusted third-party article text and metadata are sanitized and treated strictly as data, mitigating indirect prompt injection or payload execution.
+
+For detailed vulnerability disclosure instructions, supported scopes, and reporting guidelines via GitHub Private Vulnerability Reporting, please review our [`SECURITY.md`](SECURITY.md) policy.
 
 ---
 
@@ -241,31 +243,13 @@ Maintenance responsibilities currently include:
 
 ## Contributing
 
-Contributions from the open-source community are welcome. Because this pipeline operates under strict reliability contracts, contributors should adhere to the following workflow:
+Contributions from the open-source community are welcome! We welcome improvements to source adapters, extraction robustness, verification logic, dashboard accessibility, regression tests, and documentation.
 
-### Contribution Workflow
-1. **Fork the Repository**: Create a fork of `srushtik26/investment-news-briefing` on GitHub.
-2. **Create a Feature Branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make Focused Changes**: Keep pull requests modular and focused on a single capability or bug fix.
-4. **Maintain Test Coverage**: If modifying or adding logic, add accompanying tests under `tests/`.
-5. **Run the Full Test Suite**:
-   ```bash
-   python -m pytest tests -q
-   ```
-   *All 1,083 tests must pass before submitting a pull request.*
-6. **Do Not Commit Secrets**: Ensure no API keys, personal emails, or credentials exist in code or commits.
-7. **Submit a Pull Request**: Provide a clear description of the problem, implementation rationale, and testing evidence.
-
-### Areas for Contribution
-- **Publisher Adapters & RSS Queries**: Enhancing query definitions and extraction heuristics for major financial outlets.
-- **Extraction Robustness**: Expanding parsing resiliency against dynamic HTML structures and content layouts.
-- **Test Fixtures & Edge Cases**: Contributing real-world HTML fixtures and edge-case regression scenarios.
-- **Observability & Metrics**: Improving structured logging, performance telemetry, and diagnostic counters.
-- **Documentation**: Refining technical documentation, architectural diagrams, and developer setup guides.
-- **Dashboard Accessibility**: Improving mobile responsiveness and accessibility on the FastAPI web dashboard.
+Please read our [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines on:
+- Setting up your local environment and running tests offline
+- Branch naming and pull request submission standards
+- High-priority contribution areas and good first issues
+- Preserving the project's strict validation contracts and fail-safe design principles
 
 > **Local Development Note**: Contributors can run all 1,083 automated tests locally without any paid API keys (Gemini, SerpAPI) using offline mocks and deterministic test fixtures.
 
@@ -328,13 +312,13 @@ Planned architectural improvements for upcoming iterations:
 - [ ] **Automated Dependency Auditing**: Integrate automated security scanning (e.g., Dependabot, Bandit) into the CI pipeline.
 - [ ] **Configurable Section Profiles**: Support customizable section quotas (e.g., custom story counts or specialized industry sectors).
 - [ ] **Enhanced Dashboard Analytics**: Historical search filters, sector distribution breakdowns, and export formats.
-- [ ] **Dedicated Contributor Guidelines**: Add standalone `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md` documents.
+- [ ] **Community Governance**: Add standalone `CODE_OF_CONDUCT.md` document.
 
 ---
 
 ## License
 
-*A formal open-source license (such as MIT or Apache-2.0) is currently pending selection for this repository. Until a license file is formally committed, all rights are reserved by the maintainer.*
+This project is licensed under the MIT License — see the [`LICENSE`](LICENSE) file for details.
 
 ---
 
