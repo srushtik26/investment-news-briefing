@@ -431,6 +431,34 @@ class EventRegionClassifier:
             return _finish(False, reason)
 
         # ----------------------------------------------------------------
+        # DISTRIBUTION/MARKET-TARGET ONLY REJECTION
+        # A foreign company describing India as a *distribution* or *sales target*
+        # market is NOT an India-section story unless an Indian entity/asset is involved.
+        # ----------------------------------------------------------------
+        distribution_target_patterns = [
+            r"\b(?:to launch|launched|launching|will launch|plans? to launch|expands? to|entering|enters?)\s+(?:in|into)\s+india\b",
+            r"\bindia\s+(?:launch|debut|rollout|expansion)\b",
+            r"\b(?:distribut|content|streaming|subscription|service)\s+(?:deal|agreement|tie-?up)\s+(?:for|in)\s+india\b",
+            r"\bindia\s+(?:distribution|streaming|content)\s+deal\b",
+        ]
+        is_distribution_target_only = (
+            has_intl_entity
+            and any(re.search(pat, context_text) for pat in distribution_target_patterns)
+            and not signal_a  # no Indian principal
+            and not signal_c  # no Indian regulator
+            and not signal_d  # no Indian asset/transaction
+            and not signal_e  # no Indian financial results
+        )
+        if is_distribution_target_only:
+            reason = (
+                f"INDIA_NEXUS_REJECT: foreign entity expanding/distributing into India (market-target only), "
+                f"no Indian principal/asset/regulator. title='{event.canonical_title[:80]}'"
+            )
+            logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"distribution-target-only (foreign entity)\"",
+                        event.canonical_title[:80])
+            return _finish(False, reason)
+
+        # ----------------------------------------------------------------
         # ACCEPT if at least one strong signal found
         # ----------------------------------------------------------------
         active_signals = []

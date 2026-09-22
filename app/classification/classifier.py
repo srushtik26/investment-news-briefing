@@ -13,6 +13,7 @@ Usage is recorded via GeminiUsageLogger on every call attempt.
 """
 
 import json
+import os
 import re
 import time
 from typing import Any, Callable, Optional
@@ -83,7 +84,7 @@ class AIArticleClassifier:
 
         # Track how many live Gemini calls have been made this run
         self._live_call_count: int = 0
-        self._force_offline_mode: bool = False
+        self._force_offline_mode: bool = os.getenv("PIPELINE_DRY_RUN", "").lower() in ("true", "1", "yes")
 
         self._client = None
         if self.api_key and not self.mock_responder:
