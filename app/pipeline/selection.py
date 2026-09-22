@@ -754,21 +754,12 @@ def run_ranking_and_selection(
         penalty_rank = 1 if has_penalty else 0
         return (horizon_rank, penalty_rank, -scored_event.investment_score, tier_rank, -float(event.verification_confidence or 0.0), age_hours)
 
-    # 1. Compute deterministic business relevance and topic bucket for all candidate events
+    # 1. Compute deterministic business relevance, materiality, and topic bucket via StoryContext
+    from app.pipeline.story_context import build_story_context
     for scored in (candidate_pool.domestic_candidates + candidate_pool.india_candidates + candidate_pool.international_candidates):
         ev = scored.event
         art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-        b_score, _ = calculate_business_relevance_score(ev, art)
-        ev.metadata = getattr(ev, "metadata", {}) or {}
-        ev.metadata["business_relevance_score"] = b_score
-        if ev.event_category == NewsCategory.INDIA:
-            _, mat_score, _ = evaluate_investment_materiality(ev, art, ctx=ctx)
-            ev.metadata["investment_materiality_score"] = mat_score
-        ev.metadata["topic_bucket"] = classify_topic_bucket(
-            headline=ev.canonical_title,
-            body=(art.content_text if art else "") or ev.description or "",
-            entity=" ".join(ev.companies_involved or []),
-        )
+        build_story_context(ev, art, ctx=ctx)
 
     # 2. Strict business relevance filter for India and International (score >= 70)
     def _filter_by_business_relevance(cands: List[ScoredEvent], min_pool: int = 5) -> List[ScoredEvent]:
@@ -1361,11 +1352,23 @@ def run_ranking_and_selection(
             selected.append(scored)
             seen_portfolio_companies[pf_company] = ev.canonical_title
             seen_comps.update(norm_comps)
+            source_pub = cand_art.source_name if cand_art else (ev.primary_publisher or "Unknown")
+            mat_score_val = (ev.metadata or {}).get("investment_materiality_score", scored.investment_score)
             ctx.log_exec(
                 f"[PORTFOLIO_SELECTED]\n"
                 f'company="{pf_company}"\n'
-                f'title="{ev.canonical_title}"\n'
-                f'score={scored.investment_score}'
+                f'event_id="{ev.id}"\n'
+                f'materiality={mat_score_val:.1f}\n'
+                f'source="{source_pub}"\n'
+                f'reason="Material corporate development for {pf_company}: {ev.canonical_title}"'
+            )
+            logger.info(
+                "PORTFOLIO_SELECTED company=\"%s\" event_id=\"%s\" materiality=%.1f source=\"%s\" reason=\"%s\"",
+                pf_company,
+                ev.id,
+                mat_score_val,
+                source_pub,
+                f"Material corporate development for {pf_company}",
             )
 
         # Phase 2: Fill remaining slots with highest-quality general India stories
@@ -1708,6 +1711,30 @@ def run_ranking_and_selection(
     # [PORTFOLIO_FUNNEL] Structured Monotonic Funnel Logging
     from app.ranking.watchlist import get_portfolio_company_role
 
+    _pf_art_cache: Dict[str, Tuple[bool, str, str, bool]] = {}
+    def _is_pf_art(art):
+        if not art:
+            return False, "", "", False
+        if art.id not in _pf_art_cache:
+            _pf_art_cache[art.id] = get_portfolio_company_role(art.title)
+        return _pf_art_cache[art.id]
+
+    _pf_ev_cache: Dict[str, Tuple[bool, str, str, bool]] = {}
+    def _is_pf_ev(ev):
+        if not ev:
+            return False, "", "", False
+        if ev.id not in _pf_ev_cache:
+            _pf_ev_cache[ev.id] = get_portfolio_company_role(ev.canonical_title)
+        return _pf_ev_cache[ev.id]
+
+    # Count selected portfolio stories for concise daily tracking
+    portfolio_selected_count = sum(
+        1 for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])
+        if _is_pf_ev(s.event)[3]
+    )
+    ctx.log_exec(f"PORTFOLIO_SELECTED={portfolio_selected_count}")
+    logger.info("PORTFOLIO_SELECTED=%d", portfolio_selected_count)
+
     # 1. Discovered
     pf_discovered_list = [
         c for c in (getattr(ctx, "india_reserve_pool", []) or []) + (getattr(ctx, "portfolio_discovered_candidates", []) or [])
@@ -1715,13 +1742,13 @@ def run_ranking_and_selection(
     ]
     pf_discovered = max(
         len(pf_discovered_list),
-        sum(1 for art in (ctx.articles_lookup.values() if ctx.articles_lookup else []) if get_portfolio_company_role(art.title)[0])
+        sum(1 for art in (ctx.articles_lookup.values() if ctx.articles_lookup else []) if _is_pf_art(art)[0])
     )
 
     # 2. Extracted (monotonic: <= discovered)
     pf_extracted_count = sum(
         1 for art in (ctx.articles_lookup.values() if ctx.articles_lookup else [])
-        if get_portfolio_company_role(art.title)[0]
+        if _is_pf_art(art)[0]
     )
     pf_extracted = min(pf_discovered, pf_extracted_count)
 
@@ -1733,7 +1760,7 @@ def run_ranking_and_selection(
                 rej_art_ids.add(rej["id"])
     pf_filtered_count = sum(
         1 for art in (ctx.articles_lookup.values() if ctx.articles_lookup else [])
-        if art.id not in rej_art_ids and get_portfolio_company_role(art.title)[0]
+        if art.id not in rej_art_ids and _is_pf_art(art)[0]
     )
     pf_filtered_pass = min(pf_extracted, pf_filtered_count)
 
@@ -1741,7 +1768,7 @@ def run_ranking_and_selection(
     all_events = (ctx.verified_events or []) + (ctx.high_confidence_single_candidates or [])
     pf_india_routed_count = sum(
         1 for ev in all_events
-        if ev.event_category == NewsCategory.INDIA and get_portfolio_company_role(ev.canonical_title)[0]
+        if ev.event_category == NewsCategory.INDIA and _is_pf_ev(ev)[0]
     )
     pf_india_routed = min(pf_filtered_pass, pf_india_routed_count)
 
@@ -1753,7 +1780,7 @@ def run_ranking_and_selection(
         and float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0) >= (
             80.0 if ev.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE else 60.0
         )
-        and get_portfolio_company_role(ev.canonical_title)[0]
+        and _is_pf_ev(ev)[0]
     )
     pf_hcss_pass = min(pf_india_routed, pf_hcss_count)
 
@@ -1761,7 +1788,7 @@ def run_ranking_and_selection(
     pf_mat_count = sum(
         1 for ev in all_events
         if ev.event_category == NewsCategory.INDIA
-        and get_portfolio_company_role(ev.canonical_title)[3]
+        and _is_pf_ev(ev)[3]
         and (ev.metadata or {}).get("investment_materiality_score", 0.0) >= 60.0
     )
     pf_materiality_pass = min(pf_hcss_pass, pf_mat_count)
@@ -1778,7 +1805,7 @@ def run_ranking_and_selection(
     # 8. Final candidates selected in India 5 (monotonic: <= dedup_pass)
     pf_final_count = sum(
         1 for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])
-        if get_portfolio_company_role(s.event.canonical_title)[3]
+        if _is_pf_ev(s.event)[3]
         and (s.event.metadata or {}).get("investment_materiality_score", 0.0) >= 60.0
     )
     pf_final_candidates = min(pf_dedup_pass, pf_final_count)

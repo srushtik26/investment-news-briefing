@@ -53,6 +53,7 @@ def discover_initial_reserves(
         max_india=max_india,
         max_international=max_international,
         max_domestic=max_domestic,
+        budget=getattr(ctx, "budget", None),
     )
     ctx.metrics.stop_timer("discovery_seconds")
     ctx.portfolio_discovery_executed = bool(
@@ -60,6 +61,7 @@ def discover_initial_reserves(
     )
 
     ctx.domestic_reserve_pool = initial_discovery.get("domestic", [])
+    ctx.portfolio_reserve_pool = initial_discovery.get("portfolio", [])
     ctx.india_reserve_pool    = initial_discovery.get("india", [])
     ctx.intl_reserve_pool     = initial_discovery.get("international", [])
 

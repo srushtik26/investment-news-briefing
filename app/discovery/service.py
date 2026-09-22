@@ -91,13 +91,25 @@ class NewsDiscoveryService:
         max_candidates: int = 50,
         max_per_query: int = 15,
         log_callback: Optional[Any] = None,
+        budget: Optional[Any] = None,
+        target_qualified: int = 5,
+        min_reserves: int = 3,
     ) -> List[DiscoveredArticle]:
         """
         Discover candidate news articles specifically for the 32 portfolio watchlist companies
-        across 5 grouped queries.
+        using efficient staged discovery:
+            Step 1: Grouped/batched queries across holdings
+            Step 2: Immediate URL deduplication
+            Step 3: Identify companies with no results
+            Step 4: Targeted fallback queries only for missing companies (bounded)
+            Step 5: Early stop when enough candidates + reserves exist
         """
-        from app.discovery.queries import SearchQueryBuilder
-        from app.ranking.watchlist import get_watchlist_match_details
+        from app.discovery.queries import SearchQueryBuilder, PORTFOLIO_EVENT_TERMS
+        from app.ranking.watchlist import (
+            PORTFOLIO_WATCHLIST,
+            get_watchlist_match_details,
+            match_portfolio_company,
+        )
 
         def _log(msg: str):
             logger.info(msg)
@@ -109,11 +121,31 @@ class NewsDiscoveryService:
 
         _log("[PORTFOLIO_DISCOVERY_START]")
         self.portfolio_discovery_executed = True
-        portfolio_queries = SearchQueryBuilder.build_portfolio_queries(include_site_filters=True)
         discovered: List[DiscoveredArticle] = []
+        seen_urls: Set[str] = set()
+
+        def _add_article(art: DiscoveredArticle) -> bool:
+            norm_url = (art.url or "").strip().lower().rstrip("/")
+            if norm_url and norm_url not in seen_urls:
+                seen_urls.add(norm_url)
+                art.category_tag = "india"
+                discovered.append(art)
+                return True
+            return False
+
+        # Step 1: Grouped/batched queries
+        portfolio_queries = SearchQueryBuilder.build_portfolio_queries(include_site_filters=True)
+        companies_checked = len(PORTFOLIO_WATCHLIST)
+        matched_companies: Set[str] = set()
 
         for grp_name, query in portfolio_queries:
+            if budget and not budget.can_call_serpapi():
+                _log("[API_BUDGET] SerpAPI budget reached; stopping portfolio grouped discovery early")
+                break
             _log(f'[PORTFOLIO_DISCOVERY_QUERY]\ngroup={grp_name}\nquery="{query}"')
+            if budget:
+                budget.record_portfolio_query()
+                budget.record_serpapi_call()
             results = self.provider.discover(
                 query=query,
                 country="India",
@@ -121,20 +153,68 @@ class NewsDiscoveryService:
                 category_tag="india",
             )
             _log(f'[PORTFOLIO_DISCOVERY_RESULT]\nquery="{query}"\nresults={len(results)}')
-            discovered.extend(results)
 
-        unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
+            # Step 2: Deduplicate URLs immediately
+            for r in results:
+                _add_article(r)
+
+            # Step 5 check: check if enough high-quality portfolio candidates exist
+            for art in discovered:
+                m = match_portfolio_company(text=art.title)
+                if m and m.eligible_for_priority:
+                    matched_companies.add(m.canonical_name)
+
+            if len(matched_companies) >= (target_qualified + min_reserves):
+                _log(f"[PORTFOLIO_EARLY_STOP] Found {len(matched_companies)} companies with material news across groups; early stopping")
+                break
+
+        # Step 3: Identify portfolio companies with no useful recent result
+        missing_companies = [cname for cname, _ in PORTFOLIO_WATCHLIST if cname not in matched_companies]
+
+        # Step 4: Run targeted fallback queries only for missing companies if we still need more candidates
+        if len(matched_companies) < (target_qualified + min_reserves) and missing_companies:
+            max_fallback_queries = min(len(missing_companies), (target_qualified + min_reserves) - len(matched_companies) + 2)
+            sources = SearchQueryBuilder.get_sources_for_country("India")
+            site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources[:4]]) + ")"
+
+            for cname in missing_companies[:max_fallback_queries]:
+                if budget and not budget.can_call_serpapi():
+                    break
+                fallback_query = f'"{cname}" {PORTFOLIO_EVENT_TERMS} when:1d{site_clause}'
+                _log(f'[PORTFOLIO_FALLBACK_QUERY]\ncompany="{cname}"\nquery="{fallback_query}"')
+                if budget:
+                    budget.record_portfolio_query()
+                    budget.record_serpapi_call()
+                fb_results = self.provider.discover(
+                    query=fallback_query,
+                    country="India",
+                    max_results=5,
+                    category_tag="india",
+                )
+                added_for_company = False
+                for r in fb_results:
+                    if _add_article(r):
+                        m = match_portfolio_company(text=r.title)
+                        if m and m.eligible_for_priority:
+                            matched_companies.add(m.canonical_name)
+                            added_for_company = True
+                if not added_for_company:
+                    logger.debug("PORTFOLIO_NO_MATERIAL_NEWS company=%s", cname)
+
+                if len(matched_companies) >= (target_qualified + min_reserves):
+                    break
+
+        unique_results = discovered[:max_candidates]
         for article in unique_results:
             article.category_tag = "india"
 
-        matched_n = 0
-        for art in unique_results:
-            m, cname, calias = get_watchlist_match_details(art.title or "")
-            if m:
-                matched_n += 1
-                _log(f'[PORTFOLIO_MATCH]\ncompany="{cname}"\nalias="{calias}"\ntitle="{art.title}"')
+        # Concise production logging
+        _log(f"PORTFOLIO_COMPANIES_CHECKED={companies_checked}")
+        _log(f"PORTFOLIO_DISCOVERY_URLS={len(seen_urls)}")
+        _log(f"PORTFOLIO_CANDIDATES={len(unique_results)}")
+        _log(f"PORTFOLIO_QUALIFIED={len(matched_companies)}")
 
-        _log(f"[PORTFOLIO_DISCOVERY_END]\nqualified={len(unique_results)}\nselected={matched_n}")
+        _log(f"[PORTFOLIO_DISCOVERY_END]\nqualified={len(unique_results)}\nselected={len(matched_companies)}")
         return unique_results
 
     def discover_international_news(
@@ -298,21 +378,33 @@ class NewsDiscoveryService:
         max_india: int = 40,
         max_international: int = 40,
         max_domestic: int = 40,
+        budget: Optional[Any] = None,
     ) -> Dict[str, List[DiscoveredArticle]]:
         """
-        Run discovery across Domestic, India Business, and International categories,
-        including dedicated Portfolio Watchlist discovery.
+        Run staged discovery across Domestic, India Business, and International categories,
+        with Portfolio-First discovery executing before general India discovery.
+        General India discovery fills gaps based on portfolio candidate yield.
         """
-        logger.info("Running full news discovery for Investment Committee briefing (Domestic + India + Intl + Portfolio)...")
+        logger.info("Running staged news discovery for Investment Committee briefing (Portfolio -> General India -> Domestic -> Intl)...")
         domestic_candidates = self.discover_domestic_news(max_candidates=max_domestic) if max_domestic > 0 else []
-        portfolio_candidates = self.discover_portfolio_news(max_candidates=50, max_per_query=15)
-        india_candidates = self.discover_india_news(max_candidates=max_india)
+        portfolio_candidates = self.discover_portfolio_news(
+            max_candidates=50,
+            max_per_query=15,
+            budget=budget,
+            target_qualified=5,
+            min_reserves=3,
+        )
+
+        # Gap-filling general India discovery: only fetch what is needed for 5 + reserves
+        needed_general = max(10, max_india - len(portfolio_candidates))
+        india_candidates = self.discover_india_news(max_candidates=needed_general)
         intl_candidates = self.discover_international_news(max_candidates=max_international)
 
-        # Portfolio candidates are prioritized into the India business candidate pool
+        # Portfolio candidates are ordered first in the India business candidate pool
         combined_india = self._deduplicate_candidates(portfolio_candidates + india_candidates)[: max_india * 2]
 
         result: Dict[str, List[DiscoveredArticle]] = {
+            "portfolio": portfolio_candidates,
             "india": combined_india,
             "international": intl_candidates,
         }
