@@ -14,6 +14,7 @@ from app.filtering.rules import (
     StoryTypeFilterRule,
     URLFilterRule,
 )
+from app.filtering.source_policy import SourcePolicy
 
 __all__ = [
     "BaseFilterRule",
@@ -23,6 +24,7 @@ __all__ = [
     "FilterResult",
     "HardFilterEngine",
     "SourceFilterRule",
+    "SourcePolicy",
     "StoryTypeFilterRule",
     "URLFilterRule",
 ]

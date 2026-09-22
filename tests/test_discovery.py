@@ -100,36 +100,62 @@ class TestSearchQueryBuilder:
     """Tests for SearchQueryBuilder and category definitions."""
 
     def test_target_sources_configuration(self):
-        """Verify all requested Indian and International publications are configured."""
+        """Verify all requested Indian and International publications are configured.
+
+        Architecture change: bloomberg, reuters, ft, wsj moved to SECONDARY_SIGNALLING_SOURCES
+        (paywalled — used for corroboration only, not extraction). Wire services are PRIMARY.
+        """
         india_domains = [s.domain for s in INDIA_SOURCES]
         assert "economictimes.indiatimes.com" in india_domains
         assert "business-standard.com" in india_domains
         assert "livemint.com" in india_domains
         assert "financialexpress.com" in india_domains
+        assert "ndtvprofit.com" in india_domains
+        assert "thehindubusinessline.com" in india_domains
 
         intl_domains = [s.domain for s in INTERNATIONAL_SOURCES]
-        assert "reuters.com" in intl_domains
-        assert "bloomberg.com" in intl_domains
+        # Paywalled sources are NOT in INTERNATIONAL_SOURCES (moved to SECONDARY_SIGNALLING_SOURCES)
+        assert "bloomberg.com" not in intl_domains
+        assert "ft.com" not in intl_domains
+        assert "wsj.com" not in intl_domains
+        assert "reuters.com" not in intl_domains
+        # Wire services and free publishers ARE primary
         assert "cnbc.com" in intl_domains
-        assert "ft.com" in intl_domains
-        assert "wsj.com" in intl_domains
+        assert "businesswire.com" in intl_domains
+        assert "globenewswire.com" in intl_domains
+        assert "prnewswire.com" in intl_domains
+        # Paywalled sources remain in SECONDARY_SIGNALLING_SOURCES
+        from app.discovery.queries import SECONDARY_SIGNALLING_SOURCES
+        signal_domains = {s.domain for s in SECONDARY_SIGNALLING_SOURCES}
+        assert "bloomberg.com" in signal_domains
+        assert "reuters.com" in signal_domains
+        assert "ft.com" in signal_domains
+        assert "wsj.com" in signal_domains
 
     def test_international_sources_order(self):
-        """Verify international sources order matches preferred extractable publishers order."""
+        """Verify international sources only contains freely extractable publishers.
+
+        Paywalled sources (bloomberg, ft, wsj, reuters) are now in SECONDARY_SIGNALLING_SOURCES.
+        """
         intl_domains = [s.domain for s in INTERNATIONAL_SOURCES]
-        expected_order = [
+        expected_domains = {
             "cnbc.com",
             "apnews.com",
             "bbc.com",
             "marketwatch.com",
             "theguardian.com",
             "fortune.com",
-            "reuters.com",
-            "bloomberg.com",
-            "ft.com",
-            "wsj.com",
-        ]
-        assert intl_domains == expected_order
+            "businesswire.com",
+            "globenewswire.com",
+            "prnewswire.com",
+        }
+        actual_set = set(intl_domains)
+        # All listed domains must be free/accessible
+        for dom in intl_domains:
+            assert dom in expected_domains, f"Unexpected domain {dom!r} in INTERNATIONAL_SOURCES"
+        # No paywalled domain may appear
+        paywalled = {"bloomberg.com", "ft.com", "wsj.com", "reuters.com"}
+        assert not actual_set & paywalled, f"Paywalled domains in INTERNATIONAL_SOURCES: {actual_set & paywalled}"
 
     def test_query_generation_with_site_filters(self):
         """Test generated queries include site filters."""
@@ -140,12 +166,15 @@ class TestSearchQueryBuilder:
         assert "site:economictimes.indiatimes.com" in first_query
 
     def test_query_generation_international(self):
-        """Test international query generation."""
+        """Test international query generation uses wire services (not paywalled sources)."""
         queries = SearchQueryBuilder.build_query_strings("International", category="fed_decisions")
         assert len(queries) > 0
         first_query = queries[0]
-        assert "site:reuters.com" in first_query
-        assert "site:wsj.com" in first_query
+        # Wire services should appear in site constraints
+        assert "site:businesswire.com" in first_query or "site:cnbc.com" in first_query or "site:apnews.com" in first_query
+        # Paywalled sources must NOT be in primary site constraints
+        assert "site:wsj.com" not in first_query
+        assert "site:bloomberg.com" not in first_query
 
 
 class TestMockDiscoveryProvider:

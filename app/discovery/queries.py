@@ -26,6 +26,7 @@ INDIA_SOURCES: List[TargetSource] = [
     TargetSource(name="Moneycontrol", domain="moneycontrol.com", country="India"),
     TargetSource(name="Business Today", domain="businesstoday.in", country="India"),
     TargetSource(name="NDTV Profit", domain="ndtvprofit.com", country="India"),
+    TargetSource(name="The Hindu BusinessLine", domain="thehindubusinessline.com", country="India"),
 ]
 
 DOMESTIC_SOURCES: List[TargetSource] = [
@@ -44,6 +45,9 @@ DOMESTIC_SOURCES: List[TargetSource] = [
     TargetSource(name="PIB", domain="pib.gov.in", country="India"),
 ]
 
+# PRIMARY discovery sources — freely accessible for extraction.
+# Paywalled sources (bloomberg, ft, wsj, reuters) moved to SECONDARY_SIGNALLING_SOURCES;
+# they are NOT used in site:-constrained RSS queries that feed into extraction.
 INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="CNBC", domain="cnbc.com", country="International"),
     TargetSource(name="AP News", domain="apnews.com", country="International"),
@@ -51,10 +55,9 @@ INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
     TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Fortune", domain="fortune.com", country="International"),
-    TargetSource(name="Reuters", domain="reuters.com", country="International"),
-    TargetSource(name="Bloomberg", domain="bloomberg.com", country="International"),
-    TargetSource(name="Financial Times", domain="ft.com", country="International"),
-    TargetSource(name="Wall Street Journal", domain="wsj.com", country="International"),
+    TargetSource(name="Business Wire", domain="businesswire.com", country="International"),
+    TargetSource(name="GlobeNewswire", domain="globenewswire.com", country="International"),
+    TargetSource(name="PR Newswire", domain="prnewswire.com", country="International"),
 ]
 
 DOMESTIC_EVENT_CATEGORIES: Dict[str, List[str]] = {
