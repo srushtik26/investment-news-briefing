@@ -33,6 +33,14 @@ class EventRegionClassifier:
         r"\b(standalone net profit|standalone profit|standalone revenue|standalone results)\b",
     ]
 
+    INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE: List[str] = [
+        r"\b(national stock exchange|nse\b|nse's|bombay stock exchange|bse\b|bse's)\b",
+        r"\b(indian listed exchanges?|indian stock exchange|indian exchanges?|india's national stock exchange)\b",
+        r"\b(sebi|securities and exchange board of india)\b",
+        r"\b(reserve bank of india|rbi\b)\b",
+        r"\b(indian capital markets?|india capital markets?|indian ipo|drhp|draft red herring prospectus)\b",
+    ]
+
     INDIAN_CURRENCY_AND_UNITS: List[str] = [
         r"₹",
         r"\b(rs\.?|inr|rupees?|crore|cr|lakh|lakhs)\b",
@@ -61,6 +69,7 @@ class EventRegionClassifier:
         r"\b(zomato|swiggy|paytm|phonepe|zepto|blinkit|shiprocket|nykaa|ola|ola electric|oyo|byju's|delhivery|meesho|mamaearth|honasa|honasa consumer|lenskart|cred|urban company)\b",
         r"\b(bharti airtel|airtel|vodafone idea|vi\s+telecom|bsnl|mtnl)\b",
         r"\b(welspun|welspun corp|inorbit|inorbit malls|prozone|prozone malls|kedaara|kedaara capital|c2i|c2i semiconductors|airtel payments bank|ardee|ardee industries|ardee infrastructure)\b",
+        r"\b(national stock exchange|nse\b|bombay stock exchange|bse\b)\b",
         r"\b\w+\s+(?:of\s+india|india\s+ltd|india\s+limited)\b",
     ]
 
@@ -324,7 +333,8 @@ class EventRegionClassifier:
         # SIGNAL C: BSE / NSE / SEBI / RBI / Indian regulatory body materially involved
         # ----------------------------------------------------------------
         signal_c = any(re.search(pat, context_text) for pat in self.INDIAN_REGULATORY_AND_POLICY) or \
-                   any(re.search(pat, context_text) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
+                   any(re.search(pat, context_text) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS) or \
+                   any(re.search(pat, context_text) for pat in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE)
 
         # ----------------------------------------------------------------
         # SIGNAL D: Transaction involves Indian assets / company / subsidiary
@@ -516,6 +526,14 @@ class EventRegionClassifier:
         context_text = f"{title_lower} {content_lower}"
         companies_text = " ".join(companies or []).lower()
         figures_text = " ".join(financial_figures or []).lower()
+
+        # Bug 3: Indian capital markets infrastructure (NSE, BSE, Indian listed exchanges, SEBI, RBI, Indian IPOs)
+        # Classify by PRIMARY SUBJECT + EVENT GEOGRAPHY + BUSINESS IMPACT.
+        # Do not classify as International just because a comparison mentions Nasdaq/Wall Street or publisher is foreign (CNBC, etc.)
+        for pat in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE:
+            m_cm = re.search(pat, title_lower)
+            if m_cm:
+                return NewsCategory.INDIA, f"Indian capital markets infrastructure / regulatory event: '{m_cm.group(0)}'"
 
         for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY:
             m = re.search(pat, title_lower)

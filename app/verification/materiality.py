@@ -171,8 +171,10 @@ class InvestmentMaterialityEvaluator:
         ctx: Optional[Any] = None,
     ) -> MaterialityResult:
         headline = (getattr(event, "canonical_title", "") or (article.title if article else "")).strip()
-        body = (getattr(event, "description", "") or (article.content_text if article else "")).strip()
-        full_text = f"{headline} {body[:1500]}".lower()
+        desc = (getattr(event, "description", "") or "").strip()
+        art_text = (article.content_text if article and article.content_text else "").strip()
+        body = f"{desc} {art_text}".strip()
+        full_text = f"{headline} {body[:3000]}".lower()
         headline_low = headline.lower()
 
         score = 0.0
@@ -214,6 +216,7 @@ class InvestmentMaterialityEvaluator:
                 r"central capex|state capex|public investment programme|national infrastructure pipeline|pm gati shakti|"
                 r"industrial corridor|logistics park|freight terminal|multimodal logistics|"
                 r"high-speed rail|bullet train|national highway network|"
+                r"initial public offering|files? (?:for )?(?:drhp|ipo)|ipo listing|listing debut|exchange ipo|bourse ipo|landmark ipo|\b\w+\s+ipo\b|"
                 r"supreme court delivers judgment|landmark ruling|delivers judgment|policy reform)\b",
                 full_text,
             )

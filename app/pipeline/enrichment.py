@@ -26,10 +26,20 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
     ctx.log_exec("SECOND-SOURCE ENRICHMENT: Searching FREE Google News RSS for independent second sources")
     ctx.log_exec("=" * 60)
 
+    section_verified_counts: Dict[NewsCategory, int] = {}
+    for ev in (ctx.verified_events or []):
+        if getattr(ev, "verification_tier", None) == VerificationTier.TWO_SOURCE_VERIFIED:
+            section_verified_counts[ev.event_category] = section_verified_counts.get(ev.event_category, 0) + 1
+
+    rejected_titles = {
+        r.get("title") for r in getattr(ctx, "rejected_events_list", []) if isinstance(r, dict)
+    }
+
     single_source_targets_raw = [
         e for e in (ctx.high_confidence_single_candidates + ctx.verified_events)
-        if getattr(e, "verification_tier", None) == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
-        or len(e.article_ids) < 2
+        if (getattr(e, "verification_tier", None) == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE or len(e.article_ids) < 2)
+        and e.canonical_title not in rejected_titles
+        and section_verified_counts.get(e.event_category, 0) < 7
     ]
 
     scorer = InvestmentRelevanceScorer()
@@ -58,6 +68,13 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
         single_source_targets.extend(sorted_evs[:7])
 
     ctx.log_exec(f"[ENRICHMENT] Found {len(single_source_targets_raw)} eligible single-source candidates. Targeted top {len(single_source_targets)} candidates (max 7 per section) for enrichment.")
+
+    failed_urls: Set[str] = getattr(ctx, "failed_urls", set())
+    if not hasattr(ctx, "failed_urls"):
+        ctx.failed_urls = failed_urls
+    failed_domains: Set[str] = getattr(ctx, "failed_domains", set())
+    if not hasattr(ctx, "failed_domains"):
+        ctx.failed_domains = failed_domains
 
     for ev in single_source_targets:
         if not ev.article_ids or ev.article_ids[0] not in ctx.articles_lookup:
@@ -113,7 +130,10 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
                     cand_netloc = urlparse(cand_url).netloc.lower().replace("www.", "")
                     if cand_netloc == prim_domain or (prim_domain and prim_domain in cand_netloc):
                         continue
+                    if cand_url in failed_urls or cand_netloc in failed_domains:
+                        continue
                     if ctx.extractor.is_domain_degraded(cand_netloc):
+                        failed_domains.add(cand_netloc)
                         continue
 
                     # DiscoveredArticle exposes publisher as `.source`, not `.source_name`.
@@ -137,6 +157,9 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
                         candidate_pub_date=cand_it.published_at,
                     )
                     if not ext_res.success or not ext_res.article:
+                        failed_urls.add(cand_url)
+                        if getattr(ext_res, "status_code", None) in (401, 403, 429) or "blocked" in str(getattr(ext_res, "error", "")).lower():
+                            failed_domains.add(cand_netloc)
                         continue
                     sec_art = ext_res.article
                     ctx.seen_urls.add(sec_art.url.lower().rstrip("/"))

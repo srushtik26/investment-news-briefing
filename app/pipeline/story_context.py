@@ -165,11 +165,13 @@ def build_story_context(
 
     # Materiality Score
     mat_score = 0.0
+    mat_reason = ""
     if hasattr(event, "metadata") and isinstance(event.metadata, dict) and "investment_materiality_score" in event.metadata:
         mat_score = float(event.metadata["investment_materiality_score"])
+        mat_reason = str(event.metadata.get("investment_materiality_reason", ""))
     elif eval_materiality:
         from app.verification.materiality import evaluate_investment_materiality
-        _, mat_score, _ = evaluate_investment_materiality(event, art, ctx=ctx)
+        _, mat_score, mat_reason = evaluate_investment_materiality(event, art, ctx=ctx)
 
     # India Nexus
     india_nexus = True
@@ -227,6 +229,7 @@ def build_story_context(
         event.metadata = {}
     event.metadata["__story_context__"] = sc
     event.metadata["investment_materiality_score"] = mat_score
+    event.metadata["investment_materiality_reason"] = mat_reason
     event.metadata["business_relevance_score"] = b_score
     event.metadata["topic_bucket"] = topic
     if region == NewsCategory.INDIA:

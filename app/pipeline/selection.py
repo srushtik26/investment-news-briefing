@@ -726,6 +726,23 @@ def run_ranking_and_selection(
 
     ref_date_ist = to_ist_date(ctx.run_reference_time)
 
+    from app.ranking.watchlist import get_portfolio_company_role
+    _pf_art_cache: Dict[str, Tuple[bool, str, str, bool]] = {}
+    def _is_pf_art(art):
+        if not art:
+            return False, "", "", False
+        if art.id not in _pf_art_cache:
+            _pf_art_cache[art.id] = get_portfolio_company_role(art.title)
+        return _pf_art_cache[art.id]
+
+    _pf_ev_cache: Dict[str, Tuple[bool, str, str, bool]] = {}
+    def _is_pf_ev(ev):
+        if not ev:
+            return False, "", "", False
+        if ev.id not in _pf_ev_cache:
+            _pf_ev_cache[ev.id] = get_portfolio_company_role(ev.canonical_title)
+        return _pf_ev_cache[ev.id]
+
     def _ladder_order(scored_event):
         event = scored_event.event
         article = ctx.articles_lookup.get(event.article_ids[0]) if event.article_ids else None
@@ -1126,10 +1143,12 @@ def run_ranking_and_selection(
     # -------------------------------------------------------------
     # INDIA TODAY-FIRST SELECTION (PORTFOLIO-FIRST, NOT PORTFOLIO-ONLY)
     # -------------------------------------------------------------
+    global_seen_portfolio_companies: Dict[str, str] = {}
+
     def _india_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         from app.ranking.watchlist import get_portfolio_company_role, format_portfolio_role_log
         seen_comps: Set[str] = set()
-        seen_portfolio_companies: Dict[str, str] = {}
+        seen_portfolio_companies: Dict[str, str] = global_seen_portfolio_companies
         for ex in existing:
             ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
             ex_text = f"{ex.event.canonical_title} {ex.event.description or ''} {' '.join(ex.event.companies_involved or [])}"
@@ -1150,10 +1169,37 @@ def run_ranking_and_selection(
         rejected_india_event_ids: Set[str] = set()
         reg_classifier = _get_reg_classifier()
 
+        def _log_stage7_reject(ev: Event, reason: str, reg_result: str = "FAIL"):
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
+                ev.canonical_title, cand_art.content_text if cand_art else ""
+            )
+            sc = getattr(ev, "metadata", {}).get("__story_context__") if getattr(ev, "metadata", None) else None
+            if sc:
+                m_score = sc.materiality_score
+                is_nexus = sc.india_nexus
+            else:
+                m_score = (ev.metadata or {}).get("investment_materiality_score", 0.0)
+                is_nexus = (ev.metadata or {}).get("india_nexus_verified", True)
+
+            rej_log = (
+                f"INDIA_STAGE7_REJECT\n"
+                f"event_id={ev.id}\n"
+                f'headline="{ev.canonical_title}"\n'
+                f"portfolio_match={pf_comp if is_pf else False}\n"
+                f"india_nexus={is_nexus}\n"
+                f"materiality_score={m_score:.1f}\n"
+                f"region_result={reg_result}\n"
+                f'reject_reason="{reason}"'
+            )
+            ctx.log_exec(rej_log)
+            logger.info(rej_log)
+
         for scored in cands:
             ev = scored.event
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
+                _log_stage7_reject(ev, "MISSING_PRIMARY_ARTICLE", "FAIL")
                 continue
 
             if cand_art:
@@ -1180,6 +1226,7 @@ def run_ranking_and_selection(
                 if is_noise:
                     india_rejected_count[0] += 1
                     rejected_india_event_ids.add(ev.id)
+                    _log_stage7_reject(ev, noise_reason, "FAIL")
                     ctx.log_exec(
                         f"REGION_REJECTED:\n"
                         f'headline="{ev.canonical_title}"\n'
@@ -1194,6 +1241,7 @@ def run_ranking_and_selection(
                         india_rejected_count[0] += 1
                         rejected_india_event_ids.add(ev.id)
                         rej_reason = st_res.rejection_reason or "Domestic-routed article lacks business event indicators"
+                        _log_stage7_reject(ev, rej_reason, "FAIL")
                         ctx.log_exec(
                             f"REGION_REJECTED:\n"
                             f'headline="{ev.canonical_title}"\n'
@@ -1207,12 +1255,13 @@ def run_ranking_and_selection(
             if mat_score is None:
                 from app.verification.materiality import evaluate_investment_materiality
                 mat_res = evaluate_investment_materiality(ev, cand_art, ctx=ctx)
-                mat_score = mat_res.score
+                mat_score = mat_res[1] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "score", 0.0)
                 if ev.metadata is None:
                     ev.metadata = {}
                 ev.metadata["investment_materiality_score"] = mat_score
 
             if mat_score < 60.0:
+                _log_stage7_reject(ev, f"MATERIALITY_BELOW_60 (score={mat_score:.1f})", "PASS")
                 rej_msg = (
                     f"[INDIA_MATERIALITY_REJECT]\n"
                     f'title="{ev.canonical_title}"\n'
@@ -1233,6 +1282,7 @@ def run_ranking_and_selection(
             if not is_reg_valid:
                 india_rejected_count[0] += 1
                 rejected_india_event_ids.add(ev.id)
+                _log_stage7_reject(ev, reg_reason, "FAIL")
                 ctx.log_exec(
                     f"REGION_REJECTED:\n"
                     f'headline="{ev.canonical_title}"\n'
@@ -1262,6 +1312,7 @@ def run_ranking_and_selection(
             if not is_nexus:
                 india_rejected_count[0] += 1
                 rejected_india_event_ids.add(ev.id)
+                _log_stage7_reject(ev, nexus_reason, "FAIL")
                 ctx.log_exec(
                     f"INDIA_NEXUS_REJECT:\n"
                     f'title="{ev.canonical_title}"\n'
@@ -1312,11 +1363,13 @@ def run_ranking_and_selection(
                     is_dup = True
                     break
             if is_dup:
+                _log_stage7_reject(ev, "EVENT_DEDUPLICATION_COLLISION", "PASS")
                 continue
 
             # Diversity Rule: MAX_PORTFOLIO_STORIES_PER_COMPANY = 1
             if pf_company in seen_portfolio_companies:
                 kept_title = seen_portfolio_companies[pf_company]
+                _log_stage7_reject(ev, f"PORTFOLIO_DIVERSITY_SKIP (max 1 per company, kept: '{kept_title}')", "PASS")
                 ctx.log_exec(
                     f"[PORTFOLIO_DIVERSITY_SKIP]\n"
                     f'company="{pf_company}"\n'
@@ -1333,7 +1386,9 @@ def run_ranking_and_selection(
             )
             norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
             if norm_comps and norm_comps.intersection(seen_comps):
-                continue
+                if len(portfolio_cands) + len(general_cands) > target_count:
+                    _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_comps)})", "PASS")
+                    continue
 
             if india_rejected_count[0] > 0:
                 ctx.log_exec(
@@ -1381,6 +1436,7 @@ def run_ranking_and_selection(
                     continue
                 cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 if not cand_art:
+                    _log_stage7_reject(ev, "MISSING_PRIMARY_ARTICLE", "FAIL")
                     continue
 
                 is_dup = False
@@ -1390,6 +1446,7 @@ def run_ranking_and_selection(
                         is_dup = True
                         break
                 if is_dup:
+                    _log_stage7_reject(ev, "EVENT_DEDUPLICATION_COLLISION", "PASS")
                     continue
 
                 extracted_entities = EventQueryBuilder.extract_entities(cand_art, event=ev) if cand_art else []
@@ -1399,7 +1456,9 @@ def run_ranking_and_selection(
                 )
                 norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
                 if norm_comps and norm_comps.intersection(seen_comps):
-                    continue
+                    if len(filtered_general) + (len(general_cands) - general_cands.index(scored) - 1) >= needed_slots:
+                        _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_comps)})", "PASS")
+                        continue
 
                 filtered_general.append(scored)
 
@@ -1416,7 +1475,19 @@ def run_ranking_and_selection(
                 max_per_publisher=2,
             )
 
-            for g_scored in pub_div_general[:needed_slots]:
+            final_general_picks = list(pub_div_general[:needed_slots])
+            if len(final_general_picks) < needed_slots:
+                for fg in filtered_general:
+                    if fg not in final_general_picks:
+                        final_general_picks.append(fg)
+                        if len(final_general_picks) == needed_slots:
+                            break
+
+            for fg in filtered_general:
+                if fg not in final_general_picks:
+                    _log_stage7_reject(fg.event, "DIVERSITY_TRIMMED_OR_EXCEEDED_TARGET_SLOTS", "PASS")
+
+            for g_scored in final_general_picks:
                 g_ev = g_scored.event
                 if india_rejected_count[0] > 0:
                     ctx.log_exec(
@@ -1508,68 +1579,92 @@ def run_ranking_and_selection(
                 india_recovery_rejected_ids.add(ev.id)
                 ctx.log_exec(f"INDIA_NEXUS_REJECT (recovery): title=\"{ev.canonical_title}\" reason=\"{nexus_reason}\"")
                 return False
+            # Portfolio canonical company diversity check: max 1 per canonical company
+            from app.ranking.watchlist import get_portfolio_company_role
+            is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
+                ev.canonical_title, cand_art.content_text if cand_art else ""
+            )
+            if is_pf and pf_elig and pf_comp in global_seen_portfolio_companies:
+                india_recovery_rejected_ids.add(ev.id)
+                return False
             return True
 
-        # --- Step 1: Use remaining qualified India reserves from memory ---
-        all_mem_events = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
-        mem_reserve = [ev for ev in all_mem_events if _india_recovery_candidate_ok(ev)]
-        ctx.log_exec(f"INDIA_RESERVE_COUNT={len(mem_reserve)} (qualified in-memory reserve after gates)")
-        logger.info("INDIA_RESERVE_COUNT=%d", len(mem_reserve))
-
-        for ev in mem_reserve:
+        def _try_add_recovery_candidate(ev: Event, step_name: str) -> bool:
+            nonlocal needed
             if needed <= 0:
-                break
+                return False
+            if not _india_recovery_candidate_ok(ev):
+                return False
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
-            mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
+            mat_s = mat_res.score if hasattr(mat_res, "score") else (mat_res[1] if isinstance(mat_res, (tuple, list)) else 0.0)
             scored = ScoredEvent(
                 event=ev,
                 score_breakdown=ScoreBreakdown(
                     financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
                     corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
-                    editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale=f"india_recovery_{step_name}",
                 ),
                 investment_score=mat_s,
                 rank=len(india_final) + 1,
             )
             india_final.append(scored)
             india_recovery_selected_ids.add(ev.id)
+            from app.ranking.watchlist import get_portfolio_company_role
+            is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
+                ev.canonical_title, cand_art.content_text if cand_art else ""
+            )
+            if is_pf and pf_elig and pf_comp:
+                global_seen_portfolio_companies[pf_comp] = ev.canonical_title
             needed -= 1
-            ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (mem): title=\"{ev.canonical_title}\" mat={mat_s:.1f}")
-            logger.info("INDIA_RECOVERY_ACCEPTED: title=\"%s\" mat=%.1f", ev.canonical_title, mat_s)
+            ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED ({step_name}): title=\"{ev.canonical_title}\" mat={mat_s:.1f}")
+            logger.info("INDIA_RECOVERY_ACCEPTED (%s): title=\"%s\" mat=%.1f", step_name, ev.canonical_title, mat_s)
+            return True
 
-        # --- Step 2: Deferred candidates at extended horizons ---
-        for horizon in [36.0, 48.0, 72.0]:
-            if needed <= 0:
-                break
-            reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon, ctx)
-            deferred_cands = [
-                ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
-                if _india_recovery_candidate_ok(ev)
-            ]
-            for ev in deferred_cands:
+        # Recovery Order (Bug 5):
+        all_mem_events = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+
+        # 1. Remaining qualified India reserves
+        india_reserves = [
+            ev for ev in (getattr(ctx, "india_reserve_pool", []) or [])
+            if isinstance(ev, Event) and ev.event_category == NewsCategory.INDIA
+        ]
+        for ev in india_reserves:
+            _try_add_recovery_candidate(ev, "india_reserves")
+
+        # 2. Previously post-dedup India candidates that were not selected
+        for ev in accepted_events:
+            if ev.event_category == NewsCategory.INDIA and ev.id not in india_recovery_selected_ids:
+                _try_add_recovery_candidate(ev, "post_dedup_unselected")
+
+        # 3. Qualified portfolio reserves
+        portfolio_reserves = [
+            ev for ev in (getattr(ctx, "portfolio_discovered_candidates", []) or [])
+            if isinstance(ev, Event) and ev.event_category == NewsCategory.INDIA
+        ] + [
+            ev for ev in all_mem_events
+            if _is_pf_ev(ev)[0] and ev.event_category == NewsCategory.INDIA
+        ]
+        for ev in portfolio_reserves:
+            _try_add_recovery_candidate(ev, "portfolio_reserves")
+
+        # 4. Broader verified India candidate pool (in-memory + deferred horizons)
+        for ev in all_mem_events:
+            _try_add_recovery_candidate(ev, "verified_pool")
+
+        if needed > 0:
+            for horizon in [36.0, 48.0, 72.0]:
                 if needed <= 0:
                     break
-                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
-                mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
-                scored = ScoredEvent(
-                    event=ev,
-                    score_breakdown=ScoreBreakdown(
-                        financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
-                        corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
-                        editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
-                    ),
-                    investment_score=mat_s,
-                    rank=len(india_final) + 1,
-                )
-                india_final.append(scored)
-                india_recovery_selected_ids.add(ev.id)
-                needed -= 1
-                ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (deferred {int(horizon)}h): title=\"{ev.canonical_title}\"")
-                logger.info("INDIA_RECOVERY_ACCEPTED: title=\"%s\" horizon=%.0fh", ev.canonical_title, horizon)
+                reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon, ctx)
+                deferred_cands = [
+                    ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                    if ev.id not in india_recovery_selected_ids
+                ]
+                for ev in deferred_cands:
+                    _try_add_recovery_candidate(ev, f"deferred_{int(horizon)}h")
 
-        # --- Step 3: Targeted India-only RSS discovery (bounded) ---
+        # 5. Bounded India-only recovery discovery
         if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
             rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rem_budget > 0:
@@ -1600,29 +1695,12 @@ def run_ranking_and_selection(
                             process_candidate_item(it, "india", ctx)
                             new_cands = [
                                 ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
-                                if _india_recovery_candidate_ok(ev)
+                                if ev.id not in india_recovery_selected_ids
                             ]
                             for ev in new_cands:
+                                _try_add_recovery_candidate(ev, "rss_discovery")
                                 if needed <= 0:
                                     break
-                                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                                mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
-                                mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
-                                scored = ScoredEvent(
-                                    event=ev,
-                                    score_breakdown=ScoreBreakdown(
-                                        financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
-                                        corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
-                                        editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
-                                    ),
-                                    investment_score=mat_s,
-                                    rank=len(india_final) + 1,
-                                )
-                                india_final.append(scored)
-                                india_recovery_selected_ids.add(ev.id)
-                                needed -= 1
-                                ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (rss): title=\"{ev.canonical_title}\"")
-                                logger.info("INDIA_RECOVERY_ACCEPTED (rss): title=\"%s\"", ev.canonical_title)
                         if needed <= 0:
                             break
 
@@ -1787,10 +1865,76 @@ def run_ranking_and_selection(
     pf_hcss_pass = min(pf_india_routed, pf_hcss_count)
 
     # 6. Materiality pass (monotonic: <= hcss_pass, requires score >= 60 AND subject-aware eligible_for_priority)
+    from app.verification.materiality import evaluate_investment_materiality as _eval_mat_pf
+    from app.classification.region_classifier import verify_india_business_nexus as _verify_nex_pf
+    from app.pipeline.story_context import build_story_context as _build_sc_pf
+
+    selected_india_ids = {s.event.id for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])}
+    audited_pf_event_ids = set()
+    all_potential_pf_events = [ev for ev in all_events if _is_pf_ev(ev)[0]]
+    for cand in (getattr(ctx, "portfolio_discovered_candidates", []) or []):
+        cand_ev = cand.event if hasattr(cand, "event") else cand
+        if isinstance(cand_ev, Event) and cand_ev not in all_potential_pf_events:
+            all_potential_pf_events.append(cand_ev)
+
+    for ev in all_potential_pf_events:
+        if ev.id in audited_pf_event_ids:
+            continue
+        audited_pf_event_ids.add(ev.id)
+        cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+
+        sc = getattr(ev, "metadata", {}).get("__story_context__") if getattr(ev, "metadata", None) else None
+        if not sc:
+            sc = _build_sc_pf(ev, cand_art, ctx=ctx)
+
+        mat_score = sc.materiality_score if sc else (ev.metadata or {}).get("investment_materiality_score", 0.0)
+        mat_reason = (ev.metadata or {}).get("investment_materiality_reason", "")
+        if mat_score == 0.0 and cand_art:
+            mat_res = _eval_mat_pf(ev, cand_art, ctx=ctx)
+            mat_score = mat_res[1] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "score", 0.0)
+            mat_reason = mat_res[2] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "summary_reason", "")
+            if ev.metadata is None:
+                ev.metadata = {}
+            ev.metadata["investment_materiality_score"] = mat_score
+            ev.metadata["investment_materiality_reason"] = mat_reason
+
+        is_nexus, nex_reason = _verify_nex_pf(ev, cand_art)
+        is_pf, pf_comp, pf_role, pf_elig = get_portfolio_company_role(
+            ev.canonical_title, cand_art.content_text if cand_art else ""
+        )
+
+        tier_str = ev.verification_tier.value if hasattr(ev.verification_tier, "value") else str(ev.verification_tier)
+        reg_str = ev.event_category.value if hasattr(ev.event_category, "value") else str(ev.event_category)
+
+        if ev.id in selected_india_ids:
+            final_status = "SELECTED"
+        elif not is_nexus:
+            final_status = f"REJECTED_NEXUS ({nex_reason})"
+        elif mat_score < 60.0:
+            final_status = f"REJECTED_MATERIALITY ({mat_score:.1f} < 60.0)"
+        elif not pf_elig:
+            final_status = f"REJECTED_ROLE ({pf_role})"
+        else:
+            final_status = "QUALIFIED_RESERVE"
+
+        audit_log = (
+            f"PORTFOLIO_CANDIDATE_AUDIT\n"
+            f"company={pf_comp}\n"
+            f'headline="{ev.canonical_title}"\n'
+            f"region={reg_str}\n"
+            f"india_nexus={is_nexus}\n"
+            f"materiality_score={mat_score:.1f}\n"
+            f'materiality_reason="{mat_reason}"\n'
+            f"verification_tier={tier_str}\n"
+            f"final_status={final_status}"
+        )
+        ctx.log_exec(audit_log)
+        logger.info(audit_log)
+
     pf_mat_count = sum(
         1 for ev in all_events
         if ev.event_category == NewsCategory.INDIA
-        and _is_pf_ev(ev)[3]
+        and _is_pf_ev(ev)[0]
         and (ev.metadata or {}).get("investment_materiality_score", 0.0) >= 60.0
     )
     pf_materiality_pass = min(pf_hcss_pass, pf_mat_count)
@@ -1799,7 +1943,7 @@ def run_ranking_and_selection(
     pf_dedup_count = sum(
         1 for s in (accepted_stories or [])
         if (s.get("category").value if hasattr(s.get("category"), "value") else str(s.get("category")).lower()) == "india"
-        and get_portfolio_company_role(s.get("headline", ""))[3]
+        and get_portfolio_company_role(s.get("headline", ""))[0]
         and (event_by_id.get(s.get("event_id")) and (event_by_id.get(s.get("event_id")).metadata or {}).get("investment_materiality_score", 0.0) >= 60.0)
     )
     pf_dedup_pass = min(pf_materiality_pass, pf_dedup_count)
@@ -1807,7 +1951,7 @@ def run_ranking_and_selection(
     # 8. Final candidates selected in India 5 (monotonic: <= dedup_pass)
     pf_final_count = sum(
         1 for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])
-        if _is_pf_ev(s.event)[3]
+        if _is_pf_ev(s.event)[0]
         and (s.event.metadata or {}).get("investment_materiality_score", 0.0) >= 60.0
     )
     pf_final_candidates = min(pf_dedup_pass, pf_final_count)
@@ -1831,6 +1975,8 @@ def run_ranking_and_selection(
     # -------------------------------------------------------------
     from app.verification.international import is_geopolitical_market_impact_eligible
 
+    rejected_intl_event_ids: Set[str] = set()
+
     def _intl_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         filtered = []
         intl_rejected_count = [0]
@@ -1839,6 +1985,7 @@ def run_ranking_and_selection(
             ev = scored.event
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
+                rejected_intl_event_ids.add(ev.id)
                 continue
 
             # Region verification
@@ -1847,6 +1994,7 @@ def run_ranking_and_selection(
             )
             if not is_reg_valid:
                 intl_rejected_count[0] += 1
+                rejected_intl_event_ids.add(ev.id)
                 ctx.log_exec(
                     f"REGION_REJECTED:\n"
                     f'headline="{ev.canonical_title}"\n'
@@ -1869,6 +2017,17 @@ def run_ranking_and_selection(
                         ev.canonical_title,
                         reg_reason,
                     )
+
+                from app.classification.region_classifier import verify_india_business_nexus as _v_nex
+                is_nex, _ = _v_nex(ev, cand_art)
+                if is_nex or "india" in str(reg_reason).lower():
+                    ev.event_category = NewsCategory.INDIA
+                    if not hasattr(ctx, "india_reserve_pool") or ctx.india_reserve_pool is None:
+                        ctx.india_reserve_pool = []
+                    if ev not in ctx.india_reserve_pool:
+                        ctx.india_reserve_pool.append(ev)
+                    ctx.log_exec(f"[INTERNATIONAL_TO_INDIA_ROUTE] Preserved India-subject story '{ev.canonical_title}' into India reserve pool")
+
                 continue
 
             # ----------------------------------------------------------------
@@ -1878,6 +2037,7 @@ def run_ranking_and_selection(
             is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(ev, cand_art)
             if not is_geo_elig:
                 intl_rejected_count[0] += 1
+                rejected_intl_event_ids.add(ev.id)
                 ctx.log_exec(
                     f"REGION_REJECTED:\n"
                     f'headline="{ev.canonical_title}"\n'
@@ -1996,6 +2156,204 @@ def run_ranking_and_selection(
     for rank, scored in enumerate(intl_final, 1):
         scored.rank = rank
     candidate_pool.international_candidates = intl_final
+
+    # -------------------------------------------------------------
+    # BUG 4: FINAL REGION ROUTING AUDIT & INVERSE PROTECTION
+    # -------------------------------------------------------------
+    from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus_final
+    from app.verification.materiality import evaluate_investment_materiality as _eval_materiality_final
+    reg_classifier_final = _get_reg_classifier()
+
+    # 1. Audit India stories with verify_india_business_nexus()
+    india_audited: List[ScoredEvent] = []
+    for s in (candidate_pool.india_candidates or []):
+        ev = s.event
+        cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+        is_nexus, nex_reason = _verify_nexus_final(ev, cand_art)
+        if not is_nexus:
+            audit_log = (
+                f"REGION_FINAL_AUDIT\n"
+                f"event_id={ev.id}\n"
+                f'headline="{ev.canonical_title}"\n'
+                f"assigned_region=INDIA\n"
+                f"detected_region=INTERNATIONAL\n"
+                f'reason="{nex_reason}"'
+            )
+            ctx.log_exec(audit_log)
+            logger.info(audit_log)
+        else:
+            audit_log = (
+                f"REGION_FINAL_AUDIT\n"
+                f"event_id={ev.id}\n"
+                f'headline="{ev.canonical_title}"\n'
+                f"assigned_region=INDIA\n"
+                f"detected_region=INDIA\n"
+                f'reason="{nex_reason}"'
+            )
+            ctx.log_exec(audit_log)
+            logger.info(audit_log)
+            india_audited.append(s)
+
+    # 2. Audit International stories with inverse protection
+    intl_audited: List[ScoredEvent] = []
+    intl_misclassified_to_india: List[ScoredEvent] = []
+    for s in (candidate_pool.international_candidates or []):
+        ev = s.event
+        cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+        is_nexus, nex_reason = _verify_nexus_final(ev, cand_art)
+
+        full_text = f"{ev.canonical_title} {cand_art.content_text[:500] if cand_art else ''}"
+        detected_cat, cat_reason = reg_classifier_final.classify_with_reason(full_text)
+
+        is_actually_india = (is_nexus and (
+            detected_cat == NewsCategory.INDIA
+            or any(kw in full_text.lower() for kw in ["nse", "bse", "national stock exchange", "bombay stock exchange", "sebi", "rbi", "drhp", "ipo in india"])
+        ))
+
+        if is_actually_india:
+            audit_log = (
+                f"REGION_FINAL_AUDIT\n"
+                f"event_id={ev.id}\n"
+                f'headline="{ev.canonical_title}"\n'
+                f"assigned_region=INTERNATIONAL\n"
+                f"detected_region=INDIA\n"
+                f'reason="Primary subject or event geography is India ({cat_reason})"'
+            )
+            ctx.log_exec(audit_log)
+            logger.info(audit_log)
+            ev.event_category = NewsCategory.INDIA
+            intl_misclassified_to_india.append(s)
+        else:
+            audit_log = (
+                f"REGION_FINAL_AUDIT\n"
+                f"event_id={ev.id}\n"
+                f'headline="{ev.canonical_title}"\n'
+                f"assigned_region=INTERNATIONAL\n"
+                f"detected_region=INTERNATIONAL\n"
+                f'reason="Genuinely international subject and event geography"'
+            )
+            ctx.log_exec(audit_log)
+            logger.info(audit_log)
+            intl_audited.append(s)
+
+    # Move misclassified international stories to India (avoiding duplicate event IDs)
+    india_current_ids = {s.event.id for s in india_audited}
+    for s in intl_misclassified_to_india:
+        if s.event.id not in india_current_ids:
+            india_audited.append(s)
+            india_current_ids.add(s.event.id)
+
+    # Refill India if below 5 from India reserves
+    if len(india_audited) < 5:
+        india_reserves = [
+            ev for ev in (getattr(ctx, "india_reserve_pool", []) or [])
+            if isinstance(ev, Event) and ev.event_category == NewsCategory.INDIA
+        ] + [
+            cand.event if hasattr(cand, "event") else cand for cand in (getattr(ctx, "portfolio_discovered_candidates", []) or [])
+        ] + [
+            ev for ev in (list(ctx.verified_events) + list(ctx.high_confidence_single_candidates))
+            if isinstance(ev, Event) and ev.event_category == NewsCategory.INDIA
+        ]
+
+        for ev in india_reserves:
+            if len(india_audited) >= 5:
+                break
+            if not isinstance(ev, Event) or ev.id in india_current_ids or ev.event_category != NewsCategory.INDIA:
+                continue
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            from app.ranking.watchlist import get_portfolio_company_role
+            is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
+                ev.canonical_title, cand_art.content_text if cand_art else ""
+            )
+            if is_pf and pf_elig and pf_comp in global_seen_portfolio_companies:
+                continue
+            is_nex, _ = _verify_nexus_final(ev, cand_art)
+            if not is_nex:
+                continue
+            mat_res = _eval_materiality_final(ev, cand_art, ctx=ctx)
+            m_score = mat_res[1] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "score", 0.0)
+            if m_score < 60.0:
+                continue
+
+            is_dup = False
+            for ex in india_audited:
+                ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                    is_dup = True
+                    break
+            if is_dup:
+                continue
+
+            scored = ScoredEvent(
+                event=ev,
+                score_breakdown=ScoreBreakdown(
+                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=m_score, rationale="final_region_audit_refill",
+                ),
+                investment_score=m_score,
+                rank=len(india_audited) + 1,
+            )
+            india_audited.append(scored)
+            india_current_ids.add(ev.id)
+            if is_pf and pf_elig and pf_comp:
+                global_seen_portfolio_companies[pf_comp] = ev.canonical_title
+            ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '{ev.canonical_title}'")
+
+    # Refill International if vacated / moved stories left it below 5
+    if intl_misclassified_to_india and len(intl_audited) < 5:
+        intl_current_ids = {s.event.id for s in intl_audited}.union(india_current_ids).union(rejected_intl_event_ids)
+        intl_reserves = [
+            s for s in (intl_older or []) if s.event.id not in intl_current_ids
+        ] + [
+            ev for ev in list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+            if isinstance(ev, Event) and ev.id not in intl_current_ids and ev.event_category == NewsCategory.INTERNATIONAL
+        ]
+        reg_classifier_final = _get_reg_classifier()
+        for item in intl_reserves:
+            if len(intl_audited) >= 5:
+                break
+            ev = item.event if hasattr(item, "event") else item
+            if not isinstance(ev, Event) or ev.id in intl_current_ids or ev.id in rejected_intl_event_ids:
+                continue
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            is_nex, _ = _verify_nexus_final(ev, cand_art)
+            if is_nex:
+                continue
+            is_reg_valid, _ = reg_classifier_final.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INTERNATIONAL
+            )
+            if not is_reg_valid:
+                continue
+            is_geo_elig, _ = is_geopolitical_market_impact_eligible(ev, cand_art)
+            if not is_geo_elig:
+                continue
+            scored = item if isinstance(item, ScoredEvent) else ScoredEvent(
+                event=ev,
+                score_breakdown=ScoreBreakdown(
+                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=70.0, rationale="final_region_audit_refill",
+                ),
+                investment_score=70.0,
+                rank=len(intl_audited) + 1,
+            )
+            intl_audited.append(scored)
+            intl_current_ids.add(ev.id)
+            ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INTERNATIONAL: '{ev.canonical_title}'")
+
+    if len(india_audited) > 5:
+        india_audited = india_audited[:5]
+    if len(intl_audited) > 5:
+        intl_audited = intl_audited[:5]
+
+    for rank, scored in enumerate(india_audited, 1):
+        scored.rank = rank
+    for rank, scored in enumerate(intl_audited, 1):
+        scored.rank = rank
+
+    candidate_pool.india_candidates = india_audited
+    candidate_pool.international_candidates = intl_audited
 
     # Audit Topic Distribution for India and International
     audit_topic_distribution(candidate_pool.india_candidates, "INDIA")
