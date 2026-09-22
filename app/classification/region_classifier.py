@@ -59,6 +59,7 @@ class EventRegionClassifier:
         r"\b(sun pharma|dr reddy|dr\. reddy|cipla|lupin|aurobindo|divi's|zydus|mankind pharma|biocon|apollo hospitals)\b",
         r"\b(manipal|manipal health|manipal hospitals|max healthcare|fortis|narayana hrudayalaya|medanta|tynor|tynor orthotics|fluence pharma)\b",
         r"\b(zomato|swiggy|paytm|phonepe|zepto|blinkit|shiprocket|nykaa|ola|ola electric|oyo|byju's|delhivery|meesho|mamaearth|honasa|honasa consumer|lenskart|cred|urban company)\b",
+        r"\b(bharti airtel|airtel|vodafone idea|vi\s+telecom|bsnl|mtnl)\b",
         r"\b(welspun|welspun corp|inorbit|inorbit malls|prozone|prozone malls|kedaara|kedaara capital|c2i|c2i semiconductors|airtel payments bank|ardee|ardee industries|ardee infrastructure)\b",
         r"\b\w+\s+(?:of\s+india|india\s+ltd|india\s+limited)\b",
     ]
@@ -131,7 +132,7 @@ class EventRegionClassifier:
     ]
 
     GENERIC_INDIAN_PRINCIPAL_PATTERNS: List[str] = [
-        r"\b(?:indian\s+(?:company|companies|firm|firms|group|groups|conglomerate|conglomerates|startup|startups|corp|corporation|corporations|bank|banks|lender|lenders|major|majors|player|players|it\s+major|operator|operators|entity|entities|pharma\s+(?:company|firm)|tech\s+(?:company|firm)|refiner|refiners|carmaker|carmakers|automaker|automakers))\b",
+        r"\b(?:india|indian)\s+(?:company|companies|firm|firms|group|groups|conglomerate|conglomerates|startup|startups|corp|corporation|corporations|bank|banks|lender|lenders|major|majors|player|players|it\s+major|operator|operators|entity|entities|pharma\s+(?:company|firm)|tech\s+(?:company|firm)|refiner|refiners|carmaker|carmakers|automaker|automakers)\b",
         r"\b(?:india-based|indian-origin|indian-owned)\b",
     ]
 
@@ -229,6 +230,220 @@ class EventRegionClassifier:
         )
         return bool(has_action)
 
+    def verify_india_business_nexus(
+        self,
+        event: Event,
+        article: Optional[Article] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Canonical deterministic India business nexus check.
+
+        Accepts a story for the India section ONLY when at least ONE strong
+        India signal is present (categories A–F below).
+
+        Rejects with INDIA_NEXUS_REJECT when:
+          - The primary entity is foreign
+          - AND the event geography is foreign
+          - AND no meaningful Indian business impact exists
+
+        Keeps materiality SEPARATE from region eligibility:
+        a high-materiality foreign story still fails this check.
+
+        Signal categories accepted:
+          A. Company/entity is Indian or India-listed (named entity OR generic Indian principal)
+          B. Source explicitly states India as operating/transaction/regulatory geography
+          C. BSE / NSE / SEBI / RBI / Indian ministry / Indian court / regulator materially involved
+          D. Transaction involves Indian assets, company, or subsidiary
+          E. Financial results belong to an Indian company
+          F. Multinational story with quantified or concrete India business impact
+
+        Reject conditions (INDIA_NEXUS_REJECT):
+          - Foreign company + foreign geography + no meaningful Indian business impact
+          - India appears only incidentally (one-word mention, generic "global/Asia" context)
+          - US/Europe/China macro story with no Indian relevance
+        """
+        if not event:
+            return False, "INDIA_NEXUS_REJECT: no event provided"
+
+        title_text = f"{event.canonical_title or ''} {article.title if article else ''}".lower().strip()
+        body_text = (article.content_text or "")[:4000].lower() if article else ""
+        desc_text = (event.description or "").lower()
+        companies_text = " ".join(event.companies_involved or []).lower()
+        context_text = f"{title_text} {body_text} {desc_text} {companies_text}"
+
+        # ----------------------------------------------------------------
+        # SIGNAL A: Named Indian entity or generic Indian principal in title/companies
+        # ----------------------------------------------------------------
+        try:
+            from app.ranking.watchlist import is_watchlist_company
+            is_watchlist = is_watchlist_company(context_text)[0]
+        except Exception:
+            is_watchlist = False
+
+        has_named_indian_entity = any(re.search(pat, title_text) for pat in self.INDIAN_ENTITIES) or \
+                                   any(re.search(pat, companies_text) for pat in self.INDIAN_ENTITIES) or \
+                                   is_watchlist
+        has_generic_indian_principal = any(re.search(pat, context_text) for pat in self.GENERIC_INDIAN_PRINCIPAL_PATTERNS)
+        # Also check for Indian principal acting abroad (Indian co acquiring/investing overseas)
+        has_indian_principal_abroad = self.is_indian_principal_acting_abroad(
+            title_text,
+            companies=event.companies_involved if event else None,
+            content=body_text,
+        )
+        signal_a = has_named_indian_entity or has_generic_indian_principal or has_indian_principal_abroad
+
+        # ----------------------------------------------------------------
+        # SIGNAL B: India as operating/transaction/regulatory geography
+        # (requires material mention — not just the word "India" incidentally)
+        # ----------------------------------------------------------------
+        has_foreign_geo = any(re.search(pat, title_text) for pat in self.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
+        has_intl_entity_title = any(re.search(pat, title_text) for pat in self.INTERNATIONAL_ENTITIES)
+        has_intl_entity_companies = any(re.search(pat, companies_text) for pat in self.INTERNATIONAL_ENTITIES)
+        has_intl_entity = has_intl_entity_title or has_intl_entity_companies
+
+        india_material_patterns = [
+            r"\bindia(?:'s)?\s+(?:operations?|business|market|subsidiary|unit|arm|division|revenue|capex|sales|manufacturing|plant|facility|presence|office|headquarters|acquisition|investment|deal|regulatory|banking)\b",
+            r"\b(?:in|into|within|across|for)\s+india\b",
+            r"\bindia-(?:based|focused|listed|domiciled|incorporated|specific|facing)\b",
+            r"\bindian\s+(?:market|operations?|business|subsidiary|unit|assets?|customers?|revenue|regulator|law|court|entity|company|companies|bank|lender|borrower|investor|promoter|partner|manufacturing|plant)\b",
+            r"\b(?:listed|incorporated|domiciled|registered|headquartered)\s+in\s+india\b",
+            r"\bindia\s+(?:acquisition|merger|stake|investment|capex|plant|facility|deal|joint venture|jv)\b",
+        ]
+        has_indian_geo = any(re.search(pat, context_text) for pat in self.INDIAN_STATES_AND_CITIES)
+        has_biz_infrastructure = bool(re.search(
+            r"\b(?:plant|facility|factory|foundry|project|order|contract|operations?|business|presence|office|headquarters|unit|capex|investment|hub|port|rail|refinery|terminal|mine)\b",
+            context_text, re.IGNORECASE
+        ))
+        signal_b = any(re.search(pat, context_text) for pat in india_material_patterns) or \
+                   (has_indian_geo and has_biz_infrastructure and not (has_foreign_geo and has_intl_entity))
+
+        # ----------------------------------------------------------------
+        # SIGNAL C: BSE / NSE / SEBI / RBI / Indian regulatory body materially involved
+        # ----------------------------------------------------------------
+        signal_c = any(re.search(pat, context_text) for pat in self.INDIAN_REGULATORY_AND_POLICY) or \
+                   any(re.search(pat, context_text) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
+
+        # ----------------------------------------------------------------
+        # SIGNAL D: Transaction involves Indian assets / company / subsidiary
+        # ----------------------------------------------------------------
+        has_indian_currency = any(re.search(pat, context_text) for pat in self.INDIAN_CURRENCY_AND_UNITS)
+        has_corp_action = bool(re.search(
+            r"\b(?:secures?|bags?|wins?|awarded|signs?|order|orders|contract|contracts|deal|deals|"
+            r"capex|investment|invests?|invested|expansion|facility|plant|foundry|network|partnership|"
+            r"acquisition|acquires?|acquired|merger|to buy|buyout|stake|funding|raises?|drhp|ipo|concession)\b",
+            context_text, re.IGNORECASE
+        ))
+        signal_d_currency = has_indian_currency and has_corp_action and not (has_foreign_geo and has_intl_entity)
+
+        india_transaction_patterns = [
+            r"\b(?:acquires?|acquired|buys?|bought|purchases?|purchased|merger with|merges? with|takeover of|invest(?:s|ed|ing)?\s+in)\s+(?:[\w\s&]+)?(?:india|indian|bse|nse)\b",
+            r"\b(?:india|indian)\s+(?:asset|assets|subsidiary|unit|arm|division|stake|shareholding|equity|plant|factory|property|land|portfolio)\b",
+            r"\b(?:sell(?:s|ing)?|divest(?:s|ing)?|exit(?:s|ing)?)\s+(?:[\w\s&]+)?(?:india|indian)\s+(?:asset|assets|business|unit|subsidiary|stake)\b",
+            r"\bstake\s+in\s+(?:[\w\s&]+)?(?:india|indian)\b",
+            r"\b(?:india|indian)\s+(?:jv|joint\s+venture|partnership)\b",
+        ]
+        signal_d = any(re.search(pat, context_text) for pat in india_transaction_patterns) or signal_d_currency
+
+        # ----------------------------------------------------------------
+        # SIGNAL E: Financial results of an Indian company
+        # ----------------------------------------------------------------
+        has_results_pattern = bool(re.search(
+            r"\b(?:q[1-4]\s+(?:fy\d{2,4}\s+)?(?:results?|profit|revenue|pat|earnings|net profit)|"
+            r"standalone\s+(?:net\s+profit|revenue|results?)|"
+            r"consolidated\s+(?:net\s+profit|revenue|results?)|"
+            r"quarterly\s+(?:results?|profit|revenue|earnings)|"
+            r"(?:profit|revenue|pat|ebitda)\s+(?:jumps?|surges?|rises?|falls?|drops?|up|down))\b",
+            context_text, re.IGNORECASE
+        ))
+        signal_e = (
+            (has_named_indian_entity or has_generic_indian_principal) and (has_results_pattern or has_indian_currency)
+        ) or (
+            has_results_pattern and has_indian_currency and not (has_foreign_geo and has_intl_entity)
+        )
+
+        # ----------------------------------------------------------------
+        # SIGNAL F: Multinational story with quantified/concrete India impact
+        # ----------------------------------------------------------------
+        india_quantified_patterns = [
+            r"\b(?:india|indian)\s+(?:revenue|sales|profit|capex|investment|orders?|contracts?|customers?)\s+(?:of|at|worth|totaling|amounting to)\s+(?:₹|rs\.?|inr|crore|lakh|\$|usd|\d)",
+            r"\b(?:₹|rs\.?|inr|crore|lakh)\s*\d[\d,\.]*\s*(?:crore|lakh|million|billion)?\s+(?:in|for|from|to)\s+india\b",
+            r"\b(?:india|indian)\s+(?:unit|arm|subsidiary)\s+(?:reports?|posts?|records?|logs?)\s+(?:₹|rs\.?|inr|\$)\b",
+            r"\bindia\s+(?:operations?|business)\s+(?:grew?|grew|declines?|declined|surged?|tumbled?)\b",
+        ]
+        signal_f = any(re.search(pat, context_text) for pat in india_quantified_patterns)
+
+        # ----------------------------------------------------------------
+        # CHECK FOR FOREIGN-ONLY STORY SIGNALS
+        # ----------------------------------------------------------------
+        # Incidental India mention check (the word "India" appears in context but ONLY once
+        # and without any of the strong signals A-F)
+        india_raw_count = len(re.findall(r"\bindia\b", context_text))
+        india_only_incidental = (india_raw_count <= 1) and not signal_a and not signal_b and not signal_c and not signal_d and not signal_e and not signal_f
+
+        # ----------------------------------------------------------------
+        # FOREIGN-LEAKAGE REJECTION: primary entity foreign + event foreign + no India impact
+        # ----------------------------------------------------------------
+        if has_foreign_geo and has_intl_entity and not signal_a and not signal_b and not signal_c and not signal_d and not signal_e and not signal_f:
+            reason = (
+                f"INDIA_NEXUS_REJECT: foreign entity + foreign geography detected, no meaningful India business impact. "
+                f"title='{event.canonical_title[:80]}'"
+            )
+            logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"foreign entity + foreign geography, no India impact\"",
+                        event.canonical_title[:80])
+            return False, reason
+
+        if has_foreign_geo and not has_intl_entity and not signal_a and not signal_b and not signal_c and not signal_d and not signal_e and not signal_f:
+            reason = (
+                f"INDIA_NEXUS_REJECT: foreign geography, no India signals present. "
+                f"title='{event.canonical_title[:80]}'"
+            )
+            logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"foreign geography, no India signals\"",
+                        event.canonical_title[:80])
+            return False, reason
+
+        if india_only_incidental and (has_foreign_geo or has_intl_entity):
+            reason = (
+                f"INDIA_NEXUS_REJECT: India appears only incidentally (count={india_raw_count}), "
+                f"primary story is foreign. title='{event.canonical_title[:80]}'"
+            )
+            logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"India only incidental mention\"",
+                        event.canonical_title[:80])
+            return False, reason
+
+        # ----------------------------------------------------------------
+        # ACCEPT if at least one strong signal found
+        # ----------------------------------------------------------------
+        active_signals = []
+        if signal_a:
+            active_signals.append("A:indian_entity_or_principal")
+        if signal_b:
+            active_signals.append("B:india_geography")
+        if signal_c:
+            active_signals.append("C:indian_regulator")
+        if signal_d:
+            active_signals.append("D:indian_transaction")
+        if signal_e:
+            active_signals.append("E:indian_results")
+        if signal_f:
+            active_signals.append("F:india_quantified_impact")
+
+        if active_signals:
+            reason = f"INDIA_NEXUS_PASS: signals=[{', '.join(active_signals)}]"
+            logger.info("INDIA_NEXUS_PASS: title=\"%s\" signals=%s",
+                        event.canonical_title[:80], active_signals)
+            return True, reason
+
+        # ----------------------------------------------------------------
+        # FALLBACK: No strong India signal found — reject
+        # ----------------------------------------------------------------
+        reason = (
+            f"INDIA_NEXUS_REJECT: no strong India business signal found (A-F). "
+            f"title='{event.canonical_title[:80]}'"
+        )
+        logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"no strong India business signal\"",
+                    event.canonical_title[:80])
+        return False, reason
+
     def verify_region_eligibility(
         self,
         event: Event,
@@ -265,16 +480,8 @@ class EventRegionClassifier:
             return True, "valid Indian domestic nexus"
 
         elif req_reg_str == "india":
-            has_india_mention_ind = bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", title_text))
-            has_indian_principal = self.is_indian_principal_acting_abroad(
-                title_text,
-                companies=event.companies_involved if event else None,
-                content=body_text,
-            )
-            # Strict parity with Stage 9 Check 2
-            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention_ind and not has_indian_principal:
-                return False, "India story has foreign subject and lacks Indian business nexus"
-            return True, "valid Indian business nexus"
+            # Use the canonical India business nexus helper for all India eligibility checks
+            return self.verify_india_business_nexus(event, article)
 
         elif req_reg_str == "international":
             from app.verification.international import is_geopolitical_market_impact_eligible
@@ -522,4 +729,12 @@ def verify_region_eligibility(
 
 def has_positive_indian_nexus(text: str) -> bool:
     return _default_region_classifier.has_positive_indian_nexus(text)
+
+
+def verify_india_business_nexus(
+    event: Event,
+    article: Optional[Article] = None,
+) -> Tuple[bool, str]:
+    """Module-level wrapper for the canonical India business nexus check."""
+    return _default_region_classifier.verify_india_business_nexus(event, article)
 

@@ -514,20 +514,15 @@ class FinalValidationEngine:
                 ))
 
         for story in payload.india_stories:
-            h_lower = story.headline.lower()
             ev = events_lookup.get(story.event_id)
             art = articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
-            text_to_check = f"{h_lower} {art.title.lower() if art else ''}"
-            has_foreign_geo = any(re.search(pat, text_to_check) for pat in region_clf.FOREIGN_GEOGRAPHY_AND_DEMONYMS)
-            has_india_mention = bool(re.search(r"\b(india|indian|india's|bse|nse|sebi|rbi)\b", text_to_check))
-            has_indian_entity = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_ENTITIES)
-            has_indian_currency = any(re.search(pat, text_to_check) for pat in region_clf.INDIAN_CURRENCY_AND_UNITS)
-            if has_foreign_geo and not has_indian_entity and not has_indian_currency and not has_india_mention:
+            is_valid_nexus, nexus_reason = region_clf.verify_india_business_nexus(ev, art)
+            if not is_valid_nexus:
                 check_results.append(ValidationCheckResult(
                     check_id=2,
                     check_name="India section business nexus consistency",
                     passed=False,
-                    failure_reason=f"India story '{story.headline}' has foreign subject and lacks Indian business nexus",
+                    failure_reason=f"India story '{story.headline}' lacks genuine India business nexus: {nexus_reason}",
                     failed_story_id=story.event_id,
                 ))
 

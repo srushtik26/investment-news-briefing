@@ -29,7 +29,7 @@ from app.models import Article, Event, NewsCategory
 from app.models.enums import VerificationTier
 from app.models.entity_sanitizer import sanitize_company_entities
 from app.deduplication.fingerprint import normalize_entity_name
-from app.ranking.models import ScoredEvent
+from app.ranking.models import ScoredEvent, ScoreBreakdown
 from app.ranking.topic_classifier import classify_topic_bucket, audit_topic_distribution
 from app.ranking.sorter import (
     select_diverse_domestic_candidates,
@@ -425,6 +425,12 @@ def check_refill_candidate_safety(
         if not is_mat or mat_score < 60.0:
             return False, f"MATERIALITY_REJECT (score={mat_score})"
 
+        # India Nexus Check — reject if no genuine India business nexus
+        from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus
+        is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
+        if not is_nexus:
+            return False, f"INDIA_NEXUS_REJECT ({nexus_reason})"
+
     return True, "OK"
 
 
@@ -579,6 +585,22 @@ def run_post_dedup_refill(
                         for grp_name, grp_expr in PORTFOLIO_DISCOVERY_GROUPS.items()
                     ] + [
                         (False, "", tmpl) for tmpl in [
+                            # Broad India business recovery queries (per requirements §8)
+                            'India business corporate deals when:1d',
+                            'India companies quarterly results net profit when:1d',
+                            'India earnings results revenue crore when:1d',
+                            'India mergers acquisitions deal buyout when:1d',
+                            'India investment capex plant facility when:1d',
+                            'India banking finance NBFC lending when:1d',
+                            'India markets BSE NSE stock when:1d',
+                            'BSE corporate announcement quarterly when:1d',
+                            'NSE corporate announcement results when:1d',
+                            'SEBI corporate action regulatory when:1d',
+                            'RBI banking regulation monetary when:1d',
+                            'Indian infrastructure contract order wins when:1d',
+                            'Indian startups funding round Series when:1d',
+                            'Indian manufacturing investment factory when:1d',
+                            # Original templates preserved
                             'quarterly results net profit revenue crore when:1d',
                             'acquires acquisition deal buyout stake when:1d',
                             'block deal stake sale crore when:1d',
@@ -1243,6 +1265,30 @@ def run_ranking_and_selection(
                 )
                 continue
 
+            # India Nexus Verification — strict deterministic check
+            from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus
+            is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
+            if not is_nexus:
+                india_rejected_count[0] += 1
+                rejected_india_event_ids.add(ev.id)
+                ctx.log_exec(
+                    f"INDIA_NEXUS_REJECT:\n"
+                    f'title="{ev.canonical_title}"\n'
+                    f'reason="{nexus_reason}"'
+                )
+                logger.info(
+                    "INDIA_NEXUS_REJECT: title=\"%s\" reason=\"%s\"",
+                    ev.canonical_title,
+                    nexus_reason,
+                )
+                continue
+
+            ctx.log_exec(
+                f"INDIA_NEXUS_PASS:\n"
+                f'title="{ev.canonical_title}"\n'
+                f'reason="{nexus_reason}"'
+            )
+
             is_pf, pf_company, pf_role, pf_eligible = get_portfolio_company_role(
                 ev.canonical_title,
                 cand_art.content_text if cand_art else "",
@@ -1403,6 +1449,258 @@ def run_ranking_and_selection(
             ctx.log_exec(f"[OLDER_BACKFILL] section=INDIA today_count={len(india_final)} needed={needed} article_date={s_date}")
             india_final.append(s)
 
+    # -----------------------------------------------------------------------
+    # INDIA RECOVERY PASS — mirrors the domestic recovery logic
+    # Triggered when india_final < 5 after today + older backfill
+    # Steps: 1. memory events  2. deferred candidates  3. targeted RSS discovery
+    # -----------------------------------------------------------------------
+    if len(india_final) < 5:
+        from app.pipeline.candidate_processing import process_candidate_item
+        from app.pipeline.fallback_manager import reconsider_date_deferred_candidates
+        from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus
+        from app.verification.materiality import evaluate_investment_materiality as _eval_materiality
+        from app.verification import MAX_CORROBORATION_SEARCHES_PER_RUN, get_corroboration_count, increment_corroboration_count
+        from app.filtering.rules import URLFilterRule
+
+        india_recovery_selected_ids = {s.event.id for s in india_final}
+        india_recovery_rejected_ids: Set[str] = set()
+        needed = 5 - len(india_final)
+
+        ctx.log_exec(
+            f"INDIA_RECOVERY_START: current={len(india_final)} needed={needed}"
+        )
+        logger.info("INDIA_RECOVERY_START: current=%d needed=%d", len(india_final), needed)
+
+        def _india_recovery_candidate_ok(ev: Event) -> bool:
+            """Check all gates for an India recovery candidate."""
+            if ev.id in india_recovery_selected_ids or ev.id in india_recovery_rejected_ids:
+                return False
+            if ev.event_category != NewsCategory.INDIA:
+                return False
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            if not cand_art:
+                return False
+            tier = getattr(ev, "verification_tier", None)
+            if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+                india_recovery_rejected_ids.add(ev.id)
+                return False
+            conf = float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0)
+            if tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE and conf < 80.0:
+                india_recovery_rejected_ids.add(ev.id)
+                return False
+            # Dedup vs. existing selected
+            for ex_s in india_final:
+                ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
+                if ex_art and cand_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                    india_recovery_rejected_ids.add(ev.id)
+                    return False
+            # Materiality >= 60
+            _, mat_score, _ = _eval_materiality(ev, cand_art, ctx=ctx)
+            if mat_score < 60.0:
+                india_recovery_rejected_ids.add(ev.id)
+                return False
+            # India nexus — the critical gate
+            is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
+            if not is_nexus:
+                india_recovery_rejected_ids.add(ev.id)
+                ctx.log_exec(f"INDIA_NEXUS_REJECT (recovery): title=\"{ev.canonical_title}\" reason=\"{nexus_reason}\"")
+                return False
+            return True
+
+        # --- Step 1: Use remaining qualified India reserves from memory ---
+        all_mem_events = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+        mem_reserve = [ev for ev in all_mem_events if _india_recovery_candidate_ok(ev)]
+        ctx.log_exec(f"INDIA_RESERVE_COUNT={len(mem_reserve)} (qualified in-memory reserve after gates)")
+        logger.info("INDIA_RESERVE_COUNT=%d", len(mem_reserve))
+
+        for ev in mem_reserve:
+            if needed <= 0:
+                break
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
+            mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
+            scored = ScoredEvent(
+                event=ev,
+                score_breakdown=ScoreBreakdown(
+                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
+                ),
+                investment_score=mat_s,
+                rank=len(india_final) + 1,
+            )
+            india_final.append(scored)
+            india_recovery_selected_ids.add(ev.id)
+            needed -= 1
+            ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (mem): title=\"{ev.canonical_title}\" mat={mat_s:.1f}")
+            logger.info("INDIA_RECOVERY_ACCEPTED: title=\"%s\" mat=%.1f", ev.canonical_title, mat_s)
+
+        # --- Step 2: Deferred candidates at extended horizons ---
+        for horizon in [36.0, 48.0, 72.0]:
+            if needed <= 0:
+                break
+            reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon, ctx)
+            deferred_cands = [
+                ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                if _india_recovery_candidate_ok(ev)
+            ]
+            for ev in deferred_cands:
+                if needed <= 0:
+                    break
+                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
+                mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
+                scored = ScoredEvent(
+                    event=ev,
+                    score_breakdown=ScoreBreakdown(
+                        financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                        corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                        editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
+                    ),
+                    investment_score=mat_s,
+                    rank=len(india_final) + 1,
+                )
+                india_final.append(scored)
+                india_recovery_selected_ids.add(ev.id)
+                needed -= 1
+                ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (deferred {int(horizon)}h): title=\"{ev.canonical_title}\"")
+                logger.info("INDIA_RECOVERY_ACCEPTED: title=\"%s\" horizon=%.0fh", ev.canonical_title, horizon)
+
+        # --- Step 3: Targeted India-only RSS discovery (bounded) ---
+        if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
+            rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            if rem_budget > 0:
+                ctx.log_exec(f"[INDIA_RECOVERY] RSS discovery for {needed} missing stories (budget rem: {rem_budget})")
+                INDIA_RECOVERY_QUERIES = [
+                    "India business corporate deals earnings when:1d",
+                    "India companies M&A acquisition results when:1d",
+                    "India capex investment plant manufacturing when:1d",
+                    "India banking finance NBFC results when:1d",
+                    "India markets BSE NSE corporate announcement when:1d",
+                    "SEBI RBI regulatory corporate action when:1d",
+                    "Indian startups funding IPO listing when:1d",
+                    "Indian infrastructure contract order wins when:1d",
+                ]
+                INDIA_RSS_SOURCES = "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com OR site:economictimes.indiatimes.com)"
+
+                for qry in INDIA_RECOVERY_QUERIES:
+                    if needed <= 0 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        break
+                    full_query = f"{qry} {INDIA_RSS_SOURCES}"
+                    items = ctx.discovery_service.provider.discover(query=full_query, country="India", max_results=10)
+                    increment_corroboration_count(1)
+                    ctx.corroboration_searches += 1
+                    for it in items:
+                        u = it.url.strip()
+                        if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                            ctx.seen_urls.add(u.lower().rstrip("/"))
+                            process_candidate_item(it, "india", ctx)
+                            new_cands = [
+                                ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                                if _india_recovery_candidate_ok(ev)
+                            ]
+                            for ev in new_cands:
+                                if needed <= 0:
+                                    break
+                                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                                mat_res = _eval_materiality(ev, cand_art, ctx=ctx)
+                                mat_s = mat_res.score if hasattr(mat_res, "score") else mat_res[1]
+                                scored = ScoredEvent(
+                                    event=ev,
+                                    score_breakdown=ScoreBreakdown(
+                                        financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                                        corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                                        editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_s, rationale="india_recovery",
+                                    ),
+                                    investment_score=mat_s,
+                                    rank=len(india_final) + 1,
+                                )
+                                india_final.append(scored)
+                                india_recovery_selected_ids.add(ev.id)
+                                needed -= 1
+                                ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (rss): title=\"{ev.canonical_title}\"")
+                                logger.info("INDIA_RECOVERY_ACCEPTED (rss): title=\"%s\"", ev.canonical_title)
+                        if needed <= 0:
+                            break
+
+        if needed > 0:
+            ctx.log_exec(f"INDIA_RECOVERY_EXHAUSTED: still need {needed} stories after all recovery steps")
+            logger.warning("INDIA_RECOVERY_EXHAUSTED: need=%d after mem+deferred+rss", needed)
+
+    # -----------------------------------------------------------------------
+    # INDIA_FINAL_NEXUS_AUDIT — verify all final India stories before Stage 8
+    # Any story failing the nexus check is removed and replaced from reserve
+    # -----------------------------------------------------------------------
+    from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus
+    from app.verification.materiality import evaluate_investment_materiality as _eval_materiality
+
+    ctx.log_exec("[INDIA_FINAL_NEXUS_AUDIT] Auditing all final India stories for nexus compliance")
+    audit_passed: List[ScoredEvent] = []
+    audit_rejected: List[ScoredEvent] = []
+    for scored in india_final:
+        ev = scored.event
+        cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+        is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
+        nexus_log = (
+            f"[INDIA_FINAL_NEXUS_AUDIT] event_id={ev.id}\n"
+            f'entity="{(ev.companies_involved or ["unknown"])[0]}"\n'
+            f'source="{cand_art.source_name if cand_art else "unknown"}"\n'
+            f"india_nexus={'true' if is_nexus else 'false'}\n"
+            f'nexus_reason="{nexus_reason}"'
+        )
+        ctx.log_exec(nexus_log)
+        if is_nexus:
+            audit_passed.append(scored)
+        else:
+            audit_rejected.append(scored)
+            ctx.log_exec(
+                f"[INDIA_FINAL_NEXUS_AUDIT] REJECTED event_id={ev.id} title=\"{ev.canonical_title}\""
+            )
+            logger.warning(
+                "INDIA_FINAL_NEXUS_AUDIT REJECTED: title=\"%s\" reason=\"%s\"",
+                ev.canonical_title, nexus_reason,
+            )
+
+    # Replace rejected stories from memory reserve if available
+    if audit_rejected:
+        target_india_count = len(audit_passed) + len(audit_rejected)
+        ctx.log_exec(f"[INDIA_FINAL_NEXUS_AUDIT] {len(audit_rejected)} story/stories failed — seeking replacements (target={target_india_count})")
+        all_mem_events_audit = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+        used_ids_audit = {s.event.id for s in audit_passed}
+        for ev in all_mem_events_audit:
+            if len(audit_passed) >= target_india_count:
+                break
+            if ev.id in used_ids_audit or ev.event_category != NewsCategory.INDIA:
+                continue
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            if not cand_art:
+                continue
+            is_nexus, _ = _verify_nexus(ev, cand_art)
+            if not is_nexus:
+                continue
+            _, mat_score, _ = _eval_materiality(ev, cand_art, ctx=ctx)
+            if mat_score < 60.0:
+                continue
+            scored = ScoredEvent(
+                event=ev,
+                score_breakdown=ScoreBreakdown(
+                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=mat_score, rationale="nexus_audit_replacement",
+                ),
+                investment_score=mat_score,
+                rank=len(audit_passed) + 1,
+            )
+            audit_passed.append(scored)
+            used_ids_audit.add(ev.id)
+            ctx.log_exec(f"[INDIA_FINAL_NEXUS_AUDIT] Replacement accepted: title=\"{ev.canonical_title}\"")
+
+    india_final = audit_passed
+    ctx.log_exec(f"[INDIA_FINAL_NEXUS_AUDIT] Audit complete: final India count={len(india_final)}")
+
+    # Cap at 5 and assign ranks
+    if len(india_final) > 5:
+        india_final = india_final[:5]
     for rank, scored in enumerate(india_final, 1):
         scored.rank = rank
     candidate_pool.india_candidates = india_final
