@@ -139,13 +139,9 @@ class NewsDiscoveryService:
         matched_companies: Set[str] = set()
 
         for grp_name, query in portfolio_queries:
-            if budget and not budget.can_call_serpapi():
-                _log("[API_BUDGET] SerpAPI budget reached; stopping portfolio grouped discovery early")
-                break
             _log(f'[PORTFOLIO_DISCOVERY_QUERY]\ngroup={grp_name}\nquery="{query}"')
             if budget:
                 budget.record_portfolio_query()
-                budget.record_serpapi_call()
             results = self.provider.discover(
                 query=query,
                 country="India",
@@ -178,13 +174,10 @@ class NewsDiscoveryService:
             site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources[:4]]) + ")"
 
             for cname in missing_companies[:max_fallback_queries]:
-                if budget and not budget.can_call_serpapi():
-                    break
                 fallback_query = f'"{cname}" {PORTFOLIO_EVENT_TERMS} when:1d{site_clause}'
                 _log(f'[PORTFOLIO_FALLBACK_QUERY]\ncompany="{cname}"\nquery="{fallback_query}"')
                 if budget:
                     budget.record_portfolio_query()
-                    budget.record_serpapi_call()
                 fb_results = self.provider.discover(
                     query=fallback_query,
                     country="India",

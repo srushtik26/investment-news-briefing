@@ -219,9 +219,14 @@ def run_pipeline(
     
         metrics.start_timer("extraction_seconds")
         log_exec(f"[Pass 1] Processing {initial_dom} Domestic + {initial_india} India + {initial_intl} International candidates from reserve...")
-        batch_arts, batch_recs, gc, ro, fo, pur, dup = _extract_candidates(
+        extract_res = _extract_candidates(
             pass1_candidates, extractor, ctx.seen_urls, log_exec
         )
+        if len(extract_res) == 8:
+            batch_arts, batch_recs, gc, ro, fo, pur, dup, sps = extract_res
+        else:
+            batch_arts, batch_recs, gc, ro, fo, pur, dup = extract_res[:7]
+            sps = 0
         metrics.stop_timer("extraction_seconds")
     
         ctx.all_extracted.extend(batch_arts)
@@ -230,6 +235,7 @@ def run_pipeline(
         processed_pass1 = len(batch_arts)
         duplicate_seen_candidates = dup
         total_pre_url_rejects = pur
+        total_source_policy_skips = sps
         total_resolved = ro
         total_fallback = fo
     
@@ -240,6 +246,7 @@ def run_pipeline(
         )
         log_exec(f"Pass 1 extracted: {len(batch_arts)} articles (Reserve remaining: {reserve_remaining})")
         log_exec(f"Pass 1: {len(batch_arts)} articles extracted from {initial_dom + initial_india + initial_intl} candidates.")
+        log_exec(f"  SOURCE_POLICY_SKIPS={total_source_policy_skips}  PRE_URL_REJECTS={total_pre_url_rejects}  DUPLICATES_SKIPPED={duplicate_seen_candidates}")
     
         # =========================================================================
         # STAGE 3: Hard Filtering
@@ -346,6 +353,7 @@ def run_pipeline(
         log_exec(f"  Live Gemini:      {live_class_count}")
         log_exec(f"  Offline fallback: {offline_class_count}")
         log_exec(f"  Hard events:      {len(classified_articles)} ({len(dom_class)} Domestic, {len(india_class)} India, {len(intl_class)} Intl)")
+        log_exec(f"  GEMINI_CALLS_USED={live_class_count}  GEMINI_CALLS_SKIPPED={offline_class_count}  GEMINI_OFFLINE_MODE={classifier._force_offline_mode or live_class_count == 0}")
     
         # Cluster articles into events
         clusterer = EventClusterer()
@@ -419,6 +427,24 @@ def run_pipeline(
             primary_art = articles_lookup.get(event.article_ids[0])
             if not primary_art:
                 continue
+            # Gate: skip corroboration if this event's section already has ≥5 quality candidates
+            ev_cat = event.event_category
+            if ev_cat == NewsCategory.INDIA:
+                india_qual = sum(
+                    1 for e in verified_events + high_confidence_single_candidates
+                    if e.event_category == NewsCategory.INDIA
+                )
+                if india_qual >= 5:
+                    log_exec(f"  -> [CORROBORATION_SKIPPED_SECTION_FULL] India already has {india_qual} qualified candidates; skipping corroboration for '{event.canonical_title[:45]}'")
+                    continue
+            elif ev_cat == NewsCategory.INTERNATIONAL:
+                intl_qual = sum(
+                    1 for e in verified_events + high_confidence_single_candidates
+                    if e.event_category == NewsCategory.INTERNATIONAL
+                )
+                if intl_qual >= 5:
+                    log_exec(f"  -> [CORROBORATION_SKIPPED_SECTION_FULL] International already has {intl_qual} qualified candidates; skipping corroboration for '{event.canonical_title[:45]}'")
+                    continue
             corrob_res = active_corroborator.corroborate(event=event, primary_article=primary_art)
             corroboration_searches += 1
             increment_corroboration_count(1)
@@ -481,6 +507,9 @@ def run_pipeline(
     
         save_json_artifact(data_dir / "verified_events.json", [e.model_dump() for e in verified_events])
         save_json_artifact(data_dir / "rejected_events.json", rejected_events_list)
+        log_exec(f"  Stage 5 Summary: organic_2src={organic_second_sources_found}  corroborated={second_sources_found}  searches={corroboration_searches}")
+        from app.verification.serpapi_corroborator import get_serpapi_count
+        log_exec(f"  SERPAPI_CALLS_USED={get_serpapi_count()}")
         metrics.stop_timer("verification_seconds")
     
     # =========================================================================
