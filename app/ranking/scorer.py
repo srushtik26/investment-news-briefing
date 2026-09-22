@@ -8,6 +8,7 @@ Computes a calibrated 0–100 score for each verified business event across:
 - Corporate significance (15%)
 - Source quality (10%)
 """
+from __future__ import annotations
 
 import re
 from typing import List, Optional, Tuple
@@ -585,3 +586,4 @@ def calculate_corroboration_priority(event: Event, primary_article: Optional[Art
         base += 5.0
 
     return min(100.0, max(0.0, base))
+

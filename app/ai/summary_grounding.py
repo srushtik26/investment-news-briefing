@@ -5,6 +5,7 @@ Prevents summary hallucination, cross-story leakage, and topic drift by validati
 that every candidate summary describes the exact same event as the headline.
 Provides deterministic structured fallback when body sentences fail grounding.
 """
+from __future__ import annotations
 
 import re
 from typing import Any, List, Optional, Set, Tuple
@@ -589,3 +590,4 @@ def build_structured_fallback_summary(
 ) -> str:
     """Backward-compatible alias for build_descriptive_investment_summary."""
     return build_descriptive_investment_summary(headline=headline, event=event, article=article)
+

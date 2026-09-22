@@ -4,6 +4,7 @@ Hard Filter Engine Coordinator.
 Executes deterministic validation checks in sequential order:
 URL -> Source -> Date Freshness -> Story Type / Noise Rejection.
 """
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -228,4 +229,5 @@ class DomesticHardFilterEngine:
             len(rejections),
         )
         return accepted, rejections
+
 

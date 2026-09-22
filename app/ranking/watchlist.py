@@ -12,6 +12,7 @@ Provides:
     get_watchlist_match_details - legacy helper returning (matched, company_name, matched_alias).
     get_portfolio_company_role  - returns (matched, company_name, role, eligible_for_priority).
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
 import re
@@ -317,3 +318,4 @@ def format_portfolio_role_log(company: str, role: str, eligible_for_priority: bo
         f'role="{role}"\n'
         f'eligible_for_priority={str(eligible_for_priority).lower()}'
     )
+

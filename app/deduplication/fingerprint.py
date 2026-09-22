@@ -4,6 +4,7 @@ Event Fingerprinting and Semantic Matching.
 Generates deterministic hashes and keys from (company, event_type, date, key_event_facts)
 to accurately deduplicate multi-source reports of the same business event.
 """
+from __future__ import annotations
 
 from datetime import date, datetime
 import hashlib
@@ -161,3 +162,4 @@ def are_articles_same_event(art1: Article, art2: Article) -> bool:
     from app.verification.verifier import TwoSourceVerifier
     is_same, _, _ = TwoSourceVerifier().is_same_underlying_event(art1, art2)
     return is_same
+

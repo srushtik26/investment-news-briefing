@@ -205,6 +205,7 @@ def test_concurrency_never_exceeds_five():
     mock_extractor = MagicMock()
     mock_extractor.extract.side_effect = slow_extract
     mock_extractor.resolver.is_google_news_url.return_value = False
+    mock_extractor.is_domain_degraded.return_value = False
 
     candidates = [
         (DummyCandidate(f"Story {i}", f"https://example.com/story-{i}"), "international")
@@ -246,6 +247,7 @@ def test_deterministic_output_ordering_preserved():
     mock_extractor = MagicMock()
     mock_extractor.extract.side_effect = variable_extract
     mock_extractor.resolver.is_google_news_url.return_value = False
+    mock_extractor.is_domain_degraded.return_value = False
 
     candidates = [
         (DummyCandidate(f"Story #{i}", f"https://example.com/story-{i}"), "india")

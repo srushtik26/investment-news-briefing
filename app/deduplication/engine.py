@@ -4,6 +4,7 @@ Deduplication Engine.
 Coordinates event deduplication, 3-day SQLite lookback history enforcement,
 and India same-company restrictions.
 """
+from __future__ import annotations
 
 from datetime import date
 import re
@@ -191,3 +192,4 @@ class DeduplicationEngine:
             len(rejected_stories),
         )
         return accepted_stories, rejected_stories
+

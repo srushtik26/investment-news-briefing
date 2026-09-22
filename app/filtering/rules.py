@@ -4,6 +4,7 @@ Deterministic Filter Rules for Candidate Business News Articles.
 Implements strict validation rules for Publication Dates, Approved Sources,
 Non-Article URL Patterns, and Hard Business Event vs Noise Filtering.
 """
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
@@ -928,4 +929,5 @@ class DomesticSourceFilterRule(BaseFilterRule):
             article_url=article.url,
             article_title=article.title,
         )
+
 

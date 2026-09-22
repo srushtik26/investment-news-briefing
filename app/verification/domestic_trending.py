@@ -5,6 +5,7 @@ Evaluates nationally important, general trending Indian news stories
 (politics, courts, government policies, infrastructure, defence, science/ISRO,
 disasters, education, health, and national public interest).
 """
+from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
@@ -579,5 +580,6 @@ def is_domestic_final_eligible(
     if article is None:
         return False, 0.0, "REJECT_NO_PRIMARY_ARTICLE"
     return evaluator.evaluate(event, article, now_utc=now_utc, max_age_hours=max_age_hours)
+
 
 

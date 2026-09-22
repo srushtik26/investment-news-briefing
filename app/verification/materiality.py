@@ -12,6 +12,7 @@ A candidate story must pass BOTH:
 1. Existing verification / HCSS threshold (HCSS >= 80, Domestic >= 60, or Two-Source Verified)
 2. Investment Materiality Gate (Score >= 60.0)
 """
+from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
@@ -658,3 +659,4 @@ def evaluate_investment_materiality(
     evaluator = InvestmentMaterialityEvaluator()
     res = evaluator.evaluate(event=event, article=article, ctx=ctx)
     return res.is_material, res.score, res.summary_reason
+

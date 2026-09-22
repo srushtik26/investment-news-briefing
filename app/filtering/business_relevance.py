@@ -18,6 +18,7 @@ Penalties:
 
 India Business and International candidates must achieve score >= 70.
 """
+from __future__ import annotations
 
 import re
 from typing import Any, Dict, Optional, Tuple
@@ -162,3 +163,4 @@ def calculate_business_relevance_score(
 
     total_score = max(0.0, min(100.0, sum(breakdown.values())))
     return total_score, breakdown
+

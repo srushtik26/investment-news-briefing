@@ -1,3 +1,4 @@
+from __future__ import annotations
 import re
 from typing import Any, List, Optional, Set, Tuple
 from app.logging_config import get_logger
@@ -764,4 +765,5 @@ def verify_india_business_nexus(
 ) -> Tuple[bool, str]:
     """Module-level wrapper for the canonical India business nexus check."""
     return _default_region_classifier.verify_india_business_nexus(event, article)
+
 

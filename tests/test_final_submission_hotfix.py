@@ -53,6 +53,7 @@ def test_extract_candidates_pub_at_defined():
     )
     mock_extractor.extract.return_value = mock_res
     mock_extractor.resolver.is_google_news_url.return_value = False
+    mock_extractor.is_domain_degraded.return_value = False
     
     seen = set()
     logs = []

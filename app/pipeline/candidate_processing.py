@@ -1,10 +1,12 @@
 """
 Candidate processing, extraction, company population, and single candidate verification.
 """
+from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple, Set, Optional, Callable
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.models import Article, Event, NewsCategory
@@ -79,6 +81,10 @@ def _extract_candidates(
         norm_url = cand.url.strip().lower().rstrip("/")
         if norm_url in seen_urls:
             duplicate_seen += 1
+            continue
+        cand_netloc = urlparse(cand.url).netloc.lower().replace("www.", "")
+        if cand.url in getattr(extractor, "blocked_url_cache", set()) or extractor.is_domain_degraded(cand_netloc):
+            pre_url_rejects += 1
             continue
         seen_urls.add(norm_url)
         rss_published_at = get_candidate_published_at(cand)
@@ -274,6 +280,10 @@ def process_candidate_item(
         return None
     ctx.seen_urls.add(u_norm)
 
+    cand_netloc = urlparse(cand.url).netloc.lower().replace("www.", "")
+    if cand.url in ctx.failed_urls or u_norm in ctx.failed_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+        return None
+
     rss_pub = get_candidate_published_at(cand)
     if rss_pub:
         pub_time = rss_pub
@@ -309,6 +319,8 @@ def process_candidate_item(
             "failure_reason": ext_res.error_message,
         }
     except Exception as e:
+        ctx.failed_urls.add(cand.url)
+        ctx.failed_urls.add(u_norm)
         if cand_section == "domestic":
             ctx.log_exec(
                 f'[DOM_DIAG_TARGET_EXTRACTION] title="{cand.title}" success=False method="unknown" word_count=0 error="{e}"'
@@ -325,17 +337,22 @@ def process_candidate_item(
         )
 
     if not ext_res.success or not ext_res.article:
+        ctx.failed_urls.add(cand.url)
+        ctx.failed_urls.add(u_norm)
         is_blocked = (
             ext_res.status_code in (401, 403)
             or (
                 ext_res.error_message
                 and any(
                     code in ext_res.error_message.lower()
-                    for code in ("401", "403", "forbidden", "unauthorized", "degraded", "blocked")
+                    for code in ("401", "403", "forbidden", "unauthorized", "degraded", "blocked", "paywall")
                 )
             )
         )
         if is_blocked:
+            ctx.failed_domains.add(cand_netloc)
+            if ctx.extractor:
+                ctx.extractor.mark_domain_degraded(cand_netloc)
             alt_article = _recover_alternate_source(cand, cand_section, ctx, active_horizon)
             if alt_article:
                 art = alt_article
@@ -458,3 +475,4 @@ def process_candidate_item(
                     prefix = f"[{event.event_category.value.upper()}_QUALIFIED]"
                     ctx.log_exec(f"    {prefix} {event.canonical_title[:55]} | {rsn}")
         return event
+

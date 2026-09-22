@@ -5,6 +5,7 @@ Introduces a lightweight immutable structure built once per candidate,
 caching normalized text, extracted entities, numeric tokens, materiality,
 region classification, India nexus validation, and portfolio matching.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Set
@@ -237,3 +238,4 @@ def build_story_context(
         event.metadata["india_nexus_reason"] = nexus_reason
 
     return sc
+

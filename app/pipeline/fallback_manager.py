@@ -1,6 +1,7 @@
 """
 Fallback manager: reserve expansion loop, final-mile discovery, and per-section quality fallback ladder (24h -> 36h -> 48h -> 72h).
 """
+from __future__ import annotations
 
 import os
 import re
@@ -884,3 +885,4 @@ def run_expansion_and_fallbacks(
         ctx.log_exec(f"WEEKEND_FINAL_COUNTS DOMESTIC={dom_unique_count} INDIA={india_unique_count} INTERNATIONAL={intl_unique_count}")
 
     return pipeline_status
+

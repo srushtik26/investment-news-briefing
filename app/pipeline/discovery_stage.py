@@ -1,6 +1,7 @@
 """
 Discovery stage: initial candidate reserve pool loading and query scoring.
 """
+from __future__ import annotations
 
 import re
 from typing import List, Tuple, Any
@@ -80,3 +81,4 @@ def discover_initial_reserves(
     )
 
     return pass1_candidates, initial_dom, initial_india, initial_intl
+

@@ -6,6 +6,7 @@ Provides canonical validation for International candidate events:
   must have quantified market impact figures (digits) in their title/headline.
 - Used identically in Stage 7 (selection.py) and Stage 9 Check #19 (engine.py).
 """
+from __future__ import annotations
 
 import re
 from typing import Any, Optional, Tuple, TYPE_CHECKING
@@ -90,3 +91,4 @@ def is_international_final_eligible(
 
     score = float(getattr(event, "verification_confidence", 0.0) or getattr(event, "relevance_score", 0.0) or 80.0)
     return True, score, ""
+

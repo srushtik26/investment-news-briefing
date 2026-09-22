@@ -7,6 +7,7 @@ the approved two-clause semi-colon format:
 Target length: roughly 18-32 words.
 Never invents numbers, generic entities, or ungrounded implications.
 """
+from __future__ import annotations
 
 import html
 import re
@@ -998,3 +999,4 @@ def generate_grounded_fallback_headline(
         cand_l3,
     )
     return cand_l3
+

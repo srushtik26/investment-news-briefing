@@ -4,6 +4,7 @@ Pure shared validation helper utilities.
 Contains pure functions for semantic token overlap and canonical numeric token
 extraction without circular dependencies into AI or validation engine layers.
 """
+from __future__ import annotations
 
 import re
 from typing import Any, Set, Tuple
@@ -118,4 +119,5 @@ def build_headline_grounding_source(
             parts.append(art_content[:1500])
 
     return " ".join(parts)
+
 

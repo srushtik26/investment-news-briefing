@@ -9,6 +9,7 @@ Evaluates candidate single-source events against strict deterministic criteria:
 5. Successfully extracted full article content.
 6. Deterministic confidence scoring with threshold >= 80.
 """
+from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
@@ -447,3 +448,4 @@ class SingleSourceEvaluator:
 
         reason_str = f"Score={score:.0f}/100 [{', '.join(reasons)}]"
         return is_eligible, score, reason_str
+

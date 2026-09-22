@@ -4,6 +4,7 @@ HTTP Client for Article Extraction.
 Provides resilient HTTP retrieval with retry mechanisms, timeout controls,
 user-agent headers, and strict URL preservation.
 """
+from __future__ import annotations
 
 import time
 from typing import Optional, Tuple
@@ -118,3 +119,4 @@ class ArticleFetcher:
                 time.sleep(sleep_time)
 
         return False, None, last_status, last_error or "Failed to fetch HTML after retries"
+

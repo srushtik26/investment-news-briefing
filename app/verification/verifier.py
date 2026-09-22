@@ -5,6 +5,7 @@ Verifies that business events are corroborated by at least two independent publi
 strictly rejecting duplicate articles from the same media group, syndicated wire feeds,
 and unrelated articles.
 """
+from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
@@ -708,3 +709,4 @@ class TwoSourceVerifier:
             article_urls=[art1.url, art2.url],
             matching_details=f"Corroborated by independent publishers ({art1.source_name} and {art2.source_name}).",
         )
+

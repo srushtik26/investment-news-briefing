@@ -1,6 +1,7 @@
 """
 Selection, deduplication, ranking, and topic diversity coordination.
 """
+from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple, Set, Optional
@@ -335,6 +336,13 @@ def check_refill_candidate_safety(
     3. India one-story-per-company rule, portfolio diversity, and investment materiality when section == 'india'
     4. Normal verification / quality gates (approved tier and threshold: >=60 for Domestic, >=80 for India/Intl HCSS)
     """
+    # 0. Candidate ID / URL exclusion sets
+    if ev.id in ctx.refill_attempted_event_ids:
+        return False, "ALREADY_ATTEMPTED_REFILL"
+    if ev.id in ctx.dedup_rejected_event_ids:
+        return False, "ALREADY_REJECTED_DEDUP"
+    ctx.refill_attempted_event_ids.add(ev.id)
+
     # 1. 3_DAY_HISTORY Deduplication
     if ctx.dedup_engine:
         acc, _ = ctx.dedup_engine.filter_stories(
@@ -343,6 +351,7 @@ def check_refill_candidate_safety(
             lookback_days=lookback_days,
         )
         if not acc:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, "3_DAY_HISTORY"
 
     # 2. Semantic same-event check against ALL accepted stories (intra-section AND cross-section)
@@ -356,11 +365,13 @@ def check_refill_candidate_safety(
                     cand_art, ex_art, now_utc=ctx.run_reference_time
                 )
                 if is_same:
+                    ctx.dedup_rejected_event_ids.add(ev.id)
                     return False, "SAME_UNDERLYING_EVENT"
 
     # 3. Normal verification / quality gates
     tier = getattr(ev, "verification_tier", None)
     if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+        ctx.dedup_rejected_event_ids.add(ev.id)
         return False, "INVALID_TIER"
 
     conf = float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0)
@@ -374,13 +385,16 @@ def check_refill_candidate_safety(
             evaluator=getattr(ctx, "domestic_evaluator", None),
         )
         if not is_elig or dom_score < 60.0:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"DOMESTIC_QUALITY_REJECT ({dom_reason}, score={dom_score:.1f})"
     elif sec_str in ("india", "international"):
         if tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE and conf < 80.0:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"LOW_CONFIDENCE (conf={conf})"
         from app.verification.international import is_geopolitical_market_impact_eligible
         is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(ev, cand_art)
         if not is_geo_elig:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"GEOPOLITICAL_UNQUANTIFIED ({geo_reason})"
 
     # 4. India one-story-per-company and portfolio diversity rule
@@ -409,6 +423,7 @@ def check_refill_candidate_safety(
                         f'skipped_title="{ev.canonical_title}"\n'
                         f'reason="max 1 portfolio story per canonical company"'
                     )
+                    ctx.dedup_rejected_event_ids.add(ev.id)
                     return False, "PORTFOLIO_DIVERSITY_SKIP"
 
         existing_india_comps = {
@@ -417,18 +432,21 @@ def check_refill_candidate_safety(
         }
         cand_comp = normalize_entity_name(cand_story.get("company_name", ""))
         if cand_comp and cand_comp not in ("unspecified_entity", "", "unspecified") and cand_comp in existing_india_comps:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, "COMPANY_DIVERSITY_SKIP"
 
         # India Materiality Gate (>= 60.0)
         from app.verification.materiality import evaluate_investment_materiality
         is_mat, mat_score, _ = evaluate_investment_materiality(ev, cand_art, ctx=ctx)
         if not is_mat or mat_score < 60.0:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"MATERIALITY_REJECT (score={mat_score})"
 
         # India Nexus Check — reject if no genuine India business nexus
         from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus
         is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
         if not is_nexus:
+            ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"INDIA_NEXUS_REJECT ({nexus_reason})"
 
     return True, "OK"
@@ -536,7 +554,12 @@ def run_post_dedup_refill(
 
         # Priority 1, 2, 3: Already-discovered valid candidates in memory
         selectable_events = get_final_selectable_unique_events(ctx, category=sec_cat)
-        candidates_in_mem = [e for e in selectable_events if e.id not in accepted_event_ids]
+        candidates_in_mem = [
+            e for e in selectable_events
+            if e.id not in accepted_event_ids
+            and e.id not in ctx.refill_attempted_event_ids
+            and e.id not in ctx.dedup_rejected_event_ids
+        ]
 
         def _refill_sort_key(ev: Event):
             art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
@@ -553,6 +576,8 @@ def run_post_dedup_refill(
         for ev in candidates_in_mem:
             if needed <= 0:
                 break
+            if ev.id in ctx.refill_attempted_event_ids or ev.id in ctx.dedup_rejected_event_ids:
+                continue
             cand_story = _make_candidate_story_dict(ev, ctx)
             if not is_refill_candidate_safe(ev, cand_story, sec_str, accepted_stories, event_by_id, ctx, target_date, lookback):
                 continue
@@ -567,6 +592,7 @@ def run_post_dedup_refill(
         if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
             rem_rss = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rem_rss > 0:
+                from urllib.parse import urlparse
                 ctx.log_exec(f"[POST_DEDUP_REFILL] Deficient {sec_str.upper()} still needs {needed}. Running targeted RSS search (budget rem: {rem_rss})...")
                 if sec_str == "domestic":
                     TEMPLATES = [
@@ -611,12 +637,20 @@ def run_post_dedup_refill(
                     country = "India"
                 else:
                     TEMPLATES = [
-                        (False, "", '"reports quarterly results" when:1d'),
-                        (False, "", '"announces acquisition" when:1d'),
-                        (False, "", '"closes acquisition" when:1d'),
-                        (False, "", '"raises financing" when:1d'),
+                        (False, "", 'global business deals when:1d'),
+                        (False, "", 'US corporate earnings when:1d'),
+                        (False, "", 'Europe corporate deals when:1d'),
+                        (False, "", 'global mergers acquisitions when:1d'),
+                        (False, "", 'international capex when:1d'),
+                        (False, "", 'global fundraising when:1d'),
+                        (False, "", 'US IPO when:1d'),
+                        (False, "", 'Europe IPO when:1d'),
+                        (False, "", 'global banking when:1d'),
+                        (False, "", 'international technology business when:1d'),
+                        (False, "", 'global energy deals when:1d'),
+                        (False, "", 'international regulatory corporate action when:1d'),
                     ]
-                    SOURCE_GROUP = "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com OR site:cnbc.com)"
+                    SOURCE_GROUP = "(site:reuters.com OR site:bloomberg.com OR site:ft.com OR site:wsj.com OR site:cnbc.com OR site:apnews.com OR site:marketwatch.com)"
                     country = "US"
 
                 for item in TEMPLATES:
@@ -635,12 +669,18 @@ def run_post_dedup_refill(
                     ctx.corroboration_searches += 1
                     for it in items:
                         u = it.url.strip()
-                        if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
-                            ctx.seen_urls.add(u.lower().rstrip("/"))
+                        u_norm = u.lower().rstrip("/")
+                        cand_netloc = urlparse(u).netloc.lower().replace("www.", "")
+                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+                            continue
+                        if URLFilterRule.is_valid_url(u)[0]:
+                            ctx.seen_urls.add(u_norm)
                             process_candidate_item(it, sec_str, ctx)
                             new_events = [
                                 e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
                                 if e.event_category == sec_cat and e.id not in accepted_event_ids
+                                and e.id not in ctx.refill_attempted_event_ids
+                                and e.id not in ctx.dedup_rejected_event_ids
                             ]
                             for ev in new_events:
                                 if needed <= 0:
@@ -668,6 +708,8 @@ def run_post_dedup_refill(
                 cand_events = [
                     e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
                     if e.event_category == sec_cat and e.id not in accepted_event_ids
+                    and e.id not in ctx.refill_attempted_event_ids
+                    and e.id not in ctx.dedup_rejected_event_ids
                 ]
                 for ev in cand_events:
                     if needed <= 0:
@@ -2153,6 +2195,242 @@ def run_ranking_and_selection(
             ctx.log_exec(f"[OLDER_BACKFILL] section=INTERNATIONAL today_count={len(intl_final)} needed={needed} article_date={s_date}")
             intl_final.append(s)
 
+    # -----------------------------------------------------------------------
+    # INTERNATIONAL RECOVERY PASS — bounded recovery ladder
+    # Triggered when intl_final < 5 after today + older backfill
+    # Target: 5 selected + 3 to 5 reserves in ctx.intl_reserve_pool
+    # Recovery order:
+    # 1. Unused verified International reserves
+    # 2. Unused current-run International candidates
+    # 3. Unused extracted International articles
+    # 4. Broader International discovery (36h -> 48h -> 72h)
+    # 5. Bounded secondary discovery via existing search infrastructure
+    # -----------------------------------------------------------------------
+    if len(intl_final) < 5:
+        from app.pipeline.candidate_processing import process_candidate_item
+        from app.pipeline.fallback_manager import reconsider_date_deferred_candidates
+        from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus_intl
+        from app.verification.international import is_geopolitical_market_impact_eligible
+        from app.filtering.rules import StoryTypeFilterRule, URLFilterRule
+        from app.verification import MAX_CORROBORATION_SEARCHES_PER_RUN, get_corroboration_count, increment_corroboration_count
+        from urllib.parse import urlparse
+
+        intl_recovery_selected_ids = {s.event.id for s in intl_final}
+        intl_recovery_rejected_ids: Set[str] = set()
+        needed = 5 - len(intl_final)
+        reg_classifier = _get_reg_classifier()
+        st_rule = StoryTypeFilterRule()
+
+        ctx.log_exec(
+            f"INTERNATIONAL_RECOVERY_START: current={len(intl_final)} needed={needed} (target: 5 selected + 3 to 5 reserves)"
+        )
+        logger.info("INTERNATIONAL_RECOVERY_START: current=%d needed=%d", len(intl_final), needed)
+
+        if not hasattr(ctx, "intl_reserve_pool") or ctx.intl_reserve_pool is None:
+            ctx.intl_reserve_pool = []
+
+        def _intl_recovery_candidate_ok(ev: Event) -> bool:
+            """Check all quality and eligibility gates for an International recovery candidate."""
+            if ev.id in intl_recovery_selected_ids or ev.id in intl_recovery_rejected_ids:
+                return False
+            if ev.id in ctx.dedup_rejected_event_ids:
+                return False
+            if ev.event_category != NewsCategory.INTERNATIONAL:
+                return False
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            if not cand_art:
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            tier = getattr(ev, "verification_tier", None)
+            if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            conf = float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0)
+            if tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE and conf < 80.0:
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            # Region check
+            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INTERNATIONAL
+            )
+            if not is_reg_valid:
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            # Nexus check: must NOT have India nexus
+            is_nex, _ = _verify_nexus_intl(ev, cand_art)
+            if is_nex:
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            # Geopolitical quantified market-impact check
+            is_geo_elig, _ = is_geopolitical_market_impact_eligible(ev, cand_art)
+            if not is_geo_elig:
+                intl_recovery_rejected_ids.add(ev.id)
+                return False
+
+            # Noise check
+            eval_text = f"{cand_art.title} {(cand_art.content_text or '')[:500]}".lower()
+            for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+                if re.search(pat_regex, eval_text, re.IGNORECASE):
+                    intl_recovery_rejected_ids.add(ev.id)
+                    return False
+
+            # Dedup vs. existing selected
+            for ex_s in intl_final:
+                ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
+                if ex_art and cand_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                    intl_recovery_rejected_ids.add(ev.id)
+                    return False
+
+            # 3-day history check
+            if ctx.dedup_engine:
+                c_story = _make_candidate_story_dict(ev, ctx)
+                acc, _ = ctx.dedup_engine.filter_stories(
+                    candidate_stories=[c_story],
+                    target_date=to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today(),
+                    lookback_days=getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3),
+                )
+                if not acc:
+                    intl_recovery_rejected_ids.add(ev.id)
+                    ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False
+
+            return True
+
+        def _try_add_intl_recovery_candidate(ev: Event, step_name: str) -> bool:
+            nonlocal needed
+            if not _intl_recovery_candidate_ok(ev):
+                return False
+
+            conf = float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 70.0)
+
+            if needed > 0:
+                scored = ScoredEvent(
+                    event=ev,
+                    score_breakdown=ScoreBreakdown(
+                        financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                        corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                        editorial_signals=0.0, relevance_penalties=0.0, total_score=conf, rationale=f"intl_recovery_{step_name}",
+                    ),
+                    investment_score=conf,
+                    rank=len(intl_final) + 1,
+                )
+                intl_final.append(scored)
+                intl_recovery_selected_ids.add(ev.id)
+                needed -= 1
+                ctx.log_exec(f"INTERNATIONAL_RECOVERY_ACCEPTED ({step_name}): title=\"{ev.canonical_title}\" conf={conf:.1f}")
+                logger.info("INTERNATIONAL_RECOVERY_ACCEPTED (%s): title=\"%s\" conf=%.1f", step_name, ev.canonical_title, conf)
+                return True
+            elif len(ctx.intl_reserve_pool) < 5:
+                if ev not in ctx.intl_reserve_pool and ev.id not in intl_recovery_selected_ids:
+                    ctx.intl_reserve_pool.append(ev)
+                    ctx.log_exec(f"INTERNATIONAL_RESERVE_ACCEPTED ({step_name}): title=\"{ev.canonical_title}\" (reserves={len(ctx.intl_reserve_pool)})")
+                    return True
+            return False
+
+        all_mem_events = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+
+        # 1. Unused verified International reserves
+        intl_reserves = [
+            ev for ev in (getattr(ctx, "intl_reserve_pool", []) or [])
+            if isinstance(ev, Event) and ev.event_category == NewsCategory.INTERNATIONAL
+        ]
+        for ev in intl_reserves:
+            if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                break
+            _try_add_intl_recovery_candidate(ev, "intl_reserves")
+
+        # 2. Unused current-run International candidates
+        for ev in accepted_events:
+            if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                break
+            if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids:
+                _try_add_intl_recovery_candidate(ev, "post_dedup_unselected")
+
+        for ev in all_mem_events:
+            if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                break
+            if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids:
+                _try_add_intl_recovery_candidate(ev, "verified_pool")
+
+        # 3. Unused extracted International articles
+        for ev in getattr(ctx, "single_source_events", []):
+            if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                break
+            if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids:
+                _try_add_intl_recovery_candidate(ev, "single_source_events")
+
+        # 4. Broader International discovery (deferred horizons: 36h -> 48h -> 72h)
+        if needed > 0 or len(ctx.intl_reserve_pool) < 3:
+            for horizon in [36.0, 48.0, 72.0]:
+                if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                    break
+                reconsider_date_deferred_candidates(NewsCategory.INTERNATIONAL, horizon, ctx)
+                deferred_cands = [
+                    ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                    if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids
+                ]
+                for ev in deferred_cands:
+                    _try_add_intl_recovery_candidate(ev, f"deferred_{int(horizon)}h")
+                    if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                        break
+
+        # 5. Bounded secondary discovery via existing search infrastructure
+        if (needed > 0 or len(ctx.intl_reserve_pool) < 3) and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
+            rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            if rem_budget > 0:
+                ctx.log_exec(f"[INTERNATIONAL_RECOVERY] Search discovery for {needed} missing stories (budget rem: {rem_budget})")
+                INTL_RECOVERY_QUERIES = [
+                    "global business deals when:1d",
+                    "US corporate earnings when:1d",
+                    "Europe corporate deals when:1d",
+                    "global mergers acquisitions when:1d",
+                    "international capex when:1d",
+                    "global fundraising when:1d",
+                    "US IPO when:1d",
+                    "Europe IPO when:1d",
+                    "global banking when:1d",
+                    "international technology business when:1d",
+                    "global energy deals when:1d",
+                    "international regulatory corporate action when:1d",
+                ]
+                INTL_RECOVERY_SOURCES = "(site:reuters.com OR site:bloomberg.com OR site:ft.com OR site:wsj.com OR site:cnbc.com OR site:apnews.com OR site:marketwatch.com)"
+
+                for qry in INTL_RECOVERY_QUERIES:
+                    if (needed <= 0 and len(ctx.intl_reserve_pool) >= 3) or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                        break
+                    full_query = f"{qry} {INTL_RECOVERY_SOURCES}"
+                    items = ctx.discovery_service.provider.discover(query=full_query, country="US", max_results=10)
+                    increment_corroboration_count(1)
+                    ctx.corroboration_searches += 1
+                    for it in items:
+                        u = it.url.strip()
+                        u_norm = u.lower().rstrip("/")
+                        cand_netloc = urlparse(u).netloc.lower().replace("www.", "")
+                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+                            continue
+                        if URLFilterRule.is_valid_url(u)[0]:
+                            ctx.seen_urls.add(u_norm)
+                            process_candidate_item(it, "international", ctx)
+                            new_cands = [
+                                ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                                if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids
+                            ]
+                            for ev in new_cands:
+                                _try_add_intl_recovery_candidate(ev, "search_discovery")
+                                if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                                    break
+                        if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
+                            break
+
+        if needed > 0:
+            ctx.log_exec(f"INTERNATIONAL_RECOVERY_EXHAUSTED: still need {needed} stories after all recovery steps")
+            logger.warning("INTERNATIONAL_RECOVERY_EXHAUSTED: need=%d after mem+deferred+search", needed)
+
     for rank, scored in enumerate(intl_final, 1):
         scored.rank = rank
     candidate_pool.international_candidates = intl_final
@@ -2300,10 +2578,13 @@ def run_ranking_and_selection(
                 global_seen_portfolio_companies[pf_comp] = ev.canonical_title
             ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '{ev.canonical_title}'")
 
-    # Refill International if vacated / moved stories left it below 5
-    if intl_misclassified_to_india and len(intl_audited) < 5:
+    # Refill International if below 5 from reserve pool and in-memory events
+    if len(intl_audited) < 5:
         intl_current_ids = {s.event.id for s in intl_audited}.union(india_current_ids).union(rejected_intl_event_ids)
         intl_reserves = [
+            ev for ev in (getattr(ctx, "intl_reserve_pool", []) or [])
+            if isinstance(ev, Event) and ev.id not in intl_current_ids and ev.event_category == NewsCategory.INTERNATIONAL
+        ] + [
             s for s in (intl_older or []) if s.event.id not in intl_current_ids
         ] + [
             ev for ev in list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
@@ -2442,3 +2723,4 @@ def run_ranking_and_selection(
                 logger.error(insuf_msg)
 
     return candidate_pool, domestic_pool, india_pool, intl_pool, sufficient, pipeline_status
+
