@@ -76,6 +76,13 @@ class PipelineContext:
     failed_urls: Set[str] = field(default_factory=set)
     failed_domains: Set[str] = field(default_factory=set)
 
+    # CandidateRegistry: tracks per-URL status to prevent duplicate processing across stages.
+    # Values: SOURCE_REJECTED | EXTRACTED | TYPE_REJECTED | REGION_REJECTED | VERIFIED |
+    #         MATERIALITY_REJECTED | DEDUP_REJECTED | QUALIFIED | SELECTED | RESERVE
+    candidate_registry: Dict[str, str] = field(default_factory=dict)
+    # URLs permanently rejected before extraction (source policy or dedup); never retry these.
+    permanently_rejected_urls: Set[str] = field(default_factory=set)
+
     # Execution counters
     corroboration_searches: int = 0
     second_sources_found: int = 0
@@ -85,6 +92,7 @@ class PipelineContext:
     rss_international_used: int = 0
     internal_pipeline_errors: int = 0
     portfolio_discovery_executed: bool = False
+    source_policy_skips: int = 0  # HTTP fetches avoided by SourcePolicy pre-filter
 
     def __post_init__(self):
         """Initialize missing default engines if not provided."""
