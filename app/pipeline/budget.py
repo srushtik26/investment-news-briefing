@@ -27,18 +27,27 @@ class ApiBudget:
     general_india_queries: int = 0
     gemini_offline_mode: bool = False
 
+    @property
+    def offline_mode(self) -> bool:
+        """Check whether Gemini is operating in offline fallback mode."""
+        return self.gemini_offline_mode
+
+    def record_gemini_429(self) -> None:
+        """Record 429 quota exhaustion and activate offline mode."""
+        logger.warning("[API_BUDGET] Gemini 429 quota exhausted; switching immediately to deterministic offline mode")
+        self.gemini_offline_mode = True
+
     def can_call_gemini(self) -> bool:
         """Check if Gemini API calls are permitted."""
         if self.gemini_offline_mode:
             return False
         return self.gemini_calls < self.max_gemini_calls
 
-    def record_gemini_call(self, success: bool = True, status_code: Optional[int] = None) -> None:
+    def record_gemini_call(self, success: bool = True, status_code: Optional[int] = None, tokens: int = 0) -> None:
         """Record a Gemini API call and transition to offline mode if quota exhausted."""
         self.gemini_calls += 1
         if status_code == 429:
-            logger.warning("[API_BUDGET] Gemini 429 quota exhausted; switching immediately to deterministic offline mode")
-            self.gemini_offline_mode = True
+            self.record_gemini_429()
 
     def record_serpapi_call(self) -> None:
         """Record a SerpAPI query."""

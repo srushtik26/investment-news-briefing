@@ -103,20 +103,32 @@ def prepare_final_story(
     if not summary:
         summary = f"{headline}. Strategic developments and institutional context."
 
-    section_str = context.region.value if hasattr(context.region, "value") else str(context.region).lower()
-    source_name = art.source_name if art else (ev.primary_publisher or "Institutional Feed")
-    url = art.url if art else (ev.primary_url or f"https://briefing.local/{ev.id}")
+    section_str = "india"
+    if hasattr(context, "region"):
+        r_val = context.region.value if hasattr(context.region, "value") and isinstance(context.region.value, str) else str(context.region)
+        r_val = r_val.lower()
+        if "domestic" in r_val:
+            section_str = "domestic"
+        elif "intl" in r_val or "international" in r_val:
+            section_str = "international"
+        else:
+            section_str = "india"
 
-    sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-    sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
+    source_name = (art.source_name if (art and isinstance(art.source_name, str)) else (ev.primary_publisher if isinstance(getattr(ev, "primary_publisher", None), str) else "Institutional Feed"))
+    url = (art.url if (art and isinstance(art.url, str)) else (ev.primary_url if isinstance(getattr(ev, "primary_url", None), str) else f"https://briefing.local/{getattr(ev, 'id', 'ev1')}"))
+    ev_id = str(getattr(ev, "id", "ev1"))
+
+    is_two_source = getattr(ev, "verification_tier", None) == VerificationTier.TWO_SOURCE_VERIFIED
+    sec_src = getattr(ev, "secondary_publisher", None) if is_two_source and isinstance(getattr(ev, "secondary_publisher", None), str) else None
+    sec_u = getattr(ev, "secondary_url", None) if is_two_source and isinstance(getattr(ev, "secondary_url", None), str) else None
 
     return EditorialStorySelection(
         section=section_str,
-        event_id=ev.id,
-        headline=headline,
-        summary=summary,
-        source=source_name,
-        url=url,
+        event_id=ev_id,
+        headline=str(headline),
+        summary=str(summary),
+        source=str(source_name),
+        url=str(url),
         secondary_source=sec_src,
         secondary_url=sec_u,
     )

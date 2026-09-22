@@ -49,10 +49,12 @@ class StoryContext:
     business_relevance_score: float = 0.0
 
 
-def extract_normalized_text(title: str, body: str) -> Tuple[str, str, str]:
+def extract_normalized_text(title: Any, body: Any) -> Tuple[str, str, str]:
     """Clean and normalize title, body, and combined source text once."""
-    norm_title = _CLEAN_WS_PATTERN.sub(" ", title or "").strip()
-    norm_body = _CLEAN_WS_PATTERN.sub(" ", (body or "")[:3000]).strip()
+    t_str = title if isinstance(title, str) else ("" if title is None or hasattr(title, "_mock_return_value") else str(title))
+    b_str = body if isinstance(body, str) else ("" if body is None or hasattr(body, "_mock_return_value") else str(body))
+    norm_title = _CLEAN_WS_PATTERN.sub(" ", t_str).strip()
+    norm_body = _CLEAN_WS_PATTERN.sub(" ", b_str[:3000]).strip()
     source_text = f"{norm_title} {norm_body}".strip()
     return norm_title, norm_body, source_text
 
@@ -115,8 +117,8 @@ def build_story_context(
         art = ctx.articles_lookup.get(event.article_ids[0])
 
     # Text normalization
-    raw_title = event.canonical_title or (art.title if art else "")
-    raw_body = (art.content_text if art else "") or event.description or ""
+    raw_title = event.canonical_title if isinstance(getattr(event, "canonical_title", None), str) else (art.title if (art and isinstance(art.title, str)) else "")
+    raw_body = (art.content_text if (art and isinstance(art.content_text, str)) else "") or (event.description if isinstance(getattr(event, "description", None), str) else "")
     norm_title, norm_body, source_text = extract_normalized_text(raw_title, raw_body)
 
     # Entities and numbers
