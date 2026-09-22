@@ -14,6 +14,7 @@ from app.models.enums import VerificationTier
 from app.models.entity_sanitizer import sanitize_company_entities, normalize_publisher_name
 from app.extraction import ArticleExtractor
 from app.filtering.rules import URLFilterRule
+from app.filtering.source_policy import is_extraction_worthy as _source_policy_extraction_worthy
 from app.verification.single_source import is_multi_event_roundup
 from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
 from app.pipeline.context import PipelineContext
@@ -64,23 +65,35 @@ def _extract_candidates(
     extractor: ArticleExtractor,
     seen_urls: Set[str],
     log_exec: Callable[[str], None],
-) -> Tuple[List[Article], List[Dict[str, Any]], int, int, int, int, int]:
+) -> Tuple[List[Article], List[Dict[str, Any]], int, int, int, int, int, int]:
     """
     Extract full text from a list of (DiscoveredArticle, country) candidates.
     Uses bounded concurrency (max 5 threads) and preserves deterministic ordering.
-    Returns (extracted_articles, extraction_records, google_urls, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen).
+
+    Returns:
+        extracted_articles, extraction_records, google_urls, resolved_ok,
+        fallback_ok, pre_url_rejects, duplicate_seen, source_policy_skips
+
+    source_policy_skips: URLs blocked by SourcePolicy before any HTTP fetch,
+    saving free-tier budget on paywalled or aggregator domains.
     """
     total = len(candidates_with_country)
     extracted: List[Article] = []
     records: List[Dict[str, Any]] = []
-    google_count = resolved_ok = fallback_ok = pre_url_rejects = duplicate_seen = 0
+    google_count = resolved_ok = fallback_ok = pre_url_rejects = duplicate_seen = source_policy_skips = 0
 
-    # Step 1: Filter duplicates against seen_urls in deterministic sequence
+    # Step 1: Filter duplicates + source-policy rejections in deterministic sequence
     to_extract: List[Tuple[int, Any, str, str, Optional[datetime]]] = []
     for idx, (cand, country) in enumerate(candidates_with_country, 1):
         norm_url = cand.url.strip().lower().rstrip("/")
         if norm_url in seen_urls:
             duplicate_seen += 1
+            continue
+        # Source policy pre-check: skip blocked/paywalled domains before HTTP fetch
+        cand_source = getattr(cand, "source", "") or ""
+        if not _source_policy_extraction_worthy(cand.url, cand_source):
+            source_policy_skips += 1
+            log_exec(f"  [SOURCE_POLICY_SKIP] ({cand_source}): {cand.url[:80]}")
             continue
         cand_netloc = urlparse(cand.url).netloc.lower().replace("www.", "")
         if cand.url in getattr(extractor, "blocked_url_cache", set()) or extractor.is_domain_degraded(cand_netloc):
@@ -92,7 +105,7 @@ def _extract_candidates(
         to_extract.append((idx, cand, country, canonical_source, rss_published_at))
 
     if not to_extract:
-        return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen
+        return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen, source_policy_skips
 
     # Step 2: Extract concurrently with at most 5 threads
     def _worker(item):
@@ -167,7 +180,7 @@ def _extract_candidates(
             else:
                 log_exec(f"  -> FAILED ({res.extraction_method}): {res.error_message}")
 
-    return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen
+    return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen, source_policy_skips
 
 
 def _recover_alternate_source(

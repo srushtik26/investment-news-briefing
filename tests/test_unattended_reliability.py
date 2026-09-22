@@ -297,7 +297,7 @@ def test_formatter_failure_causes_nonzero_exit(temp_data_dir):
     mock_pool.international_candidates = [mock_cand] * 5
 
     with patch("app.pipeline.runner.discover_initial_reserves", return_value=([], 0, 0, 0)), \
-         patch("app.pipeline.runner._extract_candidates", return_value=([], [], 0, 0, 0, 0, 0)), \
+         patch("app.pipeline.runner._extract_candidates", return_value=([], [], 0, 0, 0, 0, 0, 0)), \
          patch("app.pipeline.runner.run_expansion_and_fallbacks", return_value="OK"), \
          patch("app.pipeline.runner.run_second_source_enrichment"), \
          patch("app.pipeline.runner.run_deduplication", return_value=([], {})), \

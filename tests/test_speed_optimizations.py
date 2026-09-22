@@ -213,7 +213,7 @@ def test_concurrency_never_exceeds_five():
     ]
     seen_urls = set()
 
-    extracted, records, gc, ro, fo, pur, dup = _extract_candidates(
+    extracted, records, gc, ro, fo, pur, dup, sps = _extract_candidates(
         candidates, mock_extractor, seen_urls, lambda m: None
     )
 
@@ -255,7 +255,7 @@ def test_deterministic_output_ordering_preserved():
     ]
     seen_urls = set()
 
-    extracted, records, gc, ro, fo, pur, dup = _extract_candidates(
+    extracted, records, gc, ro, fo, pur, dup, sps = _extract_candidates(
         candidates, mock_extractor, seen_urls, lambda m: None
     )
 

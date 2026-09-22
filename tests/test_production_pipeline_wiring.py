@@ -77,7 +77,7 @@ def test_stage4_classification_result_contract_offline_fallback(tmp_path):
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
         mock_disc.return_value = ([art], 0, 1, 0)
-        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0)
+        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
 
@@ -134,7 +134,7 @@ def test_stage4_classification_result_contract_live_gemini(tmp_path):
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
         mock_disc.return_value = ([art], 0, 1, 0)
-        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0)
+        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
 
@@ -178,7 +178,7 @@ def test_stage4_classification_failure_and_rejection_paths(tmp_path):
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
         mock_disc.return_value = ([art], 0, 0, 1)
-        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0)
+        mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
 

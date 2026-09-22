@@ -58,7 +58,7 @@ def test_extract_candidates_pub_at_defined():
     seen = set()
     logs = []
     
-    extracted, records, gc, ro, fo, pur, dup = _extract_candidates(
+    extracted, records, gc, ro, fo, pur, dup, sps = _extract_candidates(
         [(cand, "india")],
         mock_extractor,
         seen,

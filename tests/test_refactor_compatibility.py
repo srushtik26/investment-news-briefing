@@ -239,7 +239,7 @@ def test_9_runner_production_wiring_and_execution_smoke_test(tmp_path):
 
         # Mock initial discovery to return 0 candidates
         mock_disc.return_value = ([], 0, 0, 0)
-        mock_ext.return_value = ([], [], 0, 0, 0, 0, 0)
+        mock_ext.return_value = ([], [], 0, 0, 0, 0, 0, 0)
 
         # Run pipeline
         exit_code = run_pipeline(
