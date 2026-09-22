@@ -44,50 +44,57 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
+def init_db_conn(conn: sqlite3.Connection) -> None:
+    """
+    Initialize SQLite schema tables and indexes on an existing connection.
+    """
+    with conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS briefing_history (
+                id TEXT PRIMARY KEY,
+                briefing_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'COMPLETED',
+                story_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_briefing_date ON briefing_history(briefing_date);
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS historical_stories (
+                id TEXT PRIMARY KEY,
+                briefing_id TEXT,
+                event_id TEXT NOT NULL,
+                event_fingerprint TEXT NOT NULL,
+                headline TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
+                published_date TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (briefing_id) REFERENCES briefing_history(id)
+            );
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hist_fingerprint ON historical_stories(event_fingerprint);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hist_pub_date ON historical_stories(published_date);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hist_company ON historical_stories(company_name);
+        """)
+
+
 def init_db(db_path: Optional[str] = None) -> None:
     """
     Initialize SQLite schema tables and indexes.
     """
     conn = get_connection(db_path)
     try:
-        with conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS briefing_history (
-                    id TEXT PRIMARY KEY,
-                    briefing_date TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'COMPLETED',
-                    story_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_briefing_date ON briefing_history(briefing_date);
-            """)
-
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS historical_stories (
-                    id TEXT PRIMARY KEY,
-                    briefing_id TEXT,
-                    event_id TEXT NOT NULL,
-                    event_fingerprint TEXT NOT NULL,
-                    headline TEXT NOT NULL,
-                    company_name TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    source_count INTEGER NOT NULL DEFAULT 1,
-                    published_date TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (briefing_id) REFERENCES briefing_history(id)
-                );
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hist_fingerprint ON historical_stories(event_fingerprint);
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hist_pub_date ON historical_stories(published_date);
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hist_company ON historical_stories(company_name);
-            """)
+        init_db_conn(conn)
         logger.info("Initialized SQLite database schema successfully.")
     finally:
         conn.close()

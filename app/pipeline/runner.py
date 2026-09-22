@@ -140,21 +140,14 @@ def run_pipeline(
     reset_serpapi_counter()
     GeminiUsageLogger.reset()
 
-    # Instantiate services
-    if validation_run:
-        validation_db_file = data_dir / "validation_briefings.db"
-        for ext in ("", "-wal", "-shm"):
-            p = Path(f"{validation_db_file}{ext}")
-            if p.exists():
-                try:
-                    p.unlink()
-                except Exception as e:
-                    logger.warning("Could not remove old validation DB %s: %s", p, e)
-        validation_db_url = f"sqlite:///{validation_db_file.as_posix()}"
-        history_store = HistoryStore(db_path=validation_db_url)
-        log_exec(f"[VALIDATION MODE] Using isolated history database: {validation_db_url} (production history untouched)")
+    from config import is_testing_or_dry_run
+    is_dry_run_mode = validation_run or is_testing_or_dry_run()
+    if is_dry_run_mode:
+        log_exec("DRY_RUN_HISTORY_MODE=isolated")
+        logger.info("DRY_RUN_HISTORY_MODE=isolated")
+        history_store = HistoryStore(is_isolated=True)
     else:
-        history_store = HistoryStore()
+        history_store = HistoryStore(is_isolated=False)
 
     discovery_service = NewsDiscoveryService(
         provider=GoogleNewsRSSDiscoveryProvider()

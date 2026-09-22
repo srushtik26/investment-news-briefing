@@ -82,6 +82,20 @@ def run_second_source_enrichment(ctx: PipelineContext) -> None:
         primary_art = ctx.articles_lookup[ev.article_ids[0]]
         prim_domain = urlparse(primary_art.url).netloc.lower().replace("www.", "")
 
+        # Early dedup check: exclusion sets & history check before expensive second-source search
+        if ev.id in getattr(ctx, "dedup_rejected_event_ids", set()):
+            continue
+        if ev.id in getattr(ctx, "refill_attempted_event_ids", set()):
+            continue
+
+        if ctx.history_store:
+            target_d = ctx.run_reference_time.date() if ctx.run_reference_time else None
+            hist_fps = ctx.history_store.get_recent_fingerprints(lookback_days=3, target_date=target_d)
+            if ev.canonical_title in hist_fps or primary_art.title in hist_fps:
+                ctx.dedup_rejected_event_ids.add(ev.id)
+                ctx.log_exec(f"[ENRICHMENT_EARLY_DEDUP] Skipping candidate in historical duplicates: '{ev.canonical_title}'")
+                continue
+
         ev_horizon = (ev.metadata or {}).get("fallback_horizon_hours", 24.0)
         when_days = 1 if ev_horizon <= 36.0 else (2 if ev_horizon <= 48.0 else 3)
         when_param = f"when:{when_days}d"

@@ -69,6 +69,13 @@ class PipelineContext:
     india_reserve_pool: List[Any] = field(default_factory=list)
     intl_reserve_pool: List[Any] = field(default_factory=list)
 
+    # Deduplication and Refill Exclusion Sets
+    seen_event_ids: Set[str] = field(default_factory=set)
+    dedup_rejected_event_ids: Set[str] = field(default_factory=set)
+    refill_attempted_event_ids: Set[str] = field(default_factory=set)
+    failed_urls: Set[str] = field(default_factory=set)
+    failed_domains: Set[str] = field(default_factory=set)
+
     # Execution counters
     corroboration_searches: int = 0
     second_sources_found: int = 0
@@ -96,15 +103,19 @@ class PipelineContext:
             self.reg_clf = EventRegionClassifier()
         if self.history_store is None:
             from app.deduplication import HistoryStore
-            if self.data_dir is None:
-                self.history_store = HistoryStore(db_path=":memory:")
+            from config import is_testing_or_dry_run
+            is_iso = self.validation_run or is_testing_or_dry_run()
+            if is_iso:
+                self.history_store = HistoryStore(is_isolated=True)
+            elif self.data_dir is None:
+                self.history_store = HistoryStore(db_path=":memory:", is_isolated=False)
             else:
                 self.data_dir = Path(self.data_dir)
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 db_target = self.data_dir / "briefings.db"
                 if not db_target.exists() and (self.data_dir / "briefing_history.json").exists():
                     db_target = self.data_dir / "briefing_history.json"
-                self.history_store = HistoryStore(db_path=str(db_target))
+                self.history_store = HistoryStore(db_path=str(db_target), is_isolated=False)
         if self.dedup_engine is None:
             from app.deduplication import DeduplicationEngine
             self.dedup_engine = DeduplicationEngine(history_store=self.history_store)
