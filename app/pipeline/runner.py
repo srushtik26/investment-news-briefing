@@ -90,6 +90,8 @@ from app.pipeline.reporting import (
     print_final_story_audit,
     save_json_artifact,
 )
+from app.pipeline.story_context import StoryContext, build_story_context
+from app.pipeline.story_prep import prepare_final_story, replace_failed_story
 
 logger = get_logger("pipeline.runner")
 
@@ -537,35 +539,33 @@ def run_pipeline(
         log_exec("=" * 60)
         log_exec("STAGE 8: Gemini Editorial — final editorial curation across 3 sections")
         log_exec("=" * 60)
-        editorial_engine = GeminiEditorialEngine()
-        time.sleep(2)
-        try:
-            editorial_res = editorial_engine.select_and_synthesize_briefing(candidate_pool, ctx.articles_lookup)
-        except Exception as e:
-            log_exec(f"  -> ERROR during editorial call: {e}")
-            editorial_res = EditorialResult(success=False, error_message=str(e), attempts=1)
 
-        # Prepare deterministic Top 5 Domestic stories
+        budget = getattr(ctx, "budget", None)
+        editorial_res = None
+        if budget and budget.offline_mode:
+            log_exec("  -> [BUDGET_OFFLINE] Gemini is in offline mode (quota exhausted/disabled) — bypassing Gemini call.")
+            editorial_res = EditorialResult(success=False, error_message="Gemini in offline mode", attempts=0)
+        else:
+            editorial_engine = GeminiEditorialEngine()
+            time.sleep(2)
+            try:
+                editorial_res = editorial_engine.select_and_synthesize_briefing(candidate_pool, ctx.articles_lookup)
+                if budget:
+                    budget.record_gemini_call(tokens=getattr(editorial_res, "tokens_used", 0) or 0)
+            except Exception as e:
+                log_exec(f"  -> ERROR during editorial call: {e}")
+                if "429" in str(e) or "ResourceExhausted" in str(e) or "quota" in str(e).lower():
+                    if budget:
+                        budget.record_gemini_429()
+                editorial_res = EditorialResult(success=False, error_message=str(e), attempts=1)
+
+        # Prepare deterministic Top 5 Domestic stories using unified story prep
         dom_stories_selected = []
         for s in candidate_pool.domestic_candidates[:5]:
             ev = s.event
             art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-            src = ev.primary_publisher or (art.source_name if art else "The Hindu")
-            u = ev.primary_url or (art.url if art else f"https://example.com/dom-{ev.id}")
-            sum_text = generate_deterministic_summary(art, ev, ev.canonical_title)
-            sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-            sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-            inst_hl = synthesize_investment_headline(ev.canonical_title, event=ev, article=art)
-            dom_stories_selected.append(EditorialStorySelection(
-                section="domestic",
-                event_id=ev.id,
-                headline=inst_hl,
-                summary=sum_text,
-                source=src,
-                url=u,
-                secondary_source=sec_src,
-                secondary_url=sec_u,
-            ))
+            sc = build_story_context(ev, art, ctx=ctx)
+            dom_stories_selected.append(prepare_final_story(sc, ctx=ctx))
 
         selection_payload = None
         if editorial_res and editorial_res.success and editorial_res.selection:
@@ -581,42 +581,16 @@ def run_pipeline(
             for s in candidate_pool.india_candidates[:5]:
                 ev = s.event
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                src = ev.primary_publisher or (art.source_name if art else "Business Standard")
-                u = ev.primary_url or (art.url if art else f"https://example.com/india-{ev.id}")
-                inst_hl = generate_grounded_fallback_headline(event=ev, article=art)
-                sum_text = generate_deterministic_summary(art, ev, inst_hl)
-                sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-                sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-                india_stories_selected.append(EditorialStorySelection(
-                    section="india",
-                    event_id=ev.id,
-                    headline=inst_hl,
-                    summary=sum_text,
-                    source=src,
-                    url=u,
-                    secondary_source=sec_src,
-                    secondary_url=sec_u,
-                ))
+                sc = build_story_context(ev, art, ctx=ctx)
+                india_stories_selected.append(prepare_final_story(sc, ctx=ctx))
+
             intl_stories_selected = []
             for s in candidate_pool.international_candidates[:5]:
                 ev = s.event
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                src = ev.primary_publisher or (art.source_name if art else "Reuters")
-                u = ev.primary_url or (art.url if art else f"https://example.com/intl-{ev.id}")
-                inst_hl = generate_grounded_fallback_headline(event=ev, article=art)
-                sum_text = generate_deterministic_summary(art, ev, inst_hl)
-                sec_src = ev.secondary_publisher if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-                sec_u = ev.secondary_url if ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED else None
-                intl_stories_selected.append(EditorialStorySelection(
-                    section="international",
-                    event_id=ev.id,
-                    headline=inst_hl,
-                    summary=sum_text,
-                    source=src,
-                    url=u,
-                    secondary_source=sec_src,
-                    secondary_url=sec_u,
-                ))
+                sc = build_story_context(ev, art, ctx=ctx)
+                intl_stories_selected.append(prepare_final_story(sc, ctx=ctx))
+
             selection_payload = BriefingEditorialPayload(
                 domestic_stories=dom_stories_selected,
                 india_stories=india_stories_selected,
@@ -624,55 +598,20 @@ def run_pipeline(
             )
 
         # Headline institutional style verification and Summary grounding validation
-        for story in (selection_payload.domestic_stories + selection_payload.india_stories + selection_payload.international_stories):
-            ev = event_by_id.get(story.event_id)
-            art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
-
-            # Verify and upgrade headline style if routine or unapproved, or if semantic overlap fails
-            target_text = build_headline_grounding_source(ev, art)
-            has_overlap, ov_count, _ = calculate_semantic_token_overlap(story.headline, target_text)
-
-            if not is_approved_institutional_headline(story.headline) or not has_overlap:
-                logger.info(
-                    "EDITORIAL_HEADLINE_PRECHECK: triggered for '%s' (approved=%s, overlap=%d) — generating grounded fallback headline",
-                    story.headline, is_approved_institutional_headline(story.headline), ov_count
-                )
-                story.headline = generate_grounded_fallback_headline(
-                    event=ev, article=art, candidate_headline=story.headline
-                )
-
-            from app.ai.headline_synthesis import validate_headline_coherence, _clean_headline_text
-            is_coh, coh_reason = validate_headline_coherence(story.headline, event=ev, article=art)
-            if not is_coh:
-                logger.warning(
-                    "Headline coherence check failed for '%s' (%s) — reverting to clean canonical title",
-                    story.headline,
-                    coh_reason,
-                )
-                raw_t = ev.canonical_title if ev else (art.title if art else story.headline)
-                story.headline = _clean_headline_text(raw_t)
-
-            has_final_overlap, final_ov_count, _ = calculate_semantic_token_overlap(story.headline, target_text)
-            logger.info("EDITORIAL_HEADLINE_OVERLAP: story='%s' overlap=%d", story.headline, final_ov_count)
-
-            if not getattr(story, "summary", None):
-                story.summary = generate_deterministic_summary(art, ev, story.headline)
-            else:
-                is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
-                is_duplicate = is_summary_substantially_identical_to_headline(story.summary, story.headline)
-                sum_len = len(story.summary.split())
-                if not is_grounded or is_duplicate or sum_len > 65:
-                    logger.warning(
-                        "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — using deterministic fallback",
-                        story.headline,
-                        is_grounded,
-                        is_duplicate,
-                        sum_len,
+        all_curated_sections = [
+            ("domestic", selection_payload.domestic_stories),
+            ("india", selection_payload.india_stories),
+            ("international", selection_payload.international_stories),
+        ]
+        for sec_name, story_list in all_curated_sections:
+            for idx, story in enumerate(story_list):
+                ev = event_by_id.get(story.event_id)
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if ev and ev.article_ids else None
+                sc = build_story_context(ev, art, ctx=ctx) if ev else None
+                if sc:
+                    story_list[idx] = prepare_final_story(
+                        sc, ctx=ctx, preferred_headline=story.headline, preferred_summary=story.summary
                     )
-                    story.summary = generate_deterministic_summary(art, ev, story.headline)
-            if ev and ev.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED and ev.secondary_publisher and ev.secondary_url:
-                story.secondary_source = ev.secondary_publisher
-                story.secondary_url = ev.secondary_url
 
         save_json_artifact(data_dir / "final_15_stories.json", {
             "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],

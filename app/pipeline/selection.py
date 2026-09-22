@@ -1668,7 +1668,9 @@ def run_ranking_and_selection(
     if audit_rejected:
         target_india_count = len(audit_passed) + len(audit_rejected)
         ctx.log_exec(f"[INDIA_FINAL_NEXUS_AUDIT] {len(audit_rejected)} story/stories failed — seeking replacements (target={target_india_count})")
-        all_mem_events_audit = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
+        # Check portfolio reserve pool first, then all memory events
+        pf_reserves = [cand.event if hasattr(cand, "event") else cand for cand in getattr(ctx, "portfolio_reserve_pool", [])]
+        all_mem_events_audit = pf_reserves + list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
         used_ids_audit = {s.event.id for s in audit_passed}
         for ev in all_mem_events_audit:
             if len(audit_passed) >= target_india_count:
