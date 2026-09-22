@@ -265,6 +265,9 @@ class EventRegionClassifier:
         if not event:
             return False, "INDIA_NEXUS_REJECT: no event provided"
 
+        if hasattr(event, "metadata") and isinstance(event.metadata, dict) and "india_nexus_verified" in event.metadata:
+            return bool(event.metadata["india_nexus_verified"]), str(event.metadata.get("india_nexus_reason", ""))
+
         title_text = f"{event.canonical_title or ''} {article.title if article else ''}".lower().strip()
         body_text = (article.content_text or "")[:4000].lower() if article else ""
         desc_text = (event.description or "").lower()
@@ -380,6 +383,12 @@ class EventRegionClassifier:
         india_raw_count = len(re.findall(r"\bindia\b", context_text))
         india_only_incidental = (india_raw_count <= 1) and not signal_a and not signal_b and not signal_c and not signal_d and not signal_e and not signal_f
 
+        def _finish(is_pass: bool, reason_str: str) -> Tuple[bool, str]:
+            if hasattr(event, "metadata") and isinstance(event.metadata, dict):
+                event.metadata["india_nexus_verified"] = is_pass
+                event.metadata["india_nexus_reason"] = reason_str
+            return is_pass, reason_str
+
         # ----------------------------------------------------------------
         # FOREIGN-LEAKAGE REJECTION: primary entity foreign + event foreign + no India impact
         # ----------------------------------------------------------------
@@ -390,7 +399,7 @@ class EventRegionClassifier:
             )
             logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"foreign entity + foreign geography, no India impact\"",
                         event.canonical_title[:80])
-            return False, reason
+            return _finish(False, reason)
 
         if has_foreign_geo and not has_intl_entity and not signal_a and not signal_b and not signal_c and not signal_d and not signal_e and not signal_f:
             reason = (
@@ -399,7 +408,7 @@ class EventRegionClassifier:
             )
             logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"foreign geography, no India signals\"",
                         event.canonical_title[:80])
-            return False, reason
+            return _finish(False, reason)
 
         if india_only_incidental and (has_foreign_geo or has_intl_entity):
             reason = (
@@ -408,7 +417,7 @@ class EventRegionClassifier:
             )
             logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"India only incidental mention\"",
                         event.canonical_title[:80])
-            return False, reason
+            return _finish(False, reason)
 
         # ----------------------------------------------------------------
         # ACCEPT if at least one strong signal found
@@ -431,7 +440,7 @@ class EventRegionClassifier:
             reason = f"INDIA_NEXUS_PASS: signals=[{', '.join(active_signals)}]"
             logger.info("INDIA_NEXUS_PASS: title=\"%s\" signals=%s",
                         event.canonical_title[:80], active_signals)
-            return True, reason
+            return _finish(True, reason)
 
         # ----------------------------------------------------------------
         # FALLBACK: No strong India signal found — reject
@@ -442,7 +451,7 @@ class EventRegionClassifier:
         )
         logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"no strong India business signal\"",
                     event.canonical_title[:80])
-        return False, reason
+        return _finish(False, reason)
 
     def verify_region_eligibility(
         self,
