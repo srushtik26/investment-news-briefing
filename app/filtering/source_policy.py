@@ -40,6 +40,7 @@ _TIER1_PRIMARY_DOMAINS: frozenset[str] = frozenset({
     "businesstoday.in",
     "ndtvprofit.com",
     "thehindubusinessline.com",
+    "cnbctv18.com",
     # Domestic India
     "thehindu.com",
     "indianexpress.com",
@@ -127,7 +128,6 @@ _BLOCKED_DOMAINS: frozenset[str] = frozenset({
     # Aggregators / syndication
     "yahoo.com",
     "msn.com",
-    "news.google.com",
     "feedly.com",
     # Markets data
     "markets.ft.com",
@@ -187,6 +187,24 @@ def get_tier(url: str, source_name: str = "") -> str:
     netloc = _get_netloc(url)
     if not netloc:
         return "BLOCKED"
+
+    # Handle Google News RSS redirect URLs via publisher source_name
+    if netloc in ("news.google.com", "news.google.co.in"):
+        if source_name:
+            norm_src = source_name.lower().strip()
+            # Check if publisher is known blocked
+            for b in ("tradingview", "seeking alpha", "stockanalysis", "motley fool", "fool", "zacks", "tipranks"):
+                if b in norm_src:
+                    return "BLOCKED"
+            # Check if publisher is known secondary (paywalled)
+            for s in ("bloomberg", "reuters", "financial times", "ft", "wall street journal", "wsj", "new york times", "nytimes"):
+                if s in norm_src:
+                    return "SECONDARY"
+            # Check if publisher is official
+            for o in ("bse", "nse", "sebi", "rbi", "sec", "pib"):
+                if o in norm_src:
+                    return "OFFICIAL"
+        return "PRIMARY"
 
     # Check blocked domains first
     if _domain_in_set(netloc, _BLOCKED_DOMAINS):

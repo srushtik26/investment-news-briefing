@@ -57,11 +57,15 @@ class ArticleExtractor:
     def is_domain_degraded(self, domain_or_url: str) -> bool:
         """Check whether a domain is currently marked EXTRACTION_DEGRADED_FOR_RUN."""
         netloc = urlparse(domain_or_url).netloc.lower().replace("www.", "") if "://" in domain_or_url else domain_or_url.lower().replace("www.", "")
+        if "news.google.com" in netloc:
+            return False
         return netloc in self.degraded_domains_for_run or any(d in netloc for d in self.degraded_domains_for_run)
 
     def mark_domain_degraded(self, domain: str) -> None:
         """Mark a domain as degraded for the current run."""
         clean_d = domain.lower().replace("www.", "").strip()
+        if "news.google.com" in clean_d:
+            return
         self.degraded_domains_for_run.add(clean_d)
         logger.warning("DOMAIN_EXTRACTION_DEGRADED_FOR_RUN: '%s' marked degraded for remainder of run.", clean_d)
 

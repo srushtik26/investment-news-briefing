@@ -294,7 +294,7 @@ def process_candidate_item(
     ctx.seen_urls.add(u_norm)
 
     cand_netloc = urlparse(cand.url).netloc.lower().replace("www.", "")
-    if cand.url in ctx.failed_urls or u_norm in ctx.failed_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+    if cand.url in ctx.failed_urls or u_norm in ctx.failed_urls or (cand_netloc != "news.google.com" and (cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)))):
         return None
 
     rss_pub = get_candidate_published_at(cand)
@@ -363,9 +363,11 @@ def process_candidate_item(
             )
         )
         if is_blocked:
-            ctx.failed_domains.add(cand_netloc)
-            if ctx.extractor:
-                ctx.extractor.mark_domain_degraded(cand_netloc)
+            target_domain = urlparse(ext_res.resolved_url or cand.url).netloc.lower().replace("www.", "")
+            if target_domain and "news.google.com" not in target_domain:
+                ctx.failed_domains.add(target_domain)
+                if ctx.extractor:
+                    ctx.extractor.mark_domain_degraded(target_domain)
             alt_article = _recover_alternate_source(cand, cand_section, ctx, active_horizon)
             if alt_article:
                 art = alt_article

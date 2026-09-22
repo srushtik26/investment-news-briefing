@@ -69,14 +69,26 @@ def discover_initial_reserves(
     discovered_total = len(ctx.domestic_reserve_pool) + len(ctx.india_reserve_pool) + len(ctx.intl_reserve_pool)
     ctx.log_exec(f"Discovery Reserve Pool loaded: {len(ctx.domestic_reserve_pool)} Domestic + {len(ctx.india_reserve_pool)} India Business + {len(ctx.intl_reserve_pool)} International (Total: {discovered_total})")
 
-    # Pass 1: Extract top candidates from reserve pool (up to 30 for India to ensure portfolio coverage)
-    initial_dom      = min(len(ctx.domestic_reserve_pool), DISCOVERY_STEPS[0])
-    initial_india    = min(len(ctx.india_reserve_pool), 30)
-    initial_intl     = min(len(ctx.intl_reserve_pool), DISCOVERY_STEPS[0])
+    # Pass 1: Extract balanced high-priority candidates from reserve pool
+    # Ensures both portfolio candidates and general India corporate events are in Pass 1
+    pf_cands = ctx.portfolio_reserve_pool
+    pf_urls = {p.url.strip().lower().rstrip("/") for p in pf_cands}
+    gen_india_cands = [c for c in ctx.india_reserve_pool if c.url.strip().lower().rstrip("/") not in pf_urls]
+
+    take_pf = pf_cands[:15]
+    take_gen = gen_india_cands[:20]
+    india_pass1 = take_pf + take_gen
+    if len(india_pass1) < 35:
+        remaining_india = [c for c in ctx.india_reserve_pool if c not in india_pass1]
+        india_pass1.extend(remaining_india[: 35 - len(india_pass1)])
+
+    initial_dom      = min(len(ctx.domestic_reserve_pool), 25)
+    initial_india    = len(india_pass1)
+    initial_intl     = min(len(ctx.intl_reserve_pool), 25)
 
     pass1_candidates = (
         [(c, "domestic") for c in ctx.domestic_reserve_pool[:initial_dom]] +
-        [(c, "india") for c in ctx.india_reserve_pool[:initial_india]] +
+        [(c, "india") for c in india_pass1] +
         [(c, "international") for c in ctx.intl_reserve_pool[:initial_intl]]
     )
 

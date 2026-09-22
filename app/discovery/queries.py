@@ -19,14 +19,19 @@ class TargetSource:
 
 # Approved Publishers (primary discovery sources)
 INDIA_SOURCES: List[TargetSource] = [
-    TargetSource(name="The Economic Times", domain="economictimes.indiatimes.com", country="India"),
     TargetSource(name="Business Standard", domain="business-standard.com", country="India"),
+    TargetSource(name="The Economic Times", domain="economictimes.indiatimes.com", country="India"),
     TargetSource(name="Livemint", domain="livemint.com", country="India"),
+    TargetSource(name="NDTV Profit", domain="ndtvprofit.com", country="India"),
+    TargetSource(name="CNBC-TV18", domain="cnbctv18.com", country="India"),
     TargetSource(name="Financial Express", domain="financialexpress.com", country="India"),
+    TargetSource(name="The Hindu BusinessLine", domain="thehindubusinessline.com", country="India"),
     TargetSource(name="Moneycontrol", domain="moneycontrol.com", country="India"),
     TargetSource(name="Business Today", domain="businesstoday.in", country="India"),
-    TargetSource(name="NDTV Profit", domain="ndtvprofit.com", country="India"),
-    TargetSource(name="The Hindu BusinessLine", domain="thehindubusinessline.com", country="India"),
+    TargetSource(name="BSE", domain="bseindia.com", country="India"),
+    TargetSource(name="NSE", domain="nseindia.com", country="India"),
+    TargetSource(name="SEBI", domain="sebi.gov.in", country="India"),
+    TargetSource(name="RBI", domain="rbi.org.in", country="India"),
 ]
 
 DOMESTIC_SOURCES: List[TargetSource] = [
@@ -50,14 +55,14 @@ DOMESTIC_SOURCES: List[TargetSource] = [
 # they are NOT used in site:-constrained RSS queries that feed into extraction.
 INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="CNBC", domain="cnbc.com", country="International"),
-    TargetSource(name="AP News", domain="apnews.com", country="International"),
     TargetSource(name="BBC News", domain="bbc.com", country="International"),
+    TargetSource(name="AP News", domain="apnews.com", country="International"),
+    TargetSource(name="BusinessWire", domain="businesswire.com", country="International"),
+    TargetSource(name="GlobeNewswire", domain="globenewswire.com", country="International"),
+    TargetSource(name="PRNewswire", domain="prnewswire.com", country="International"),
     TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
     TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Fortune", domain="fortune.com", country="International"),
-    TargetSource(name="Business Wire", domain="businesswire.com", country="International"),
-    TargetSource(name="GlobeNewswire", domain="globenewswire.com", country="International"),
-    TargetSource(name="PR Newswire", domain="prnewswire.com", country="International"),
 ]
 
 DOMESTIC_EVENT_CATEGORIES: Dict[str, List[str]] = {
@@ -106,71 +111,61 @@ DOMESTIC_EVENT_CATEGORIES: Dict[str, List[str]] = {
 
 
 # Targeted Hard Business Event Categories (India)
+# Approved-source-aware RSS queries for corporate actions and hard business news
 INDIA_EVENT_CATEGORIES: Dict[str, List[str]] = {
-    "earnings_results": [
+    "earnings": [
         "quarterly results net profit revenue crore when:1d",
-        "Q1 Q2 Q3 Q4 results profit rises falls when:1d",
-        "annual results profit revenue billion crore when:1d",
+        "Q1 Q2 Q3 Q4 results profit rises falls crore when:1d",
+        "earnings net profit revenue EBITDA crore when:1d",
     ],
-    "acquisitions": [
-        "acquires acquisition deal buyout stake when:1d",
-        "company acquires majority stake crore when:1d",
-        "acquires buys out merger deal India when:1d",
+    "capex": [
+        "capital expenditure capex investment crore expansion when:1d",
+        "sets up new plant capacity expansion investment crore when:1d",
+        "approves capex investment project crore when:1d",
+    ],
+    "mergers_acquisitions": [
+        "acquires acquisition deal buyout stake crore when:1d",
+        "merger approved NCLT demerger amalgamation scheme when:1d",
+        "buys stake majority acquisition deal India when:1d",
     ],
     "mergers": [
         "merger approved NCLT demerger board when:1d",
         "board approves merger scheme amalgamation when:1d",
     ],
-    "stake_purchases": [
-        "buys stake block deal crore investment when:1d",
-        "strategic investment stake acquisition India when:1d",
+    "contracts_orders": [
+        "wins order contract award crore execution when:1d",
+        "bags order contract worth crore when:1d",
+        "secures EPC order contract crore when:1d",
     ],
-    "fundraises": [
-        "raises funds equity capital funding round crore when:1d",
-        "board approves capital raise QIP rights issue when:1d",
-        "secures funding venture capital private equity India when:1d",
-    ],
-    "qips": [
-        "Qualified Institutional Placement QIP floor price when:1d",
-        "launches QIP issue shares crore when:1d",
-    ],
-    "bond_issuances": [
-        "issues NCDs non-convertible debentures crore when:1d",
-        "raises funds dollar bonds debt issuance when:1d",
-    ],
-    "ipo_listings": [
+    "ipos": [
         "IPO debut listing day shares gain NSE BSE when:1d",
         "files DRHP draft IPO papers SEBI crore when:1d",
+        "IPO subscription issue opens closes price band when:1d",
     ],
-    "regulatory_actions": [
-        "RBI penalty order bank NBFC crore when:1d",
-        "SEBI order ban penalty insider trading when:1d",
-        "CCI approves antitrust order investigation when:1d",
+    "fundraising": [
+        "raises funds equity capital funding round crore when:1d",
+        "board approves capital raise QIP rights issue when:1d",
+        "issues NCDs bonds debt fundraising crore when:1d",
     ],
-    "government_policy": [
-        "PLI scheme approval investment subsidy crore when:1d",
-        "customs duty tariff export tax revision India when:1d",
+    "regulation": [
+        "RBI penalty monetary penalty directive bank NBFC when:1d",
+        "SEBI order penalty ban insider trading regulations when:1d",
+        "CCI approves antitrust penalty investigation order when:1d",
     ],
-    "macroeconomic_data": [
-        "India GDP growth data percentage when:1d",
-        "retail inflation CPI food inflation percentage when:1d",
-        "IIP industrial production output data when:1d",
+    "manufacturing": [
+        "manufacturing facility plant commissioning production unit when:1d",
+        "PLI scheme manufacturing unit investment production India when:1d",
+        "electronics semiconductor manufacturing plant investment when:1d",
     ],
-    "leadership_changes": [
-        "appoints new CEO Managing Director India company when:1d",
-        "MD CEO steps down resigns company India when:1d",
+    "banking": [
+        "bank loan growth deposits NPA net profit crore when:1d",
+        "RBI repo rate banking sector credit liquidity when:1d",
+        "lender raises funds capital adequacy ratio banking when:1d",
     ],
-    "sector_figures": [
-        "auto sales volumes dispatch monthly units when:1d",
-        "steel production cement dispatches quarterly data when:1d",
-    ],
-    "joint_ventures": [
-        "joint venture JV agreement signs India when:1d",
-        "strategic partnership agreement crore India when:1d",
-    ],
-    "asset_sales": [
-        "divests asset sale stake exits business crore when:1d",
-        "monetises unit sells stake crore India when:1d",
+    "infrastructure": [
+        "highway expressway railway port airport project crore when:1d",
+        "power renewable energy solar project commissioning MW when:1d",
+        "Cabinet approves infrastructure project investment crore when:1d",
     ],
 }
 
@@ -214,55 +209,50 @@ PORTFOLIO_DISCOVERY_GROUPS: Dict[str, str] = {
 
 
 # Targeted Hard Business Event Categories (International)
+# Extraction-friendly approved publishers, event-first queries (no low-yield generic macro)
 INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
-    "us_earnings": [
-        "quarterly earnings net income revenue beats guidance when:1d",
-        "S&P 500 company results beats revenue billion when:1d",
-        "annual earnings profit revenue billion guidance when:1d",
-    ],
-    "european_earnings": [
-        "European company quarterly results profit billion when:1d",
-        "European corporate results beats revenue guidance when:1d",
-    ],
     "acquisitions": [
-        "agrees to acquire billion dollar takeover deal when:1d",
-        "cross-border acquisition merger billion buyout when:1d",
-        "company acquires rival billion transaction when:1d",
+        "agrees to acquire billion buyout takeover deal when:1d",
+        "company acquires stake acquisition deal billion when:1d",
+        "acquires transaction completed agreement billion when:1d",
     ],
     "mergers": [
-        "merger agreement antitrust regulatory review billion when:1d",
-        "mega merger billion transaction agreed when:1d",
+        "merger agreement combination companies billion when:1d",
+        "board approves mega merger antitrust review billion when:1d",
     ],
-    "fundraising": [
-        "secures debt financing credit facility billion when:1d",
-        "closes billion funding round capital raise when:1d",
-        "private equity investment billion stake when:1d",
+    "earnings": [
+        "quarterly earnings net income revenue beats guidance billion when:1d",
+        "reports Q1 Q2 Q3 Q4 results profit revenue billion when:1d",
+        "earnings beats estimates revenue full year guidance when:1d",
     ],
-    "regulatory_decisions": [
-        "SEC enforcement penalty settlement billion when:1d",
-        "EU antitrust commission fine billion ruling when:1d",
-        "DOJ antitrust lawsuit regulatory block when:1d",
+    "capex": [
+        "capital expenditure capex investment billion expansion when:1d",
+        "invests billion new manufacturing facility factory datacenter when:1d",
+    ],
+    "funding": [
+        "raises billion debt financing credit facility bonds when:1d",
+        "secures billion funding valuation private equity when:1d",
+    ],
+    "ipo": [
+        "IPO debuts shares surge initial public offering NYSE NASDAQ when:1d",
+        "files for IPO initial public offering valuation billion when:1d",
+    ],
+    "contract_award": [
+        "awarded contract billion agreement multi-year deal when:1d",
+        "wins contract defense commercial deal billion when:1d",
+    ],
+    "restructuring": [
+        "corporate restructuring layoffs job cuts cost reduction when:1d",
+        "spinoff separation business unit restructuring plan when:1d",
+    ],
+    "regulatory_action": [
+        "antitrust lawsuit regulatory fine enforcement penalty billion when:1d",
+        "SEC settlement investigation civil penalty charges when:1d",
+        "regulators approve block merger antitrust investigation when:1d",
     ],
     "fed_decisions": [
         "Federal Reserve FOMC interest rate decision when:1d",
         "Fed interest rate policy statement basis points when:1d",
-    ],
-    "corporate_policy": [
-        "corporate restructuring job cuts layoffs billion when:1d",
-        "capital expenditure capex guidance billion when:1d",
-        "guidance reaffirms raises narrows full year when:1d",
-    ],
-    "asian_market_moves": [
-        "Bank of Japan interest rate decision yen when:1d",
-        "China economy GDP growth output data when:1d",
-    ],
-    "geopolitical_quantified": [
-        "crude oil price surge supply disruption barrel when:1d",
-        "tariffs trade sanctions quantified billion market impact when:1d",
-    ],
-    "joint_ventures_intl": [
-        "joint venture agreement billion global company when:1d",
-        "strategic partnership agreement billion when:1d",
     ],
 }
 

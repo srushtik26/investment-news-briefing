@@ -633,24 +633,21 @@ def run_post_dedup_refill(
                             'raises funds equity funding crore when:1d',
                         ]
                     ]
-                    SOURCE_GROUP = "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com OR site:economictimes.indiatimes.com)"
+                    SOURCE_GROUP = "(site:business-standard.com OR site:economictimes.indiatimes.com OR site:livemint.com OR site:ndtvprofit.com OR site:cnbctv18.com OR site:financialexpress.com OR site:thehindubusinessline.com OR site:moneycontrol.com)"
                     country = "India"
                 else:
                     TEMPLATES = [
-                        (False, "", 'global business deals when:1d'),
-                        (False, "", 'US corporate earnings when:1d'),
-                        (False, "", 'Europe corporate deals when:1d'),
-                        (False, "", 'global mergers acquisitions when:1d'),
-                        (False, "", 'international capex when:1d'),
-                        (False, "", 'global fundraising when:1d'),
-                        (False, "", 'US IPO when:1d'),
-                        (False, "", 'Europe IPO when:1d'),
-                        (False, "", 'global banking when:1d'),
-                        (False, "", 'international technology business when:1d'),
-                        (False, "", 'global energy deals when:1d'),
-                        (False, "", 'international regulatory corporate action when:1d'),
+                        (False, "", 'acquisition OR acquired OR acquires OR buyout when:1d'),
+                        (False, "", 'merger OR merges OR merged when:1d'),
+                        (False, "", 'earnings OR "quarterly profit" OR revenue when:1d'),
+                        (False, "", 'capex OR "capital expenditure" OR "investment plan" when:1d'),
+                        (False, "", 'funding OR "fundraise" OR "raised capital" when:1d'),
+                        (False, "", 'IPO OR "initial public offering" OR debuts when:1d'),
+                        (False, "", '"contract award" OR "secures contract" OR "order win" when:1d'),
+                        (False, "", 'restructuring OR layoff OR reorganization when:1d'),
+                        (False, "", '"regulatory action" OR antitrust OR fine OR penalty when:1d'),
                     ]
-                    SOURCE_GROUP = "(site:reuters.com OR site:bloomberg.com OR site:ft.com OR site:wsj.com OR site:cnbc.com OR site:apnews.com OR site:marketwatch.com)"
+                    SOURCE_GROUP = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
                     country = "US"
 
                 for item in TEMPLATES:
@@ -671,7 +668,7 @@ def run_post_dedup_refill(
                         u = it.url.strip()
                         u_norm = u.lower().rstrip("/")
                         cand_netloc = urlparse(u).netloc.lower().replace("www.", "")
-                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or (cand_netloc != "news.google.com" and (cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)))):
                             continue
                         if URLFilterRule.is_valid_url(u)[0]:
                             ctx.seen_urls.add(u_norm)
@@ -2385,20 +2382,17 @@ def run_ranking_and_selection(
             if rem_budget > 0:
                 ctx.log_exec(f"[INTERNATIONAL_RECOVERY] Search discovery for {needed} missing stories (budget rem: {rem_budget})")
                 INTL_RECOVERY_QUERIES = [
-                    "global business deals when:1d",
-                    "US corporate earnings when:1d",
-                    "Europe corporate deals when:1d",
-                    "global mergers acquisitions when:1d",
-                    "international capex when:1d",
-                    "global fundraising when:1d",
-                    "US IPO when:1d",
-                    "Europe IPO when:1d",
-                    "global banking when:1d",
-                    "international technology business when:1d",
-                    "global energy deals when:1d",
-                    "international regulatory corporate action when:1d",
+                    "acquisition OR acquired OR buyout when:1d",
+                    "merger OR merged when:1d",
+                    "earnings OR 'quarterly profit' OR revenue when:1d",
+                    "capex OR 'capital expenditure' OR 'investment plan' when:1d",
+                    "funding OR 'fundraise' OR 'raised capital' when:1d",
+                    "IPO OR 'initial public offering' OR debuts when:1d",
+                    "'contract award' OR 'secures contract' when:1d",
+                    "restructuring OR reorganization when:1d",
+                    "'regulatory action' OR antitrust OR penalty when:1d",
                 ]
-                INTL_RECOVERY_SOURCES = "(site:reuters.com OR site:bloomberg.com OR site:ft.com OR site:wsj.com OR site:cnbc.com OR site:apnews.com OR site:marketwatch.com)"
+                INTL_RECOVERY_SOURCES = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
 
                 for qry in INTL_RECOVERY_QUERIES:
                     if (needed <= 0 and len(ctx.intl_reserve_pool) >= 3) or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
@@ -2411,7 +2405,7 @@ def run_ranking_and_selection(
                         u = it.url.strip()
                         u_norm = u.lower().rstrip("/")
                         cand_netloc = urlparse(u).netloc.lower().replace("www.", "")
-                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)):
+                        if u in ctx.failed_urls or u_norm in ctx.seen_urls or (cand_netloc != "news.google.com" and (cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)))):
                             continue
                         if URLFilterRule.is_valid_url(u)[0]:
                             ctx.seen_urls.add(u_norm)

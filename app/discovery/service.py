@@ -5,6 +5,7 @@ Orchestrates business news candidate discovery across target regions,
 categories, and publishers with automatic URL deduplication.
 """
 
+from datetime import datetime, timezone
 import re
 from typing import Any, Dict, List, Optional, Set
 
@@ -154,8 +155,12 @@ class NewsDiscoveryService:
             for r in results:
                 _add_article(r)
 
-            # Step 5 check: check if enough high-quality portfolio candidates exist
+            # Step 5 check: check if enough fresh, high-quality portfolio candidates exist
             for art in discovered:
+                if art.published_at:
+                    pub = art.published_at.replace(tzinfo=timezone.utc) if art.published_at.tzinfo is None else art.published_at
+                    if (datetime.now(timezone.utc) - pub).total_seconds() / 3600.0 > 72.0:
+                        continue
                 m = match_portfolio_company(text=art.title)
                 if m and m.eligible_for_priority:
                     matched_companies.add(m.canonical_name)
@@ -388,9 +393,8 @@ class NewsDiscoveryService:
             min_reserves=3,
         )
 
-        # Gap-filling general India discovery: only fetch what is needed for 5 + reserves
-        needed_general = max(10, max_india - len(portfolio_candidates))
-        india_candidates = self.discover_india_news(max_candidates=needed_general)
+        # Ensure deep reserve depth for India: portfolio candidates first, backed by full general India discovery
+        india_candidates = self.discover_india_news(max_candidates=max_india)
         intl_candidates = self.discover_international_news(max_candidates=max_international)
 
         # Portfolio candidates are ordered first in the India business candidate pool

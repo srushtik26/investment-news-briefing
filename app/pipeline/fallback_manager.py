@@ -655,16 +655,14 @@ def run_expansion_and_fallbacks(
                 when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
                 when_param = f"when:{when_days}d"
                 INDIA_FALLBACK_QUERIES = [
-                    f"site:business-standard.com India acquisition {when_param}",
-                    f"site:economictimes.indiatimes.com India earnings {when_param}",
-                    f"site:livemint.com India funding {when_param}",
-                    f"India company results {when_param}",
-                    f"India company acquisition {when_param}",
-                    f"India regulatory approval {when_param}",
-                    f"India contract award {when_param}",
-                    f"site:moneycontrol.com India quarterly profit {when_param}",
-                    f"site:thehindubusinessline.com India stake sale {when_param}",
-                    f"site:financialexpress.com India debt capex {when_param}",
+                    f"site:business-standard.com India acquisition merger {when_param}",
+                    f"site:economictimes.indiatimes.com India earnings net profit crore {when_param}",
+                    f"site:livemint.com India funding investment capex {when_param}",
+                    f"site:ndtvprofit.com India corporate order contract {when_param}",
+                    f"site:cnbctv18.com India corporate earnings deal {when_param}",
+                    f"site:financialexpress.com India capex expansion {when_param}",
+                    f"site:thehindubusinessline.com India stake sale IPO {when_param}",
+                    f"site:moneycontrol.com India quarterly results profit {when_param}",
                 ]
                 for ifq in INDIA_FALLBACK_QUERIES:
                     if count_unique_section_events_fn(NewsCategory.INDIA) >= 5:
@@ -714,44 +712,18 @@ def run_expansion_and_fallbacks(
                 ctx.log_exec(f"[INTL_FALLBACK_RSS] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching Google News RSS...")
                 when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
                 when_param = f"when:{when_days}d"
-                if ctx.extractor.is_domain_degraded("reuters.com"):
-                    INTL_FALLBACK_QUERIES = [
-                        f"site:cnbc.com company earnings {when_param}",
-                        f"site:cnbc.com acquisition {when_param}",
-                        f"site:ft.com company acquisition {when_param}",
-                        f"site:markets.ft.com company earnings {when_param}",
-                        f"site:apnews.com business company acquisition {when_param}",
-                        f"site:bbc.com business company results {when_param}",
-                        f"company results CNBC {when_param}",
-                        f"company acquisition CNBC {when_param}",
-                        f"company earnings Financial Times {when_param}",
-                        f"company acquisition Bloomberg {when_param}",
-                        f"company results BBC business {when_param}",
-                        f"company merger AP business {when_param}",
-                        f"company financing Bloomberg {when_param}",
-                        f"company contract award AP business {when_param}",
-                        f"company earnings markets FT {when_param}",
-                    ]
-                else:
-                    INTL_FALLBACK_QUERIES = [
-                        f"site:reuters.com company acquisition {when_param}",
-                        f"site:reuters.com company earnings {when_param}",
-                        f"site:cnbc.com company earnings {when_param}",
-                        f"site:cnbc.com acquisition {when_param}",
-                        f"site:ft.com company acquisition {when_param}",
-                        f"company earnings Reuters {when_param}",
-                        f"company acquisition Reuters {when_param}",
-                        f"company funding Reuters {when_param}",
-                        f"company results CNBC {when_param}",
-                        f"company acquisition CNBC {when_param}",
-                        f"company earnings Financial Times {when_param}",
-                        f"company acquisition Bloomberg {when_param}",
-                        f"company results BBC business {when_param}",
-                        f"company merger AP business {when_param}",
-                        f"company regulatory approval Reuters {when_param}",
-                        f"company contract award Reuters {when_param}",
-                        f"company financing Reuters {when_param}",
-                    ]
+                INTL_FALLBACK_QUERIES = [
+                    f"site:cnbc.com company quarterly earnings beats {when_param}",
+                    f"site:cnbc.com company acquisition merger billion {when_param}",
+                    f"site:apnews.com company earnings results {when_param}",
+                    f"site:apnews.com company acquisition deal {when_param}",
+                    f"site:bbc.com business company takeover {when_param}",
+                    f"site:businesswire.com acquisition merger agreement billion {when_param}",
+                    f"site:globenewswire.com quarterly financial results revenue {when_param}",
+                    f"site:prnewswire.com contract award acquisition {when_param}",
+                    f"site:cnbc.com capex funding debt billion {when_param}",
+                    f"site:apnews.com regulatory antitrust lawsuit {when_param}",
+                ]
                 for ifq in INTL_FALLBACK_QUERIES:
                     if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
                         ctx.log_exec("[INTL_TARGET_MET] International reached 5/5 quality candidates.")
@@ -842,6 +814,34 @@ def run_expansion_and_fallbacks(
                     process_candidate_item(c, "domestic", ctx, active_horizon=horizon)
                     if len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC)) >= 5:
                         break
+            dom_unique_count = len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC))
+            if dom_unique_count < 5:
+                when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
+                when_param = f"when:{when_days}d"
+                DOMESTIC_FALLBACK_QUERIES = [
+                    f"site:thehindu.com India government policy national {when_param}",
+                    f"site:indianexpress.com India Cabinet Parliament decision {when_param}",
+                    f"site:hindustantimes.com India national news politics {when_param}",
+                    f"site:ndtv.com India national major development {when_param}",
+                    f"site:timesofindia.indiatimes.com India national government {when_param}",
+                ]
+                for dfq in DOMESTIC_FALLBACK_QUERIES:
+                    if len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC)) >= 5:
+                        break
+                    q_norm = f"{dfq.lower().strip()}_{int(horizon)}"
+                    if q_norm in executed_final_mile_queries:
+                        continue
+                    executed_final_mile_queries.add(q_norm)
+                    try:
+                        rss_items = ctx.discovery_service.provider.discover(query=dfq, country="India", max_results=10)
+                        for rit in rss_items:
+                            u = rit.url.strip()
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                                process_candidate_item(rit, "domestic", ctx, active_horizon=horizon)
+                                if len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC)) >= 5:
+                                    break
+                    except Exception as e:
+                        ctx.log_exec(f"[DOMESTIC_FALLBACK_RSS_ERROR] {e}")
             dom_unique_count = len(get_final_selectable_unique_events_fn(NewsCategory.DOMESTIC))
             if dom_unique_count >= 5:
                 dom_frozen = True
