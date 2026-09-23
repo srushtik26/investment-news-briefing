@@ -2490,6 +2490,79 @@ def run_ranking_and_selection(
     # 2. Audit International stories with inverse protection
     intl_audited: List[ScoredEvent] = []
     intl_misclassified_to_india: List[ScoredEvent] = []
+
+    def _get_next_qualified_intl_reserve(exclude_ids: Set[str]) -> Optional[ScoredEvent]:
+        intl_reserves = [
+            ev for ev in (getattr(ctx, "intl_reserve_pool", []) or [])
+            if isinstance(ev, Event) and ev.id not in exclude_ids and ev.event_category == NewsCategory.INTERNATIONAL
+        ] + [
+            s for s in (intl_today or [])
+            if (hasattr(s, "event") and s.event.id not in exclude_ids) or (isinstance(s, Event) and s.id not in exclude_ids)
+        ] + [
+            s for s in (intl_older or [])
+            if (hasattr(s, "event") and s.event.id not in exclude_ids) or (isinstance(s, Event) and s.id not in exclude_ids)
+        ] + [
+            ev for ev in (list(ctx.verified_events) + list(ctx.high_confidence_single_candidates))
+            if isinstance(ev, Event) and ev.id not in exclude_ids and ev.event_category == NewsCategory.INTERNATIONAL
+        ]
+        for item in intl_reserves:
+            ev = item.event if hasattr(item, "event") else item
+            if not isinstance(ev, Event) or ev.id in exclude_ids or ev.id in rejected_intl_event_ids:
+                continue
+            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+            is_nex, _ = _verify_nexus_final(ev, cand_art)
+            if is_nex:
+                continue
+            is_reg_valid, _ = reg_classifier_final.verify_region_eligibility(
+                ev, cand_art, requested_region=NewsCategory.INTERNATIONAL
+            )
+            if not is_reg_valid:
+                continue
+            is_geo_elig, _ = is_geopolitical_market_impact_eligible(ev, cand_art)
+            if not is_geo_elig:
+                continue
+            # Canonical check: must not be classified as India
+            text_to_chk = f"{ev.canonical_title} {cand_art.content_text[:500] if cand_art else ''}"
+            chk_cat, _ = reg_classifier_final.classify_with_reason(text_to_chk)
+            if chk_cat == NewsCategory.INDIA:
+                continue
+
+            # Check noise patterns if cand_art is available
+            if cand_art:
+                from app.filtering.rules import StoryTypeFilterRule
+                st_r = StoryTypeFilterRule()
+                ev_t = f"{cand_art.title} {(cand_art.content_text or '')[:500]}".lower()
+                is_noise = False
+                for pat_name, pat_regex in st_r.REJECT_NOISE_PATTERNS:
+                    if re.search(pat_regex, ev_t, re.IGNORECASE):
+                        is_noise = True
+                        break
+                if is_noise:
+                    continue
+
+            # Deduplication against already audited international stories
+            is_dup = False
+            for ex in intl_audited:
+                ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                    is_dup = True
+                    break
+            if is_dup:
+                continue
+
+            scored = item if isinstance(item, ScoredEvent) else ScoredEvent(
+                event=ev,
+                score_breakdown=ScoreBreakdown(
+                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                    editorial_signals=0.0, relevance_penalties=0.0, total_score=70.0, rationale="final_region_audit_refill",
+                ),
+                investment_score=70.0,
+                rank=len(intl_audited) + 1,
+            )
+            return scored
+        return None
+
     for s in (candidate_pool.international_candidates or []):
         ev = s.event
         cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
@@ -2498,10 +2571,10 @@ def run_ranking_and_selection(
         full_text = f"{ev.canonical_title} {cand_art.content_text[:500] if cand_art else ''}"
         detected_cat, cat_reason = reg_classifier_final.classify_with_reason(full_text)
 
-        is_actually_india = (is_nexus and (
-            detected_cat == NewsCategory.INDIA
-            or any(kw in full_text.lower() for kw in ["nse", "bse", "national stock exchange", "bombay stock exchange", "sebi", "rbi", "drhp", "ipo in india"])
-        ))
+        is_actually_india = (
+            is_nexus
+            and detected_cat == NewsCategory.INDIA
+        )
 
         if is_actually_india:
             audit_log = (
@@ -2516,6 +2589,27 @@ def run_ranking_and_selection(
             logger.info(audit_log)
             ev.event_category = NewsCategory.INDIA
             intl_misclassified_to_india.append(s)
+
+            # Immediately refill International from an unused qualified current-run reserve
+            current_exclude_ids = {x.event.id for x in intl_audited}.union(
+                {x.event.id for x in intl_misclassified_to_india}
+            ).union(
+                {x.event.id for x in (candidate_pool.international_candidates or [])}
+            ).union(
+                {x.event.id for x in india_audited}
+            ).union(rejected_intl_event_ids)
+            repl = _get_next_qualified_intl_reserve(current_exclude_ids)
+            if repl:
+                intl_audited.append(repl)
+                if event_by_id is not None:
+                    event_by_id[repl.event.id] = repl.event
+                if hasattr(ctx, "intl_reserve_pool") and ctx.intl_reserve_pool and repl.event in ctx.intl_reserve_pool:
+                    ctx.intl_reserve_pool.remove(repl.event)
+                ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Immediately replaced misclassified story '{ev.canonical_title}' with reserve '{repl.event.canonical_title}'")
+                logger.info("[REGION_FINAL_AUDIT_REFILL] Immediately replaced misclassified story '%s' with reserve '%s'", ev.canonical_title, repl.event.canonical_title)
+            else:
+                ctx.log_exec(f"INTERNATIONAL_REFILL_UNAVAILABLE: no qualified reserve to replace misclassified story '{ev.canonical_title}'")
+                logger.warning("INTERNATIONAL_REFILL_UNAVAILABLE: no qualified reserve to replace misclassified story '%s'", ev.canonical_title)
         else:
             audit_log = (
                 f"REGION_FINAL_AUDIT\n"
@@ -2598,52 +2692,19 @@ def run_ranking_and_selection(
                 global_seen_portfolio_companies[pf_comp] = ev.canonical_title
             ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '{ev.canonical_title}'")
 
-    # Refill International if below 5 from reserve pool and in-memory events
-    if len(intl_audited) < 5:
-        intl_current_ids = {s.event.id for s in intl_audited}.union(india_current_ids).union(rejected_intl_event_ids)
-        intl_reserves = [
-            ev for ev in (getattr(ctx, "intl_reserve_pool", []) or [])
-            if isinstance(ev, Event) and ev.id not in intl_current_ids and ev.event_category == NewsCategory.INTERNATIONAL
-        ] + [
-            s for s in (intl_older or []) if s.event.id not in intl_current_ids
-        ] + [
-            ev for ev in list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
-            if isinstance(ev, Event) and ev.id not in intl_current_ids and ev.event_category == NewsCategory.INTERNATIONAL
-        ]
-        reg_classifier_final = _get_reg_classifier()
-        for item in intl_reserves:
-            if len(intl_audited) >= 5:
-                break
-            ev = item.event if hasattr(item, "event") else item
-            if not isinstance(ev, Event) or ev.id in intl_current_ids or ev.id in rejected_intl_event_ids:
-                continue
-            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-            is_nex, _ = _verify_nexus_final(ev, cand_art)
-            if is_nex:
-                continue
-            is_reg_valid, _ = reg_classifier_final.verify_region_eligibility(
-                ev, cand_art, requested_region=NewsCategory.INTERNATIONAL
-            )
-            if not is_reg_valid:
-                continue
-            is_geo_elig, _ = is_geopolitical_market_impact_eligible(ev, cand_art)
-            if not is_geo_elig:
-                continue
-            scored = item if isinstance(item, ScoredEvent) else ScoredEvent(
-                event=ev,
-                score_breakdown=ScoreBreakdown(
-                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
-                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
-                    editorial_signals=0.0, relevance_penalties=0.0, total_score=70.0, rationale="final_region_audit_refill",
-                ),
-                investment_score=70.0,
-                rank=len(intl_audited) + 1,
-            )
-            intl_audited.append(scored)
-            intl_current_ids.add(ev.id)
-            if event_by_id is not None:
-                event_by_id[ev.id] = ev
-            ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INTERNATIONAL: '{ev.canonical_title}'")
+    # Additional refill pass for International if still below 5 from reserve pool and in-memory events
+    while len(intl_audited) < 5:
+        current_exclude_ids = {s.event.id for s in intl_audited}.union(india_current_ids).union(rejected_intl_event_ids)
+        repl = _get_next_qualified_intl_reserve(current_exclude_ids)
+        if not repl:
+            break
+        intl_audited.append(repl)
+        india_current_ids.add(repl.event.id)
+        if event_by_id is not None:
+            event_by_id[repl.event.id] = repl.event
+        if hasattr(ctx, "intl_reserve_pool") and ctx.intl_reserve_pool and repl.event in ctx.intl_reserve_pool:
+            ctx.intl_reserve_pool.remove(repl.event)
+        ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INTERNATIONAL: '{repl.event.canonical_title}'")
 
     if len(india_audited) > 5:
         india_audited = india_audited[:5]

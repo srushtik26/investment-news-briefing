@@ -350,10 +350,10 @@ class EventRegionClassifier:
         signal_d_currency = has_indian_currency and has_corp_action and not (has_foreign_geo and has_intl_entity)
 
         india_transaction_patterns = [
-            r"\b(?:acquires?|acquired|buys?|bought|purchases?|purchased|merger with|merges? with|takeover of|invest(?:s|ed|ing)?\s+in)\s+(?:[\w\s&]+)?(?:india|indian|bse|nse)\b",
+            r"\b(?:acquires?|acquired|buys?|bought|purchases?|purchased|merger with|merges? with|takeover of|invest(?:s|ed|ing)?\s+in)\s+(?:[\w\s&]{1,40}?\s+)?\b(?:india|indian|bse|nse)\b",
             r"\b(?:india|indian)\s+(?:asset|assets|subsidiary|unit|arm|division|stake|shareholding|equity|plant|factory|property|land|portfolio)\b",
-            r"\b(?:sell(?:s|ing)?|divest(?:s|ing)?|exit(?:s|ing)?)\s+(?:[\w\s&]+)?(?:india|indian)\s+(?:asset|assets|business|unit|subsidiary|stake)\b",
-            r"\bstake\s+in\s+(?:[\w\s&]+)?(?:india|indian)\b",
+            r"\b(?:sell(?:s|ing)?|divest(?:s|ing)?|exit(?:s|ing)?)\s+(?:[\w\s&]{1,40}?\s+)?\b(?:india|indian)\s+(?:asset|assets|business|unit|subsidiary|stake)\b",
+            r"\bstake\s+in\s+(?:[\w\s&]{1,40}?\s+)?\b(?:india|indian)\b",
             r"\b(?:india|indian)\s+(?:jv|joint\s+venture|partnership)\b",
         ]
         signal_d = any(re.search(pat, context_text) for pat in india_transaction_patterns) or signal_d_currency
