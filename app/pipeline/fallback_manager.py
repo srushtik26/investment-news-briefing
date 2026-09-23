@@ -23,6 +23,10 @@ from app.verification.serpapi_corroborator import (
     SerpAPICorroborator,
     get_serpapi_count,
     MAX_SERPAPI_SEARCHES_PER_RUN,
+    MAX_SERPAPI_INDIA_SEARCHES_PER_RUN,
+    get_serpapi_india_count,
+    get_serpapi_intl_count,
+    compute_serpapi_section_budget,
 )
 from app.pipeline.context import PipelineContext
 from app.pipeline.candidate_processing import (
@@ -30,6 +34,9 @@ from app.pipeline.candidate_processing import (
     process_candidate_item,
     populate_event_companies,
 )
+from app.logging_config import get_logger
+
+logger = get_logger("pipeline.fallback_manager")
 
 
 def evaluate_single_source_for_horizon(
@@ -685,6 +692,67 @@ def run_expansion_and_fallbacks(
                     except Exception as e:
                         ctx.log_exec(f"[INDIA_FALLBACK_RSS_ERROR] {e}")
 
+            # SerpAPI Discovery for India at active horizon (bounded: max 2 for India)
+            india_unique_count = count_unique_section_events_fn(NewsCategory.INDIA)
+            if india_unique_count < 5:
+                intl_current_count = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
+                india_serp_budget = compute_serpapi_section_budget(
+                    section="india",
+                    india_current_count=india_unique_count,
+                    intl_current_count=intl_current_count,
+                )
+                if india_serp_budget > 0:
+                    serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
+                    if serp_key and serp_key.strip():
+                        serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
+                        when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
+                        when_param = f"when:{when_days}d"
+                        INDIA_SERP_DISCOVERY_QUERIES = [
+                            f"Indian company acquisition contract capex earnings IPO funding regulation {when_param}",
+                            f"India corporate net profit revenue quarterly results deal order {when_param}",
+                        ]
+                        for sq in INDIA_SERP_DISCOVERY_QUERIES:
+                            if count_unique_section_events_fn(NewsCategory.INDIA) >= 5:
+                                ctx.log_exec("[INDIA_TARGET_MET] India reached 5/5 quality candidates.")
+                                break
+                            current_in = count_unique_section_events_fn(NewsCategory.INDIA)
+                            current_intl = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
+                            if compute_serpapi_section_budget("india", current_in, current_intl) <= 0:
+                                break
+                            q_norm = f"{sq.lower().strip()}_{int(horizon)}"
+                            if q_norm in executed_final_mile_queries:
+                                continue
+                            executed_final_mile_queries.add(q_norm)
+                            try:
+                                before_eligible = count_unique_section_events_fn(NewsCategory.INDIA)
+                                serp_items = serp_corrob.discover(sq, active_horizon=horizon, section="india")
+                                candidates_found = len(serp_items)
+                                for sit in serp_items:
+                                    u = sit.url.strip()
+                                    if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                                        process_candidate_item(sit, "india", ctx, active_horizon=horizon)
+                                        if count_unique_section_events_fn(NewsCategory.INDIA) >= 5:
+                                            ctx.log_exec("[SERPAPI_TARGET_MET] India reached 5/5 quality candidates.")
+                                            break
+                                after_eligible = count_unique_section_events_fn(NewsCategory.INDIA)
+                                final_eligible_count = max(0, after_eligible - before_eligible)
+                                ctx.log_exec(
+                                    f"SERPAPI_SECTION=INDIA\n"
+                                    f"SERPAPI_QUERY={sq}\n"
+                                    f"SERPAPI_CANDIDATES_FOUND={candidates_found}\n"
+                                    f"SERPAPI_FINAL_ELIGIBLE={final_eligible_count}\n"
+                                    f"SERPAPI_CALLS_USED={get_serpapi_india_count()}"
+                                )
+                                logger.info(
+                                    "SERPAPI_SECTION=INDIA SERPAPI_QUERY=%s SERPAPI_CANDIDATES_FOUND=%d SERPAPI_FINAL_ELIGIBLE=%d SERPAPI_CALLS_USED=%d",
+                                    sq,
+                                    candidates_found,
+                                    final_eligible_count,
+                                    get_serpapi_india_count(),
+                                )
+                            except Exception as e:
+                                ctx.log_exec(f"[SERPAPI_INDIA_DISCOVERY_ERROR] {e}")
+
             india_unique_count = count_unique_section_events_fn(NewsCategory.INDIA)
             if india_unique_count >= 5:
                 india_frozen = True
@@ -748,51 +816,78 @@ def run_expansion_and_fallbacks(
             # SerpAPI Discovery for International at active horizon
             intl_unique_count = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
             if intl_unique_count < 5:
-                serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
-                if serp_key and serp_key.strip():
-                    serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
-                    if get_serpapi_count() < MAX_SERPAPI_SEARCHES_PER_RUN:
-                        ctx.log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching SerpAPI (budget: {get_serpapi_count()}/{MAX_SERPAPI_SEARCHES_PER_RUN})...")
-                        if horizon <= 36.0:
-                            SERP_DISCOVERY_QUERIES = [
-                                "today company earnings",
-                                "today acquisition",
-                                "today company financial results",
-                            ]
-                        elif horizon <= 48.0:
-                            SERP_DISCOVERY_QUERIES = [
-                                "company earnings results",
-                                "company acquisition deal",
-                                "company funding round",
-                            ]
-                        elif horizon <= 72.0:
-                            SERP_DISCOVERY_QUERIES = [
-                                "company quarterly earnings results",
-                                "acquisition merger agreement",
-                                "company financial guidance",
-                            ]
-                        else:
-                            SERP_DISCOVERY_QUERIES = [
-                                "company quarterly earnings results",
-                                "acquisition merger agreement",
-                                "company financial guidance",
-                                "company investment contract award",
-                            ]
-                        for sq in SERP_DISCOVERY_QUERIES:
-                            if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
-                                ctx.log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
-                                break
-                            if get_serpapi_count() >= MAX_SERPAPI_SEARCHES_PER_RUN:
-                                break
-                            try:
-                                serp_items = serp_corrob.discover(sq, active_horizon=horizon)
-                                for sit in serp_items:
-                                    process_candidate_item(sit, "international", ctx, active_horizon=horizon)
-                                    if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
-                                        ctx.log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
-                                        break
-                            except Exception as e:
-                                ctx.log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
+                india_current_count = count_unique_section_events_fn(NewsCategory.INDIA)
+                intl_serp_budget = compute_serpapi_section_budget(
+                    section="international",
+                    india_current_count=india_current_count,
+                    intl_current_count=intl_unique_count,
+                )
+                if intl_serp_budget > 0:
+                    serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
+                    if serp_key and serp_key.strip():
+                        serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
+                        if get_serpapi_count() < MAX_SERPAPI_SEARCHES_PER_RUN:
+                            ctx.log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching SerpAPI (budget: {get_serpapi_count()}/{MAX_SERPAPI_SEARCHES_PER_RUN})...")
+                            if horizon <= 36.0:
+                                SERP_DISCOVERY_QUERIES = [
+                                    "today company earnings",
+                                    "today acquisition",
+                                    "today company financial results",
+                                ]
+                            elif horizon <= 48.0:
+                                SERP_DISCOVERY_QUERIES = [
+                                    "company earnings results",
+                                    "company acquisition deal",
+                                    "company funding round",
+                                ]
+                            elif horizon <= 72.0:
+                                SERP_DISCOVERY_QUERIES = [
+                                    "company quarterly earnings results",
+                                    "acquisition merger agreement",
+                                    "company financial guidance",
+                                ]
+                            else:
+                                SERP_DISCOVERY_QUERIES = [
+                                    "company quarterly earnings results",
+                                    "acquisition merger agreement",
+                                    "company financial guidance",
+                                    "company investment contract award",
+                                ]
+                            for sq in SERP_DISCOVERY_QUERIES:
+                                if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
+                                    ctx.log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
+                                    break
+                                current_in = count_unique_section_events_fn(NewsCategory.INDIA)
+                                current_intl = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
+                                if compute_serpapi_section_budget("international", current_in, current_intl) <= 0:
+                                    break
+                                try:
+                                    before_eligible = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
+                                    serp_items = serp_corrob.discover(sq, active_horizon=horizon, section="international")
+                                    candidates_found = len(serp_items)
+                                    for sit in serp_items:
+                                        process_candidate_item(sit, "international", ctx, active_horizon=horizon)
+                                        if count_unique_section_events_fn(NewsCategory.INTERNATIONAL) >= 5:
+                                            ctx.log_exec("[SERPAPI_TARGET_MET] International reached 5/5 quality candidates.")
+                                            break
+                                    after_eligible = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
+                                    final_eligible_count = max(0, after_eligible - before_eligible)
+                                    ctx.log_exec(
+                                        f"SERPAPI_SECTION=INTERNATIONAL\n"
+                                        f"SERPAPI_QUERY={sq}\n"
+                                        f"SERPAPI_CANDIDATES_FOUND={candidates_found}\n"
+                                        f"SERPAPI_FINAL_ELIGIBLE={final_eligible_count}\n"
+                                        f"SERPAPI_CALLS_USED={get_serpapi_intl_count()}"
+                                    )
+                                    logger.info(
+                                        "SERPAPI_SECTION=INTERNATIONAL SERPAPI_QUERY=%s SERPAPI_CANDIDATES_FOUND=%d SERPAPI_FINAL_ELIGIBLE=%d SERPAPI_CALLS_USED=%d",
+                                        sq,
+                                        candidates_found,
+                                        final_eligible_count,
+                                        get_serpapi_intl_count(),
+                                    )
+                                except Exception as e:
+                                    ctx.log_exec(f"[SERPAPI_DISCOVERY_ERROR] {e}")
 
             intl_unique_count = count_unique_section_events_fn(NewsCategory.INTERNATIONAL)
             if intl_unique_count >= 5:

@@ -32,9 +32,12 @@ from app.verification.verifier import TwoSourceVerifier
 logger = get_logger("verification.serpapi_corroborator")
 
 MAX_SERPAPI_SEARCHES_PER_RUN: int = getattr(get_settings(), "MAX_SERPAPI_SEARCHES_PER_RUN", 8)
+MAX_SERPAPI_INDIA_SEARCHES_PER_RUN: int = 2
 
 # Module-level run counters and query cache
 _run_serpapi_count = 0
+_run_serpapi_india_count = 0
+_run_serpapi_intl_count = 0
 _serpapi_candidates_returned_total = 0
 _serpapi_accepted_sources_total = 0
 _serpapi_rejection_counts: Dict[str, int] = {}
@@ -43,8 +46,11 @@ _serpapi_query_cache: Dict[str, List[dict]] = {}
 
 def reset_serpapi_counter() -> None:
     """Reset the per-run SerpAPI search counter, candidate counts, rejection stats, and query cache."""
-    global _run_serpapi_count, _serpapi_candidates_returned_total, _serpapi_accepted_sources_total, _serpapi_rejection_counts, _serpapi_query_cache
+    global _run_serpapi_count, _run_serpapi_india_count, _run_serpapi_intl_count
+    global _serpapi_candidates_returned_total, _serpapi_accepted_sources_total, _serpapi_rejection_counts, _serpapi_query_cache
     _run_serpapi_count = 0
+    _run_serpapi_india_count = 0
+    _run_serpapi_intl_count = 0
     _serpapi_candidates_returned_total = 0
     _serpapi_accepted_sources_total = 0
     _serpapi_rejection_counts.clear()
@@ -52,8 +58,62 @@ def reset_serpapi_counter() -> None:
 
 
 def get_serpapi_count() -> int:
-    """Return the number of SerpAPI search queries executed this run."""
+    """Return the total number of SerpAPI search queries executed this run."""
     return _run_serpapi_count
+
+
+def get_serpapi_india_count() -> int:
+    """Return the number of SerpAPI search queries executed for India this run."""
+    return _run_serpapi_india_count
+
+
+def increment_serpapi_india_count(n: int = 1) -> None:
+    """Increment the India SerpAPI search counter."""
+    global _run_serpapi_india_count
+    _run_serpapi_india_count += n
+
+
+def get_serpapi_intl_count() -> int:
+    """Return the number of SerpAPI search queries executed for International this run."""
+    return _run_serpapi_intl_count
+
+
+def increment_serpapi_intl_count(n: int = 1) -> None:
+    """Increment the International SerpAPI search counter."""
+    global _run_serpapi_intl_count
+    _run_serpapi_intl_count += n
+
+
+def compute_serpapi_section_budget(
+    section: str,
+    india_current_count: int,
+    intl_current_count: int,
+) -> int:
+    """
+    Compute allowed remaining SerpAPI searches for the specified section under budget sharing:
+    - Global cap: MAX_SERPAPI_SEARCHES_PER_RUN (default 8). Never exceeded.
+    - If India < 5 and International >= 5: India receives up to 2 searches.
+    - If India >= 5 and International < 5: International receives up to 2 searches.
+    - If both deficient (India < 5 and International < 5): split budget fairly, 2 for India, 2 for International.
+    """
+    sec = section.strip().lower()
+    global_rem = max(0, MAX_SERPAPI_SEARCHES_PER_RUN - get_serpapi_count())
+    if global_rem <= 0:
+        return 0
+
+    if sec == "india":
+        if india_current_count >= 5:
+            return 0
+        used = get_serpapi_india_count()
+        allowed = min(2, MAX_SERPAPI_INDIA_SEARCHES_PER_RUN)
+        return max(0, min(allowed - used, global_rem))
+    elif sec in ("international", "intl"):
+        if intl_current_count >= 5:
+            return 0
+        used = get_serpapi_intl_count()
+        allowed = 2
+        return max(0, min(allowed - used, global_rem))
+    return 0
 
 
 def get_serpapi_candidates_returned() -> int:
@@ -118,13 +178,14 @@ class SerpAPICorroborator:
         query: str,
         active_horizon: float = 24.0,
         time_window: Optional[str] = None,
+        section: Optional[str] = None,
     ) -> List[dict]:
         """
         Execute Google News search via SerpAPI and return raw candidate dictionaries.
         Searches the high-precision query broadly without restrictive site OR clauses.
         Cache keys are horizon-aware: (query, active_horizon).
         """
-        global _run_serpapi_count, _serpapi_query_cache, _serpapi_candidates_returned_total
+        global _run_serpapi_count, _serpapi_query_cache, _serpapi_candidates_returned_total, _run_serpapi_india_count, _run_serpapi_intl_count
 
         full_query = query.strip()
         eff_horizon = round(float(active_horizon), 1)
@@ -186,6 +247,12 @@ class SerpAPICorroborator:
 
             before_cnt = _run_serpapi_count
             _run_serpapi_count += 1
+            if section:
+                sec_low = section.strip().lower()
+                if sec_low == "india":
+                    _run_serpapi_india_count += 1
+                elif sec_low in ("international", "intl"):
+                    _run_serpapi_intl_count += 1
             logger.debug(f'[SEARCH_BUDGET_DIAG] stage="SerpAPI fallback" before={before_cnt} increment=1 after={_run_serpapi_count} max={self.max_searches} domestic_reserved=0')
 
             if response is None or response.status_code != 200:
@@ -222,14 +289,20 @@ class SerpAPICorroborator:
             _serpapi_query_cache[cache_key] = []
             return []
 
-    def discover(self, query: str, active_horizon: float = 24.0) -> List[Any]:
+    def discover(
+        self,
+        query: str,
+        active_horizon: float = 24.0,
+        section: Optional[str] = None,
+    ) -> List[Any]:
         """
         Execute Google News search via SerpAPI for discovery, returning DiscoveredArticle objects.
         Consumes from the same global MAX_SERPAPI_SEARCHES_PER_RUN budget.
         """
         from app.discovery.models import DiscoveredArticle
-        raw_items = self._search_serpapi(query, active_horizon=active_horizon)
+        raw_items = self._search_serpapi(query, active_horizon=active_horizon, section=section)
         discovered = []
+        country = "India" if (section and section.lower() == "india") else ("United States" if (section and section.lower() in ("international", "intl")) else "India")
         for item in raw_items:
             try:
                 da = DiscoveredArticle(
@@ -237,7 +310,7 @@ class SerpAPICorroborator:
                     url=item["url"],
                     source=item.get("source") or "SerpAPI Discovery",
                     search_query=query,
-                    country="India",
+                    country=country,
                 )
                 discovered.append(da)
             except Exception as e:

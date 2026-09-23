@@ -23,12 +23,19 @@ from app.verification.serpapi_corroborator import (
     get_serpapi_candidates_returned,
     get_serpapi_accepted_sources,
     get_serpapi_rejection_reasons,
+    MAX_SERPAPI_INDIA_SEARCHES_PER_RUN,
+    get_serpapi_india_count,
+    get_serpapi_intl_count,
+    compute_serpapi_section_budget,
 )
 
 from app.verification.materiality import (
     InvestmentMaterialityEvaluator,
     evaluate_investment_materiality,
     INVESTMENT_MATERIALITY_THRESHOLD,
+    is_final_india_candidate_eligible,
+    is_india_final_eligible,
+    IndiaEligibilityResult,
 )
 from app.verification.international import (
     is_geopolitical_market_impact_eligible,
@@ -57,6 +64,9 @@ __all__ = [
     "InvestmentMaterialityEvaluator",
     "evaluate_investment_materiality",
     "INVESTMENT_MATERIALITY_THRESHOLD",
+    "is_final_india_candidate_eligible",
+    "is_india_final_eligible",
+    "IndiaEligibilityResult",
     "is_geopolitical_market_impact_eligible",
     "is_international_final_eligible",
     "is_geopolitical_story",

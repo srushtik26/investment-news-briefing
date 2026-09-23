@@ -111,6 +111,12 @@ def get_final_selectable_unique_events(
 
         # 2. Section-specific constraints
         if cand_cat == NewsCategory.INDIA:
+            if category == NewsCategory.INDIA:
+                from app.verification.materiality import is_final_india_candidate_eligible
+                is_elig, _, _ = is_final_india_candidate_eligible(cand, cand_art, ctx=ctx)
+                if not is_elig:
+                    continue
+
             from app.ranking.watchlist import is_watchlist_company
             cand_text = f"{cand.canonical_title} {cand.description or ''} {' '.join(cand.companies_involved or [])}"
             if cand_art:
@@ -1585,39 +1591,28 @@ def run_ranking_and_selection(
         logger.info("INDIA_RECOVERY_START: current=%d needed=%d", len(india_final), needed)
 
         def _india_recovery_candidate_ok(ev: Event) -> bool:
-            """Check all gates for an India recovery candidate."""
+            """Check all gates for an India recovery candidate using canonical helper."""
             if ev.id in india_recovery_selected_ids or ev.id in india_recovery_rejected_ids:
-                return False
-            if ev.event_category != NewsCategory.INDIA:
                 return False
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
                 return False
-            tier = getattr(ev, "verification_tier", None)
-            if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+
+            from app.verification.materiality import is_final_india_candidate_eligible
+            is_elig, score, rsn = is_final_india_candidate_eligible(ev, cand_art, ctx=ctx)
+            if not is_elig:
                 india_recovery_rejected_ids.add(ev.id)
+                if "INDIA_NEXUS_REJECT" in rsn:
+                    ctx.log_exec(f"INDIA_NEXUS_REJECT (recovery): title=\"{ev.canonical_title}\" reason=\"{rsn}\"")
                 return False
-            conf = float(getattr(ev, "verification_confidence", 0.0) or getattr(ev, "single_source_confidence_score", 0.0) or 0.0)
-            if tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE and conf < 80.0:
-                india_recovery_rejected_ids.add(ev.id)
-                return False
+
             # Dedup vs. existing selected
             for ex_s in india_final:
                 ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
                 if ex_art and cand_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
                     india_recovery_rejected_ids.add(ev.id)
                     return False
-            # Materiality >= 60
-            _, mat_score, _ = _eval_materiality(ev, cand_art, ctx=ctx)
-            if mat_score < 60.0:
-                india_recovery_rejected_ids.add(ev.id)
-                return False
-            # India nexus — the critical gate
-            is_nexus, nexus_reason = _verify_nexus(ev, cand_art)
-            if not is_nexus:
-                india_recovery_rejected_ids.add(ev.id)
-                ctx.log_exec(f"INDIA_NEXUS_REJECT (recovery): title=\"{ev.canonical_title}\" reason=\"{nexus_reason}\"")
-                return False
+
             # Portfolio canonical company diversity check: max 1 per canonical company
             from app.ranking.watchlist import get_portfolio_company_role
             is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
@@ -1743,9 +1738,71 @@ def run_ranking_and_selection(
                         if needed <= 0:
                             break
 
+        # 6. Bounded India SerpAPI recovery discovery (max 2 per run for India)
+        if needed > 0:
+            import os
+            from app.verification.serpapi_corroborator import (
+                SerpAPICorroborator,
+                get_serpapi_count,
+                get_serpapi_india_count,
+                MAX_SERPAPI_SEARCHES_PER_RUN,
+                MAX_SERPAPI_INDIA_SEARCHES_PER_RUN,
+            )
+            serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
+            if serp_key and serp_key.strip():
+                serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
+                INDIA_SERP_RECOVERY_QUERIES = [
+                    "Indian company acquisition contract capex earnings IPO funding regulation when:1d",
+                    "India corporate net profit revenue quarterly results deal order when:1d",
+                ]
+                for sq in INDIA_SERP_RECOVERY_QUERIES:
+                    if needed <= 0:
+                        break
+                    if get_serpapi_india_count() >= MAX_SERPAPI_INDIA_SEARCHES_PER_RUN:
+                        break
+                    if get_serpapi_count() >= MAX_SERPAPI_SEARCHES_PER_RUN:
+                        break
+                    try:
+                        serp_items = serp_corrob.discover(sq, active_horizon=24.0, section="india")
+                        candidates_found = len(serp_items)
+                        final_eligible_in_query = 0
+                        for sit in serp_items:
+                            u = sit.url.strip()
+                            if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                                ctx.seen_urls.add(u.lower().rstrip("/"))
+                                process_candidate_item(sit, "india", ctx)
+                                new_cands = [
+                                    ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                                    if ev.id not in india_recovery_selected_ids
+                                ]
+                                for ev in new_cands:
+                                    if _try_add_recovery_candidate(ev, "serpapi"):
+                                        final_eligible_in_query += 1
+                                        if needed <= 0:
+                                            break
+                            if needed <= 0:
+                                break
+
+                        ctx.log_exec(
+                            f"SERPAPI_SECTION=INDIA\n"
+                            f"SERPAPI_QUERY={sq}\n"
+                            f"SERPAPI_CANDIDATES_FOUND={candidates_found}\n"
+                            f"SERPAPI_FINAL_ELIGIBLE={final_eligible_in_query}\n"
+                            f"SERPAPI_CALLS_USED={get_serpapi_india_count()}"
+                        )
+                        logger.info(
+                            "SERPAPI_SECTION=INDIA SERPAPI_QUERY=%s SERPAPI_CANDIDATES_FOUND=%d SERPAPI_FINAL_ELIGIBLE=%d SERPAPI_CALLS_USED=%d",
+                            sq,
+                            candidates_found,
+                            final_eligible_in_query,
+                            get_serpapi_india_count(),
+                        )
+                    except Exception as e:
+                        ctx.log_exec(f"[SERPAPI_INDIA_RECOVERY_ERROR] {e}")
+
         if needed > 0:
             ctx.log_exec(f"INDIA_RECOVERY_EXHAUSTED: still need {needed} stories after all recovery steps")
-            logger.warning("INDIA_RECOVERY_EXHAUSTED: need=%d after mem+deferred+rss", needed)
+            logger.warning("INDIA_RECOVERY_EXHAUSTED: need=%d after mem+deferred+rss+serpapi", needed)
 
     # -----------------------------------------------------------------------
     # INDIA_FINAL_NEXUS_AUDIT — verify all final India stories before Stage 8

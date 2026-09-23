@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, NamedTuple
 
 from app.logging_config import get_logger
 from app.models.article import Article
@@ -660,3 +660,150 @@ def evaluate_investment_materiality(
     res = evaluator.evaluate(event=event, article=article, ctx=ctx)
     return res.is_material, res.score, res.summary_reason
 
+
+class IndiaEligibilityResult(NamedTuple):
+    is_eligible: bool
+    score: float
+    reason: str
+
+    def __bool__(self) -> bool:
+        return self.is_eligible
+
+
+def is_final_india_candidate_eligible(
+    event: Event,
+    article: Optional[Article] = None,
+    ctx: Optional[Any] = None,
+    max_age_hours: Optional[float] = None,
+    existing_candidates: Optional[List[Event]] = None,
+) -> IndiaEligibilityResult:
+    """
+    Canonical India final eligibility gate used across Stage 7 selection,
+    fallback manager sufficiency check, reserve counts, and recovery passes.
+
+    Enforces the full suite of Stage 7 rules:
+    - Primary article presence
+    - India category and region classification
+    - Verification tier (TWO_SOURCE_VERIFIED or HIGH_CONFIDENCE_SINGLE_SOURCE >= 80.0)
+    - Source eligibility (SourceFilterRule)
+    - Story type noise patterns & domestic-routed check
+    - Freshness / horizon
+    - Materiality score >= 60.0
+    - India business nexus (verify_india_business_nexus)
+    - Geopolitical market impact rule
+    - Semantic deduplication against existing candidates (if provided)
+    """
+    if event is None:
+        return IndiaEligibilityResult(False, 0.0, "MISSING_EVENT")
+
+    if article is None and ctx is not None and hasattr(ctx, "articles_lookup"):
+        article = ctx.articles_lookup.get(event.article_ids[0]) if event.article_ids else None
+
+    if article is None:
+        return IndiaEligibilityResult(False, 0.0, "MISSING_PRIMARY_ARTICLE")
+
+    # 1. Category and Region Check
+    from app.models.enums import NewsCategory
+    if getattr(event, "event_category", None) != NewsCategory.INDIA:
+        return IndiaEligibilityResult(False, 0.0, f"CATEGORY_MISMATCH: {getattr(event, 'event_category', None)}")
+
+    reg_classifier = getattr(ctx, "reg_clf", None) if ctx else None
+    if not reg_classifier:
+        from app.classification.region_classifier import EventRegionClassifier
+        reg_classifier = EventRegionClassifier()
+    is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+        event, article, requested_region=NewsCategory.INDIA
+    )
+    if not is_reg_valid:
+        return IndiaEligibilityResult(False, 0.0, f"REGION_REJECTED: {reg_reason}")
+
+    # 2. Verification Tier & Confidence
+    from app.models.enums import VerificationTier
+    tier = getattr(event, "verification_tier", None)
+    if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+        return IndiaEligibilityResult(False, 0.0, f"UNSUPPORTED_VERIFICATION_TIER: {tier}")
+    if tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE:
+        conf = float(getattr(event, "verification_confidence", 0.0) or getattr(event, "single_source_confidence_score", 0.0) or 0.0)
+        if conf < 80.0:
+            return IndiaEligibilityResult(False, conf, f"HCSS_CONFIDENCE_BELOW_80: {conf}")
+
+    # 3. Source Eligibility
+    from app.filtering.rules import SourceFilterRule
+    src_rule = SourceFilterRule()
+    src_res = src_rule.evaluate(article)
+    if not src_res.is_accepted:
+        return IndiaEligibilityResult(False, 0.0, f"INELIGIBLE_SOURCE: {src_res.rejection_reason}")
+
+    # 4. Story Type Noise Patterns
+    from app.filtering.rules import StoryTypeFilterRule
+    st_rule = StoryTypeFilterRule()
+    eval_text = f"{article.title} {(article.content_text or '')[:500]}".lower()
+    for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+        if re.search(pat_regex, eval_text, re.IGNORECASE):
+            if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                has_completed = bool(re.search(
+                    r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                    eval_text,
+                    re.IGNORECASE,
+                ))
+                if has_completed:
+                    continue
+            return IndiaEligibilityResult(False, 0.0, f"Prohibited noise pattern '{pat_name}'")
+
+    if getattr(article, "category", None) == NewsCategory.DOMESTIC:
+        st_res = st_rule.evaluate(article)
+        if not st_res.is_accepted:
+            return IndiaEligibilityResult(False, 0.0, st_res.rejection_reason or "Domestic-routed article lacks business event indicators")
+
+    # 5. Freshness / Horizon
+    now_ref = getattr(ctx, "run_reference_time", None) if ctx else None
+    from app.pipeline.candidate_processing import get_article_age_hours
+    age_h = get_article_age_hours(article, now_utc=now_ref)
+    eff_horizon = max_age_hours
+    if eff_horizon is None and ctx and hasattr(ctx, "active_horizon"):
+        eff_horizon = getattr(ctx, "active_horizon", None)
+    if eff_horizon is None and getattr(event, "metadata", None):
+        eff_horizon = event.metadata.get("fallback_horizon_hours")
+    if eff_horizon is not None and age_h is not None and age_h > eff_horizon:
+        return IndiaEligibilityResult(False, 0.0, f"EXCEEDS_HORIZON: {age_h:.1f}h > {eff_horizon}h")
+
+    # 6. Materiality Gate (threshold >= 60.0)
+    mat_score = (event.metadata or {}).get("investment_materiality_score")
+    if mat_score is None:
+        evaluator = InvestmentMaterialityEvaluator()
+        res = evaluator.evaluate(event=event, article=article, ctx=ctx)
+        mat_score = res.score
+        if event.metadata is None:
+            event.metadata = {}
+        event.metadata["investment_materiality_score"] = mat_score
+    if mat_score < INVESTMENT_MATERIALITY_THRESHOLD:
+        return IndiaEligibilityResult(False, mat_score, f"MATERIALITY_BELOW_60 (score={mat_score:.1f})")
+
+    # 7. India Business Nexus
+    from app.classification.region_classifier import verify_india_business_nexus
+    is_nexus, nexus_reason = verify_india_business_nexus(event, article)
+    if not is_nexus:
+        return IndiaEligibilityResult(False, mat_score, f"INDIA_NEXUS_REJECT: {nexus_reason}")
+
+    # 8. Geopolitical Market Impact Rule
+    from app.verification.international import is_geopolitical_market_impact_eligible
+    is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(event.canonical_title or article.title, article)
+    if not is_geo_elig:
+        return IndiaEligibilityResult(False, mat_score, f"GEOPOLITICAL_RULE_REJECT: {geo_reason}")
+
+    # 9. Semantic Deduplication (if existing candidates provided)
+    if existing_candidates and ctx and hasattr(ctx, "verifier") and ctx.verifier:
+        for ex in existing_candidates:
+            if ex.id == event.id:
+                continue
+            ex_art = ctx.articles_lookup.get(ex.article_ids[0]) if (hasattr(ctx, "articles_lookup") and ex.article_ids) else None
+            if ex_art:
+                is_same, _, _ = ctx.verifier.is_same_underlying_event(article, ex_art, now_utc=now_ref)
+                if is_same:
+                    return IndiaEligibilityResult(False, mat_score, f"DUPLICATE_EVENT: matches {ex.id}")
+
+    return IndiaEligibilityResult(True, float(mat_score), "ELIGIBLE")
+
+
+# Convenience alias for symmetry with is_domestic_final_eligible and is_international_final_eligible
+is_india_final_eligible = is_final_india_candidate_eligible

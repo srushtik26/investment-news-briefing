@@ -640,7 +640,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "profile_feature",
-            r"\bwho is\b|\b(biography|profile feature|career profile)\b",
+            r"\bwho is\b(?!\s+(?:right|wrong|winning|losing|buying|selling|investing|behind|responsible|liable|to blame|better|next|benefiting|hurt)\b)|\b(biography|profile feature|career profile)\b",
         ),
         (
             "earnings_preview",
