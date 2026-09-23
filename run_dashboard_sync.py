@@ -146,16 +146,22 @@ def _parse_section_stories(lines: List[str], section: str) -> List[DashboardStor
 
 
 def _build_briefing(text: str, briefing_date: date, stories: List[DashboardStory]) -> Optional[DashboardBriefing]:
-    """Build a dashboard briefing only for a complete canonical or legacy set."""
+    """Build a dashboard briefing only for a complete 15-story set (5 Domestic, 5 India, 5 International)."""
     counts = {
         "india": sum(1 for s in stories if s.section == "india"),
         "domestic": sum(1 for s in stories if s.section == "domestic"),
         "international": sum(1 for s in stories if s.section == "international"),
     }
 
-    canonical_10 = counts["india"] == 5 and counts["international"] == 5 and counts["domestic"] == 0
-    legacy_15 = counts["india"] == 5 and counts["international"] == 5 and counts["domestic"] == 5
-    if not (canonical_10 or legacy_15):
+    # Production dashboard sync strictly accepts ONLY the 15-story format (5 Domestic, 5 India, 5 International).
+    # 10-story briefings (missing Domestic) are strictly rejected.
+    is_valid_15 = (
+        counts["domestic"] == 5
+        and counts["india"] == 5
+        and counts["international"] == 5
+        and len(stories) == 15
+    )
+    if not is_valid_15:
         return None
 
     briefing = DashboardBriefing(
@@ -170,15 +176,15 @@ def _build_briefing(text: str, briefing_date: date, stories: List[DashboardStory
 
 
 def parse_briefing_text(text: str, default_date: Optional[date] = None) -> Optional[DashboardBriefing]:
-    """Parse the canonical 10-story briefing, with legacy 15-story support."""
+    """Parse the canonical 15-story daily briefing (5 Domestic, 5 India, 5 International)."""
     briefing_date = extract_date_from_briefing_text(text) or default_date
     if not briefing_date:
         return None
 
     lines = [line.strip() for line in text.splitlines()]
     section_headers = {
-        "india": r"TOP\s+5\s+INDIA\s+BUSINESS\s+HEADLINES",
         "domestic": r"TOP\s+5\s+DOMESTIC\s+HEADLINES",
+        "india": r"TOP\s+5\s+INDIA\s+BUSINESS\s+HEADLINES",
         "international": r"TOP\s+5\s+INTERNATIONAL\s+BUSINESS\s+HEADLINES",
     }
 
@@ -189,7 +195,8 @@ def parse_briefing_text(text: str, default_date: Optional[date] = None) -> Optio
                 positions.append((section, idx))
 
     present_sections = {section for section, _ in positions}
-    if not {"india", "international"}.issubset(present_sections):
+    # All three sections must be present: Domestic, India, International
+    if not {"domestic", "india", "international"}.issubset(present_sections):
         return None
 
     positions.sort(key=lambda item: item[1])
@@ -296,14 +303,14 @@ def sync_dashboard(
             text = candidate_file.read_text(encoding="utf-8")
             b = parse_briefing_text(text, default_date=target_date or replace_date)
 
-        if b and b.story_count in (10, 15):
+        if b and b.story_count == 15:
             briefing = b
             selected_file = candidate_file
             break
         else:
             print(
                 f"[ERROR] Could not extract a complete dashboard briefing from {candidate_file} "
-                f"(expected 15 stories: 5 India + 5 Domestic + 5 International)."
+                f"(expected exactly 15 stories: 5 Domestic + 5 India + 5 International)."
             )
 
     if not briefing or not selected_file:
