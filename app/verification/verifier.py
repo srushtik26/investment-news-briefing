@@ -17,8 +17,15 @@ from app.models.article import Article
 from app.models.enums import NewsCategory
 from app.models.event import Event
 from app.verification.models import EventSourceVerification, VerificationStatus
+from app.filtering.source_policy import _domain_in_set
 
 logger = get_logger("verification.two_source")
+
+PRESS_RELEASE_DISTRIBUTOR_DOMAINS: frozenset[str] = frozenset({
+    "businesswire.com",
+    "globenewswire.com",
+    "prnewswire.com",
+})
 
 
 class TwoSourceVerifier:
@@ -78,7 +85,7 @@ class TwoSourceVerifier:
             netloc = netloc[4:]
 
         for domain, group in self.PUBLISHER_GROUPS.items():
-            if domain in netloc:
+            if _domain_in_set(netloc, frozenset({domain})):
                 return group
 
         return netloc or source_key or "unknown_publisher"
@@ -621,7 +628,7 @@ class TwoSourceVerifier:
                 matching_details=f"Both articles originate from the same publisher/media group ('{group1}').",
             )
 
-        # 3b. Check First-Party Primary Source Corroboration
+        # 3b. Check First-Party Primary and Commercial PR Distributor Corroboration
         is_fp1 = (art1.metadata or {}).get("source_class") == "FIRST_PARTY_PRIMARY"
         is_fp2 = (art2.metadata or {}).get("source_class") == "FIRST_PARTY_PRIMARY"
         if is_fp1 and is_fp2:
@@ -640,12 +647,62 @@ class TwoSourceVerifier:
                 article_urls=[art1.url],
                 matching_details="Both articles are first-party primary corporate sources; independent approved corroboration required.",
             )
+
+        netloc1 = urlparse(art1.url).netloc.lower().split(":")[0]
+        if netloc1.startswith("www."):
+            netloc1 = netloc1[4:]
+        netloc2 = urlparse(art2.url).netloc.lower().split(":")[0]
+        if netloc2.startswith("www."):
+            netloc2 = netloc2[4:]
+
+        is_pr1 = _domain_in_set(netloc1, self.PRESS_RELEASE_DISTRIBUTOR_DOMAINS)
+        is_pr2 = _domain_in_set(netloc2, self.PRESS_RELEASE_DISTRIBUTOR_DOMAINS)
+
+        # Commercial PR distributors cannot corroborate each other
+        if is_pr1 and is_pr2:
+            event.secondary_publisher = None
+            event.secondary_url = None
+            if len(event.article_ids) > 1:
+                event.article_ids = [event.article_ids[0]]
+            return EventSourceVerification(
+                event_id=event.id,
+                primary_source=art1.source_name,
+                secondary_source=None,
+                source_count=1,
+                is_independent=False,
+                verification_status=VerificationStatus.REJECTED_SAME_PUBLISHER,
+                confidence_score=0.4,
+                article_urls=[art1.url],
+                matching_details="Commercial PR distributors cannot corroborate each other for two-source verification.",
+            )
+
         if is_fp1 or is_fp2:
             other_art = art2 if is_fp1 else art1
-            from app.filtering.rules import SourceFilterRule
-            other_netloc = urlparse(other_art.url).netloc.lower()
+            other_netloc = urlparse(other_art.url).netloc.lower().split(":")[0]
+            if other_netloc.startswith("www."):
+                other_netloc = other_netloc[4:]
             other_src = (other_art.source_name or "").lower()
-            is_approved = any(allowed in other_src for allowed in SourceFilterRule.ALLOWED_SOURCES) or any(d in other_netloc for d in SourceFilterRule.ALLOWED_DOMAINS)
+
+            # Commercial PR distributors cannot corroborate first-party corporate announcements
+            if _domain_in_set(other_netloc, self.PRESS_RELEASE_DISTRIBUTOR_DOMAINS):
+                event.secondary_publisher = None
+                event.secondary_url = None
+                if len(event.article_ids) > 1:
+                    event.article_ids = [event.article_ids[0]]
+                return EventSourceVerification(
+                    event_id=event.id,
+                    primary_source=art1.source_name,
+                    secondary_source=None,
+                    source_count=1,
+                    is_independent=False,
+                    verification_status=VerificationStatus.REJECTED_SAME_PUBLISHER,
+                    confidence_score=0.4,
+                    article_urls=[art1.url],
+                    matching_details="Commercial PR distributors cannot corroborate first-party corporate announcements.",
+                )
+
+            from app.filtering.rules import SourceFilterRule
+            is_approved = any(allowed in other_src for allowed in SourceFilterRule.ALLOWED_SOURCES) or _domain_in_set(other_netloc, SourceFilterRule.ALLOWED_DOMAINS)
             if not is_approved:
                 event.secondary_publisher = None
                 event.secondary_url = None
