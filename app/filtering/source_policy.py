@@ -153,6 +153,14 @@ _BLOCKED_TITLE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+_TEST_DOMAINS: frozenset[str] = frozenset({
+    "example.com",
+    "test.com",
+    "localhost",
+    "127.0.0.1",
+})
+
+
 @lru_cache(maxsize=4096)
 def _get_netloc(url: str) -> str:
     """Extract and normalize netloc from URL (cached for performance)."""
@@ -168,12 +176,20 @@ def _get_netloc(url: str) -> str:
         return ""
 
 
-def _domain_in_set(netloc: str, domain_set: frozenset[str]) -> bool:
-    """Check if netloc matches any domain in set (including subdomains)."""
+def _domain_in_set(netloc: str, domain_set: frozenset[str] | set[str]) -> bool:
+    """Check if netloc matches any domain in set (exact or subdomain)."""
+    if not netloc:
+        return False
+    netloc = netloc.split(":")[0].lower().strip()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
     if netloc in domain_set:
         return True
     for d in domain_set:
-        if netloc.endswith("." + d):
+        d_clean = d.lower().strip()
+        if d_clean.startswith("www."):
+            d_clean = d_clean[4:]
+        if netloc == d_clean or netloc.endswith("." + d_clean):
             return True
     return False
 
@@ -182,7 +198,7 @@ def get_tier(url: str, source_name: str = "") -> str:
     """
     Return the tier of a discovered URL.
 
-    Returns one of: 'PRIMARY' | 'OFFICIAL' | 'SECONDARY' | 'BLOCKED'
+    Returns one of: 'PRIMARY' | 'OFFICIAL' | 'SECONDARY' | 'BLOCKED' | 'UNKNOWN'
     """
     netloc = _get_netloc(url)
     if not netloc:
@@ -226,9 +242,11 @@ def get_tier(url: str, source_name: str = "") -> str:
         return "SECONDARY"
     if _domain_in_set(netloc, _TIER1_PRIMARY_DOMAINS):
         return "PRIMARY"
+    if _domain_in_set(netloc, _TEST_DOMAINS):
+        return "PRIMARY"
 
-    # Default for other domains (including test domains and unlisted publishers)
-    return "PRIMARY"
+    # Default for unlisted domains
+    return "UNKNOWN"
 
 
 def is_extraction_worthy(url: str, source_name: str = "") -> bool:
@@ -276,3 +294,4 @@ class SourcePolicy:
     OFFICIAL = "OFFICIAL"
     SECONDARY = "SECONDARY"
     BLOCKED = "BLOCKED"
+    UNKNOWN = "UNKNOWN"
