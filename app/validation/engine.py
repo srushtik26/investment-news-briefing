@@ -192,6 +192,43 @@ class FinalValidationEngine:
                 failure_reason=f"Duplicate event IDs selected: {dups}",
             ))
 
+        # -------------------------------------------------------------
+        # PRE-VALIDATION GROUNDING CHECK:
+        # - event_id exists
+        # - event_found=True
+        # - primary article exists
+        # -------------------------------------------------------------
+        for story in all_stories:
+            if not story.event_id:
+                check_results.append(ValidationCheckResult(
+                    check_id=10,
+                    check_name="Story event grounding",
+                    passed=False,
+                    failure_reason=f"Story '{story.headline}' has no event_id",
+                    failed_story_id="missing_event_id",
+                ))
+                continue
+            event = events_lookup.get(story.event_id)
+            if not event:
+                check_results.append(ValidationCheckResult(
+                    check_id=10,
+                    check_name="Story event grounding",
+                    passed=False,
+                    failure_reason=f"Story '{story.headline}' event_id '{story.event_id}' not found in events_lookup",
+                    failed_story_id=story.event_id,
+                ))
+                continue
+            articles = [articles_lookup[aid] for aid in event.article_ids if aid in articles_lookup] if event else []
+            primary_art = articles[0] if articles else None
+            if not primary_art:
+                check_results.append(ValidationCheckResult(
+                    check_id=10,
+                    check_name="Story event grounding",
+                    passed=False,
+                    failure_reason=f"Story '{story.headline}' primary article not found in articles_lookup (event_id='{story.event_id}')",
+                    failed_story_id=story.event_id,
+                ))
+
         # Helper to run story-level checks
         for story in all_stories:
             event = events_lookup.get(story.event_id)

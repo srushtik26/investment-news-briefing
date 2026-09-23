@@ -87,6 +87,7 @@ CANONICAL_ALIASES: Dict[str, str] = {
     "bhel": "Bharat Heavy Electricals Ltd",
     "bharat heavy electricals": "Bharat Heavy Electricals Ltd",
     "sbi": "State Bank of India",
+    "state bank of india": "State Bank of India",
     "sail": "Steel Authority of India Ltd",
     "sun pharma": "Sun Pharmaceutical Industries Ltd",
     "sun pharmaceutical industries": "Sun Pharmaceutical Industries Ltd",
@@ -102,6 +103,8 @@ CANONICAL_ALIASES: Dict[str, str] = {
     "britannia": "Britannia Industries Ltd",
     "havells": "Havells India Ltd",
 }
+for _cname, _ in _RAW:
+    CANONICAL_ALIASES[_cname.lower()] = _cname
 
 # Module-level pre-compiled regexes for role evaluation
 _COLON_SUBJECT_PATTERN = re.compile(
@@ -193,8 +196,13 @@ def match_portfolio_company(
     # Step 1: Check companies_involved directly
     for c in companies:
         c_clean = c.strip().lower()
-        if c_clean in CANONICAL_ALIASES:
-            canonical_name = CANONICAL_ALIASES[c_clean]
+        canonical_name = CANONICAL_ALIASES.get(c_clean)
+        if not canonical_name:
+            for cname, cpat in PORTFOLIO_WATCHLIST:
+                if cpat.search(c) or cname.lower() == c_clean:
+                    canonical_name = cname
+                    break
+        if canonical_name:
             role, eligible = _evaluate_role(canonical_name, title_clean)
             return PortfolioMatch(
                 canonical_name=canonical_name,

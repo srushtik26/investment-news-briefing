@@ -1846,10 +1846,15 @@ def run_ranking_and_selection(
             _pf_ev_cache[ev.id] = get_portfolio_company_role(ev.canonical_title)
         return _pf_ev_cache[ev.id]
 
-    # Count selected portfolio stories for concise daily tracking
+    from app.ranking.watchlist import match_portfolio_company
+
+    # Count selected portfolio stories for concise daily tracking using canonical PortfolioMatch
     portfolio_selected_count = sum(
         1 for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])
-        if _is_pf_ev(s.event)[3]
+        if match_portfolio_company(
+            event=s.event,
+            article=ctx.articles_lookup.get(s.event.article_ids[0]) if s.event.article_ids else None,
+        ) is not None
     )
     ctx.log_exec(f"PORTFOLIO_SELECTED={portfolio_selected_count}")
     logger.info("PORTFOLIO_SELECTED=%d", portfolio_selected_count)
@@ -2434,6 +2439,7 @@ def run_ranking_and_selection(
     # -------------------------------------------------------------
     from app.classification.region_classifier import verify_india_business_nexus as _verify_nexus_final
     from app.verification.materiality import evaluate_investment_materiality as _eval_materiality_final
+    from app.verification.international import is_geopolitical_market_impact_eligible as _is_geo_ok_final
     reg_classifier_final = _get_reg_classifier()
 
     # 1. Audit India stories with verify_india_business_nexus()
@@ -2453,18 +2459,33 @@ def run_ranking_and_selection(
             )
             ctx.log_exec(audit_log)
             logger.info(audit_log)
-        else:
+            continue
+
+        is_geo, geo_reason = _is_geo_ok_final(ev.canonical_title, cand_art)
+        if not is_geo:
             audit_log = (
                 f"REGION_FINAL_AUDIT\n"
                 f"event_id={ev.id}\n"
                 f'headline="{ev.canonical_title}"\n'
                 f"assigned_region=INDIA\n"
-                f"detected_region=INDIA\n"
-                f'reason="{nex_reason}"'
+                f"detected_region=GEOPOLITICAL_UNQUANTIFIED\n"
+                f'reason="{geo_reason}"'
             )
             ctx.log_exec(audit_log)
             logger.info(audit_log)
-            india_audited.append(s)
+            continue
+
+        audit_log = (
+            f"REGION_FINAL_AUDIT\n"
+            f"event_id={ev.id}\n"
+            f'headline="{ev.canonical_title}"\n'
+            f"assigned_region=INDIA\n"
+            f"detected_region=INDIA\n"
+            f'reason="{nex_reason}"'
+        )
+        ctx.log_exec(audit_log)
+        logger.info(audit_log)
+        india_audited.append(s)
 
     # 2. Audit International stories with inverse protection
     intl_audited: List[ScoredEvent] = []
@@ -2542,6 +2563,9 @@ def run_ranking_and_selection(
             is_nex, _ = _verify_nexus_final(ev, cand_art)
             if not is_nex:
                 continue
+            is_geo, _ = _is_geo_ok_final(ev.canonical_title, cand_art)
+            if not is_geo:
+                continue
             mat_res = _eval_materiality_final(ev, cand_art, ctx=ctx)
             m_score = mat_res[1] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "score", 0.0)
             if m_score < 60.0:
@@ -2568,6 +2592,8 @@ def run_ranking_and_selection(
             )
             india_audited.append(scored)
             india_current_ids.add(ev.id)
+            if event_by_id is not None:
+                event_by_id[ev.id] = ev
             if is_pf and pf_elig and pf_comp:
                 global_seen_portfolio_companies[pf_comp] = ev.canonical_title
             ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '{ev.canonical_title}'")
@@ -2615,6 +2641,8 @@ def run_ranking_and_selection(
             )
             intl_audited.append(scored)
             intl_current_ids.add(ev.id)
+            if event_by_id is not None:
+                event_by_id[ev.id] = ev
             ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INTERNATIONAL: '{ev.canonical_title}'")
 
     if len(india_audited) > 5:
@@ -2629,6 +2657,22 @@ def run_ranking_and_selection(
 
     candidate_pool.india_candidates = india_audited
     candidate_pool.international_candidates = intl_audited
+
+    if event_by_id is not None:
+        for s in (candidate_pool.india_candidates + candidate_pool.international_candidates + candidate_pool.domestic_candidates):
+            if s.event and s.event.id:
+                event_by_id[s.event.id] = s.event
+
+    from app.ranking.watchlist import match_portfolio_company
+    portfolio_selected_count = sum(
+        1 for s in (candidate_pool.india_candidates[:5] if candidate_pool.india_candidates else [])
+        if match_portfolio_company(
+            event=s.event,
+            article=ctx.articles_lookup.get(s.event.article_ids[0]) if s.event.article_ids else None,
+        ) is not None
+    )
+    ctx.log_exec(f"PORTFOLIO_SELECTED={portfolio_selected_count}")
+    logger.info("PORTFOLIO_SELECTED=%d", portfolio_selected_count)
 
     # Audit Topic Distribution for India and International
     audit_topic_distribution(candidate_pool.india_candidates, "INDIA")

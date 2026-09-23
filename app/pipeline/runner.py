@@ -543,6 +543,21 @@ def run_pipeline(
         ctx, accepted_stories, event_by_id
     )
 
+    # Ensure event_by_id indexes every known event across all pools & candidates
+    for ev in (
+        (ctx.verified_events or [])
+        + (ctx.high_confidence_single_candidates or [])
+        + (ctx.single_source_events or [])
+        + (getattr(ctx, "india_reserve_pool", []) or [])
+        + (getattr(ctx, "intl_reserve_pool", []) or [])
+        + [c.event if hasattr(c, "event") else c for c in (getattr(ctx, "portfolio_discovered_candidates", []) or [])]
+        + [s.event for s in (getattr(candidate_pool, "domestic_candidates", []) or [])]
+        + [s.event for s in (getattr(candidate_pool, "india_candidates", []) or [])]
+        + [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
+    ):
+        if isinstance(ev, Event) and ev.id:
+            event_by_id[ev.id] = ev
+
     # Candidate audit manifest
     print_candidate_audit(domestic_pool, india_pool, intl_pool, ctx.articles_lookup)
 
@@ -619,6 +634,101 @@ def run_pipeline(
                 international_stories=intl_stories_selected,
             )
 
+        # Re-ensure event_by_id indexes every known event across all pools & candidates
+        for ev in (
+            (ctx.verified_events or [])
+            + (ctx.high_confidence_single_candidates or [])
+            + (ctx.single_source_events or [])
+            + (getattr(ctx, "india_reserve_pool", []) or [])
+            + (getattr(ctx, "intl_reserve_pool", []) or [])
+            + [c.event if hasattr(c, "event") else c for c in (getattr(ctx, "portfolio_discovered_candidates", []) or [])]
+            + [s.event for s in (getattr(candidate_pool, "domestic_candidates", []) or [])]
+            + [s.event for s in (getattr(candidate_pool, "india_candidates", []) or [])]
+            + [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
+        ):
+            if isinstance(ev, Event) and ev.id:
+                event_by_id[ev.id] = ev
+
+        # Upstream grounding resolution: ensure every story has a valid event in event_by_id
+        for sec_name, story_list in [
+            ("domestic", selection_payload.domestic_stories),
+            ("india", selection_payload.india_stories),
+            ("international", selection_payload.international_stories),
+        ]:
+            for story in story_list:
+                if not story.event_id or story.event_id not in event_by_id:
+                    matched_ev = None
+                    if story.url:
+                        for art in ctx.articles_lookup.values():
+                            if art.url == story.url or (art.url and (story.url in art.url or art.url in story.url)):
+                                for ev in event_by_id.values():
+                                    if ev.article_ids and art.id in ev.article_ids:
+                                        matched_ev = ev
+                                        break
+                                if matched_ev:
+                                    break
+                    if not matched_ev and story.headline:
+                        hl_low = story.headline.lower()
+                        for ev in event_by_id.values():
+                            ct_low = (ev.canonical_title or "").lower()
+                            if ct_low and (ct_low == hl_low or ct_low in hl_low or hl_low in ct_low):
+                                matched_ev = ev
+                                break
+                    if matched_ev:
+                        story.event_id = matched_ev.id
+                        event_by_id[matched_ev.id] = matched_ev
+
+        # Geopolitical India check: replace unquantified geopolitical story with qualified India reserve
+        from app.verification.international import is_geopolitical_market_impact_eligible
+        from app.classification.region_classifier import verify_india_business_nexus
+        from app.verification.materiality import evaluate_investment_materiality
+
+        final_india_curated = []
+        cur_india_ids = {s.event_id for s in selection_payload.india_stories}
+        for story in selection_payload.india_stories:
+            is_geo_ok, geo_reason = is_geopolitical_market_impact_eligible(story.headline)
+            if is_geo_ok:
+                final_india_curated.append(story)
+                continue
+
+            log_exec(f"[STAGE8_GEOPOLITICAL_GUARD] India story '{story.headline}' lacks quantified market impact. Replacing with qualified India reserve...")
+            replacement_story = None
+            reserves_to_try = (
+                (getattr(ctx, "india_reserve_pool", []) or [])
+                + [s.event for s in (getattr(candidate_pool, "india_candidates", []) or [])]
+                + (ctx.verified_events or [])
+            )
+            for res_ev in reserves_to_try:
+                if not isinstance(res_ev, Event) or res_ev.id in cur_india_ids or res_ev.event_category != NewsCategory.INDIA:
+                    continue
+                res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
+                if not res_art:
+                    continue
+                is_nex, _ = verify_india_business_nexus(res_ev, res_art)
+                if not is_nex:
+                    continue
+                is_g_ok, _ = is_geopolitical_market_impact_eligible(res_ev.canonical_title, res_art)
+                if not is_g_ok:
+                    continue
+                mat_res = evaluate_investment_materiality(res_ev, res_art, ctx=ctx)
+                m_score = mat_res[1] if isinstance(mat_res, (tuple, list)) else getattr(mat_res, "score", 0.0)
+                if m_score < 60.0:
+                    continue
+
+                sc = build_story_context(res_ev, res_art, ctx=ctx)
+                replacement_story = prepare_final_story(sc, ctx=ctx)
+                cur_india_ids.add(res_ev.id)
+                event_by_id[res_ev.id] = res_ev
+                log_exec(f"[STAGE8_GEOPOLITICAL_GUARD] Successfully replaced with qualified reserve '{replacement_story.headline}' (event_id={res_ev.id})")
+                break
+
+            if replacement_story:
+                final_india_curated.append(replacement_story)
+            else:
+                final_india_curated.append(story)
+
+        selection_payload.india_stories = final_india_curated
+
         # Headline institutional style verification and Summary grounding validation
         all_curated_sections = [
             ("domestic", selection_payload.domestic_stories),
@@ -634,6 +744,18 @@ def run_pipeline(
                     story_list[idx] = prepare_final_story(
                         sc, ctx=ctx, preferred_headline=story.headline, preferred_summary=story.summary
                     )
+
+        # Count PORTFOLIO_SELECTED from actual final India selections using canonical PortfolioMatch
+        from app.ranking.watchlist import match_portfolio_company
+        final_pf_selected = sum(
+            1 for s in (selection_payload.india_stories or [])
+            if match_portfolio_company(
+                event=event_by_id.get(s.event_id),
+                article=ctx.articles_lookup.get(event_by_id[s.event_id].article_ids[0]) if (s.event_id in event_by_id and event_by_id[s.event_id].article_ids) else None,
+            ) is not None
+        )
+        log_exec(f"PORTFOLIO_SELECTED={final_pf_selected}")
+        logger.info("PORTFOLIO_SELECTED=%d", final_pf_selected)
 
         save_json_artifact(data_dir / "final_15_stories.json", {
             "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
