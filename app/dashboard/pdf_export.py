@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from typing import Optional
 import unicodedata
-from urllib.parse import urlparse
+
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -123,48 +123,6 @@ def _safe_text(text: Optional[str]) -> str:
             except UnicodeEncodeError:
                 safe_chars.append(" ")
     return "".join(safe_chars)
-
-
-def get_short_display_url(url: Optional[str]) -> str:
-
-    """
-    Extract a clean canonical publisher domain for compact display.
-    Strips schemes (http, https), www prefix, query parameters, fragments, and paths.
-
-    Examples:
-        https://www.reuters.com/world/us/example-story-2026-09-23/ -> reuters.com
-        https://economictimes.indiatimes.com/markets/example -> economictimes.indiatimes.com
-        https://www.business-standard.com/companies/news/example -> business-standard.com
-    """
-    if not url or not isinstance(url, str):
-        return ""
-    clean = url.strip()
-    if not clean:
-        return ""
-
-    # Strip scheme if present
-    if clean.startswith("http://"):
-        clean = clean[7:]
-    elif clean.startswith("https://"):
-        clean = clean[8:]
-    elif clean.startswith("//"):
-        clean = clean[2:]
-
-    # Strip leading www.
-    if clean.lower().startswith("www."):
-        clean = clean[4:]
-
-    # Strip query parameters and fragments
-    clean = clean.split("?")[0].split("#")[0]
-
-    # Strip trailing path
-    domain = clean.split("/")[0].strip().lower()
-
-    # Strip port if present
-    if ":" in domain:
-        domain = domain.split(":")[0].strip()
-
-    return domain or clean[:30]
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -372,7 +330,7 @@ def generate_briefing_pdf(briefing: DashboardBriefing) -> bytes:
         Paragraph("MARKETPULSE &nbsp;|&nbsp; INVESTMENT INTELLIGENCE", style_brand_tag),
         Paragraph("Investment Committee Daily Briefing", style_title),
         Paragraph(html.escape(_safe_text(formatted_date)), style_date),
-        Paragraph("Domestic &nbsp;|&nbsp; India Business &nbsp;|&nbsp; International Business", style_subtitle),
+        Paragraph("India Business &nbsp;|&nbsp; International Business &nbsp;|&nbsp; Domestic", style_subtitle),
     ]
 
     if logo_img:
@@ -414,12 +372,12 @@ def generate_briefing_pdf(briefing: DashboardBriefing) -> bytes:
     )
 
     # ---------------------------------------------------------
-    # 2. STORY SECTIONS (Domestic -> India -> International)
+    # 2. STORY SECTIONS (India -> International -> Domestic)
     # ---------------------------------------------------------
     section_configs = [
-        ("TOP 5 DOMESTIC HEADLINES", briefing.domestic_stories),
         ("TOP 5 INDIA BUSINESS HEADLINES", briefing.india_stories),
         ("TOP 5 INTERNATIONAL BUSINESS HEADLINES", briefing.international_stories),
+        ("TOP 5 DOMESTIC HEADLINES", briefing.domestic_stories),
     ]
 
     for section_idx, (section_title, stories) in enumerate(section_configs):
@@ -461,14 +419,12 @@ def generate_briefing_pdf(briefing: DashboardBriefing) -> bytes:
                 card_items.append(Paragraph(escaped_summary, style_summary))
 
             source_name = html.escape(_safe_text((story.source or "Unknown").strip()))
-            raw_display_url = get_short_display_url(story.url)
-            escaped_display_url = html.escape(_safe_text(raw_display_url))
 
             if story.url and story.url.strip():
                 escaped_raw_url = html.escape(story.url.strip(), quote=True)
                 link_html = (
                     f'Source: <b>{source_name}</b> &nbsp;|&nbsp; '
-                    f'<a href="{escaped_raw_url}" color="#0B4F35"><u>{escaped_display_url}</u></a>'
+                    f'<a href="{escaped_raw_url}" color="#0B4F35"><u>Read Full Article</u></a>'
                 )
             else:
                 link_html = f"Source: <b>{source_name}</b>"
