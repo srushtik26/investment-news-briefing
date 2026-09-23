@@ -223,6 +223,53 @@ body {
   border-color: #C3E2D1;
 }
 
+.banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.btn-download-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background-color: var(--primary-green);
+  color: #FFFFFF !important;
+  font-size: 0.825rem;
+  font-weight: 700;
+  text-decoration: none;
+  padding: 0.42rem 0.95rem;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--gold);
+  box-shadow: 0 2px 4px rgba(7, 61, 42, 0.15);
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-download-pdf:hover {
+  background-color: var(--deep-green);
+  border-color: var(--soft-gold);
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 10px rgba(7, 61, 42, 0.24);
+  transform: translateY(-1px);
+}
+
+.btn-download-pdf:active {
+  transform: translateY(0);
+}
+
+.btn-download-pdf .download-icon {
+  stroke: var(--soft-gold);
+  transition: transform 0.2s ease;
+}
+
+.btn-download-pdf:hover .download-icon {
+  stroke: #FFFFFF;
+  transform: translateY(1px);
+}
+
+
 /* Grid & Sections */
 .briefing-sections {
   display: flex;
@@ -484,6 +531,12 @@ body {
   .briefing-banner {
     flex-direction: column;
     align-items: flex-start;
+    gap: 1rem;
+  }
+  .banner-actions {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.75rem;
   }
   .story-item {
     gap: 0.75rem;

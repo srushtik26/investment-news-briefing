@@ -3,16 +3,20 @@ FastAPI web application for Plutus Wealth Management LLP - Investment Committee 
 Read-only interface strictly decoupled from the pipeline runner.
 """
 
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.dashboard.pdf_export import generate_briefing_pdf
 from app.dashboard.repository import DashboardRepository
+
+logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -101,7 +105,37 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
             },
         )
 
+    @app.get("/briefing/{briefing_date}/pdf")
+    @app.get("/briefing/{briefing_date}/download")
+    def download_briefing_pdf(briefing_date: str):
+        """Generate and download a PDF export for a specific briefing date."""
+        try:
+            target_d = date.fromisoformat(briefing_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
+
+        briefing = repo.get_briefing_by_date(target_d)
+        if not briefing:
+            raise HTTPException(status_code=404, detail=f"No briefing found for {briefing_date}.")
+
+        try:
+            pdf_bytes = generate_briefing_pdf(briefing)
+        except Exception as e:
+            logger.error(f"Failed to generate briefing PDF for {briefing_date}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="An internal error occurred while generating the briefing PDF. Please try again later.",
+            )
+
+        filename = f"investment_briefing_{target_d.isoformat()}.pdf"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "public, max-age=3600",
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
     return app
+
 
 
 # Default app instance

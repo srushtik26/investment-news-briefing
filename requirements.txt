@@ -14,3 +14,5 @@ uvicorn==0.52.4
 SQLAlchemy==2.0.52
 psycopg[binary]==3.3.5
 Jinja2==3.1.6
+reportlab==5.0.1
+pillow==12.3.0
