@@ -1,28 +1,13 @@
-import re
 from typing import Set
 
 from app.logging_config import get_logger
 from app.validation.engine import FinalValidationEngine as BaseFinalValidationEngine
+from app.validation.shared import canonical_numeric_tokens
 
 logger = get_logger("daily.15")
 
-_NUMBER_RE = re.compile(r"(?<!\w)(?:₹|\$)?\d[\d,]*(?:\.\d+)?%?(?!\w)")
-
-
-def _canonical_numbers(text: str) -> Set[str]:
-    """Extract whole numeric tokens and normalize grouping/symbols for exact comparison."""
-    values: Set[str] = set()
-    for token in _NUMBER_RE.findall(text or ""):
-        normalized = (
-            token.replace("₹", "")
-            .replace("$", "")
-            .replace(",", "")
-            .replace("%", "")
-            .strip()
-        )
-        if len(normalized) >= 2:
-            values.add(normalized)
-    return values
+# Canonical numeric tokens helper delegated to app.validation.shared
+_canonical_numbers = canonical_numeric_tokens
 
 
 class FifteenStoryValidationEngine(BaseFinalValidationEngine):

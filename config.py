@@ -18,6 +18,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent
 
 
+# Canonical Briefing Invariants & Constants
+DOMESTIC_TARGET: int = 5
+INDIA_TARGET: int = 5
+INTERNATIONAL_TARGET: int = 5
+TOTAL_STORY_TARGET: int = 15
+
+INDIA_MATERIALITY_THRESHOLD: float = 60.0
+DEDUP_LOOKBACK_DAYS: int = 3
+FRESHNESS_LADDER_HOURS: tuple[float, ...] = (24.0, 36.0, 48.0, 72.0)
+
+
 class Settings(BaseSettings):
     """Application configuration settings loaded from environment or .env."""
 
@@ -52,14 +63,20 @@ class Settings(BaseSettings):
         description="Database connection URL",
     )
 
-    # Briefing Business Rules
+    # Briefing Business Rules & Section Targets
+    DOMESTIC_TARGET: int = Field(default=DOMESTIC_TARGET, ge=1, le=20, description="Target stories in Domestic section")
+    INDIA_TARGET: int = Field(default=INDIA_TARGET, ge=1, le=20, description="Target stories in India section")
+    INTERNATIONAL_TARGET: int = Field(default=INTERNATIONAL_TARGET, ge=1, le=20, description="Target stories in International section")
+    TOTAL_STORY_TARGET: int = Field(default=TOTAL_STORY_TARGET, ge=1, le=50, description="Total target stories in briefing")
+    INDIA_MATERIALITY_THRESHOLD: float = Field(default=INDIA_MATERIALITY_THRESHOLD, ge=0.0, le=100.0, description="India materiality threshold")
+    FRESHNESS_LADDER_HOURS: tuple[float, ...] = Field(default=FRESHNESS_LADDER_HOURS, description="Freshness ladder hours")
     MAX_INDIA_STORIES: int = Field(default=5, ge=1, le=20, description="Max stories in India section")
     MAX_INTERNATIONAL_STORIES: int = Field(default=5, ge=1, le=20, description="Max stories in International section")
     STORY_FRESHNESS_HOURS: float = Field(
         default=24.0, ge=1.0, le=168.0, description="Max story age in hours for eligibility in final briefing (strictly 24h)"
     )
     DEDUP_LOOKBACK_DAYS: int = Field(
-        default=3, ge=1, le=30, description="Days to look back in history to prevent repeat stories (strictly 3 days)"
+        default=DEDUP_LOOKBACK_DAYS, ge=1, le=30, description="Days to look back in history to prevent repeat stories (strictly 3 days)"
     )
     STORY_LOOKBACK_DAYS: int = Field(default=3, ge=1, le=30, description="Days to look back to prevent repeat stories")
     MIN_INDEPENDENT_SOURCES: int = Field(
