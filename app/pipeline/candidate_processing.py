@@ -18,6 +18,9 @@ from app.filtering.source_policy import is_extraction_worthy as _source_policy_e
 from app.verification.single_source import is_multi_event_roundup
 from app.verification.query_builder import EventQueryBuilder, GENERIC_ENTITY_BLACKLIST
 from app.pipeline.context import PipelineContext
+from app.logging_config import get_logger
+
+logger = get_logger("pipeline.candidate_processing")
 
 
 def get_candidate_published_at(candidate: Any) -> Optional[datetime]:
@@ -244,8 +247,12 @@ def _recover_alternate_source(
                         ctx.articles_lookup[alt_res.article.id] = alt_res.article
                         ctx.log_exec(f"  [ALTERNATE_SOURCE_RECOVERED] Reserve candidate from '{res_source}' replaces blocked '{blocked_source}'")
                         return alt_res.article
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "[RESERVE_EXTRACTION_FAILED] Alternate extraction failed for candidate '%s': %s",
+                        getattr(res_cand, "url", ""),
+                        exc,
+                    )
 
     # 3. Google News RSS search for alternative coverage
     if hasattr(ctx, "discovery_service") and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):

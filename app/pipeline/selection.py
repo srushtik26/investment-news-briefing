@@ -28,6 +28,9 @@ def to_ist_date(dt: Optional[datetime]) -> Optional[date]:
 
 from app.models import Article, Event, NewsCategory
 from app.models.enums import VerificationTier
+from app.logging_config import get_logger
+
+logger = get_logger("pipeline.selection")
 from app.models.entity_sanitizer import sanitize_company_entities
 from app.deduplication.fingerprint import normalize_entity_name
 from app.ranking.models import ScoredEvent, ScoreBreakdown
@@ -760,8 +763,8 @@ def run_ranking_and_selection(
         event.metadata = getattr(event, "metadata", {}) or {}
         try:
             event.metadata["freshness_score"] = freshness
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[METADATA_ASSIGN_FAIL] Failed setting freshness_score: %s", exc)
 
     # Rank all eligible events into Domestic, India, and International pools
     candidate_pool = ctx.ranker.rank_events(
@@ -2832,8 +2835,8 @@ def run_ranking_and_selection(
             ev.metadata = getattr(ev, "metadata", {}) or {}
             try:
                 ev.metadata["fallback_horizon_hours"] = horizon_hours
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[METADATA_ASSIGN_FAIL] Failed setting fallback_horizon_hours: %s", exc)
 
     if "DATA_UNAVAILABLE" in quality_levels:
         pipeline_status = "DATA_UNAVAILABLE"
