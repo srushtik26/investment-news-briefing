@@ -33,6 +33,8 @@ class TwoSourceVerifier:
     Deterministic corroboration engine enforcing the 2-independent-source rule.
     """
 
+    PRESS_RELEASE_DISTRIBUTOR_DOMAINS = PRESS_RELEASE_DISTRIBUTOR_DOMAINS
+
     # MEDIA GROUP / PUBLISHER MAPPING
     PUBLISHER_GROUPS: Dict[str, str] = {
         "economictimes.indiatimes.com": "times_group",
