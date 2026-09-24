@@ -18,9 +18,9 @@ The system combines deterministic Python data-quality validation, AI-assisted ev
 | **Coverage Schedule** | 7 days / week (including market holidays & weekends) | [`.github/workflows/daily_briefing.yml`](.github/workflows/daily_briefing.yml) |
 | **Daily Section Contract** | Exactly **15 Stories**: 5 India Business + 5 Domestic + 5 International | [`app/validation/engine.py`](app/validation/engine.py) |
 | **Integrity Gatekeeper** | **20/20 Deterministic Pre-Publication Validation Checks** | [`app/validation/engine.py`](app/validation/engine.py) |
-| **Automated Test Suite** | **1,083 automated tests**, 0 failures (100% pass rate) | `pytest tests -q` |
+| **Automated Test Suite** | **1,207 automated tests**, 0 failures (100% pass rate) | `pytest tests -q` |
 | **Email Delivery** | Idempotent dispatch via Gmail SMTP over SSL (Port 465) | [`run_daily.py`](run_daily.py) |
-| **Live Web Dashboard** | FastAPI web application: [https://plutus-news.onrender.com/](https://plutus-news.onrender.com/) | [`run_dashboard_sync.py`](run_dashboard_sync.py) |
+| **Live Web Dashboard** | FastAPI web application with instant PDF export: [https://plutus-news.onrender.com/](https://plutus-news.onrender.com/) | [`run_dashboard_sync.py`](run_dashboard_sync.py) |
 
 ---
 
@@ -75,7 +75,7 @@ The pipeline processes news through thirteen modular stages, cleanly separated i
  10. Fallback Management    [Deterministic] ► Controls quality horizons (24h → 36h → 48h → 72h)
  11. Editorial Curation     [AI + Fallback] ► Synthesizes grounded summaries; 3-tier fallback
  12. Final 20-Check Audit   [Deterministic] ► 20 programmatic validation gates audit briefing
- 13. Output Distribution    [Deterministic] ► Plaintext/HTML via Gmail SMTP & FastAPI dashboard sync
+ 13. Output Distribution    [Deterministic] ► Plaintext/HTML via Gmail SMTP, FastAPI dashboard sync & PDF export
 ```
 
 ### AI Stages vs. Deterministic Stages
@@ -88,7 +88,7 @@ The pipeline processes news through thirteen modular stages, cleanly separated i
 | **Filtering & Verification** | Purely Deterministic | Python regex, Pydantic, heuristics | Filters opinion/commentary, applies source whitelists, verifies corroboration tiers. |
 | **Deduplication & Ranking** | Purely Deterministic | SQLite, mathematical scoring | Clusters related articles, queries 3-day SQLite history, and calculates composite relevance scores. |
 | **Final Validation** | Purely Deterministic | Python (`app/validation/`) | 20 mandatory programmatic checks that verify URLs, dates, numbers, entity overlap, and quotas. |
-| **Delivery & Synchronization**| Purely Deterministic | `smtplib`, SQLAlchemy, FastAPI | Sends formatted email via SSL and syncs records to dashboard database. |
+| **Delivery & Synchronization**| Purely Deterministic | `smtplib`, SQLAlchemy, FastAPI, ReportLab | Sends formatted email via SSL, syncs records to dashboard database, and serves high-fidelity PDF downloads. |
 
 ### Module Responsibilities (`app/pipeline/`)
 
@@ -157,8 +157,23 @@ Nvidia concluded negotiations to purchase the workload orchestration developer i
 Source: Reuters
 https://www.reuters.com/technology/nvidia-runai-acquisition-example-56789.html
 Also verified by: CNBC
-https://www.cnbc.com/2026/08/31/nvidia-buys-runai-deal-example.html
 ```
+
+---
+
+## Web Dashboard & Investment Committee PDF Export
+
+The project provides an institutional web dashboard and one-click PDF generation engine for executive briefing review:
+
+- **Live Production Dashboard**: Hosted on Render at [https://plutus-news.onrender.com/](https://plutus-news.onrender.com/), built with FastAPI, Jinja2 templates, and responsive CSS.
+- **Historical Briefing Archive**: Browse and review past daily editions at `/archive`.
+- **One-Click PDF Export**: The dashboard provides a dedicated **Download PDF** button (`/briefing/{YYYY-MM-DD}/pdf` and `/briefing/{YYYY-MM-DD}/download`) that compiles the exact 15-story briefing into an executive-grade, printable Investment Committee report.
+- **Strict Section Ordering**:
+  1. `TOP 5 INDIA BUSINESS HEADLINES`
+  2. `TOP 5 INTERNATIONAL BUSINESS HEADLINES`
+  3. `TOP 5 DOMESTIC HEADLINES`
+- **Clean Source Attribution**: Every story features verified source attribution with a clickable `Read Full Article` link pointing directly to the complete canonical publisher URL (no domain truncation or URL shorteners).
+- **ReportLab Typography & Unicode Normalization**: Incorporates `_safe_text()` normalization using `unicodedata.normalize("NFKC", text)` to prevent ReportLab Helvetica black-square rendering, converting currency symbols (`₹` to `Rs.`), smart quotes, en/em dashes, and bullets into clean, universally supported glyphs.
 
 ---
 
@@ -198,7 +213,7 @@ For detailed vulnerability disclosure instructions, supported scopes, and report
 
 ## Testing and Quality Assurance
 
-Testing is a core architectural pillar of the project. The test suite comprises **1,083 automated tests** with a **100% pass rate** across all components:
+Testing is a core architectural pillar of the project. The test suite comprises **1,207 automated tests** with a **100% pass rate** across all components:
 
 ```bash
 # Execute the complete automated test suite
@@ -213,6 +228,7 @@ pytest -v
 
 ### Test Suite Coverage Areas
 - **Import Smoke & Architecture**: Confirms modular imports execute cleanly without circular dependencies (`tests/test_import_smoke.py`).
+- **Dashboard & PDF Export Engine**: Exhaustively validates PDF generation bytes, 15-story integrity, section order (India < International < Domestic), Unicode normalizer and black-square prevention, and FastAPI download endpoints (`tests/test_dashboard_pdf_export.py`).
 - **Deterministic Editorial Fallback**: Verifies 3-level safety ladder, numeric grounding, generic entity rejection, and offline 15-story generation (`tests/test_deterministic_editorial_fallback.py`).
 - **Final Validation Engine**: Exhaustively tests all 20 programmatic gatekeeper checks against valid and invalid payloads (`tests/test_validation.py`).
 - **Institutional Headline Synthesis**: Validates headline structure, active verbs, and non-routine formatting (`tests/test_institutional_headlines.py`).
@@ -251,7 +267,7 @@ Please read our [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines on:
 - High-priority contribution areas and good first issues
 - Preserving the project's strict validation contracts and fail-safe design principles
 
-> **Local Development Note**: Contributors can run all 1,083 automated tests locally without any paid API keys (Gemini, SerpAPI) using offline mocks and deterministic test fixtures.
+> **Local Development Note**: Contributors can run all 1,207 automated tests locally without any paid API keys (Gemini, SerpAPI) using offline mocks and deterministic test fixtures.
 
 ---
 
@@ -282,6 +298,8 @@ The project relies strictly on established, production-grade Python libraries de
 | **Aggregator Decoder** | GoogleNewsDecoder | `0.1.7` | Decodes obfuscated Google News RSS redirect URLs to canonical publisher links |
 | **Web Dashboard Framework** | FastAPI | `0.141.1` | High-performance asynchronous web server for the public dashboard |
 | **ASGI Server** | Uvicorn | `0.52.4` | Production web server runner for FastAPI |
+| **PDF Generation Engine** | ReportLab | `5.0.1` | High-fidelity Investment Committee PDF report generation |
+| **Image Processing** | Pillow | `12.3.0` | Image handling and logo asset rendering for PDF export |
 | **Database ORM** | SQLAlchemy | `2.0.52` | Database modeling and queries for dashboard state |
 | **PostgreSQL Driver** | Psycopg (Binary) | `3.3.5` | PostgreSQL driver for production dashboard storage (e.g. Neon) |
 | **Template Engine** | Jinja2 | `3.1.6` | HTML rendering for executive email and dashboard templates |
@@ -354,7 +372,7 @@ Run the complete test suite to verify everything functions properly offline:
 ```bash
 python -m pytest tests -q
 ```
-*(Expected: 1,083 passed)*
+*(Expected: 1,207 passed)*
 
 ### 4. Configuration (Optional for Local Pipeline Execution)
 
@@ -386,8 +404,17 @@ GMAIL_APP_PASSWORD=your_16_digit_app_password
 - **Sync Authoritative Briefing to Dashboard**:
   ```bash
   python run_dashboard_sync.py --file data/copy_paste_briefing.txt
- 
+  ```
+- **Launch the Web Dashboard Locally**:
+  ```bash
+  uvicorn app.dashboard.web:app --host 0.0.0.0 --port 8000 --reload
+  ```
+  Open `http://localhost:8000` in your browser to view the latest briefing and download Investment Committee PDFs.
+- **(Optional) Run Web Dashboard in Docker**:
+  ```bash
+  # Build container image
+  docker build -t investment-briefing-dashboard .
 
-
-
+  # Run container locally (maps default Render port 10000)
+  docker run -p 10000:10000 -e DASHBOARD_DATABASE_URL="sqlite:///data/briefings.db" investment-briefing-dashboard
   ```
