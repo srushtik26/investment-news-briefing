@@ -935,7 +935,8 @@ def run_ranking_and_selection(
                 ctx=ctx,
             )
             if not is_elig:
-                rejected_domestic_event_ids.add(s.event.id)
+                if not (dom_reason and "REJECT_STALE" in dom_reason):
+                    rejected_domestic_event_ids.add(s.event.id)
                 ctx.log_exec(
                     f"[DOMESTIC_FINAL_ELIGIBILITY_REJECT]\n"
                     f'title="{s.event.canonical_title}"\n'
@@ -1060,7 +1061,8 @@ def run_ranking_and_selection(
                 ctx=ctx,
             )
             if not is_elig or dom_score < 60.0:
-                rejected_domestic_event_ids.add(ev.id)
+                if not (dom_reason and "REJECT_STALE" in dom_reason):
+                    rejected_domestic_event_ids.add(ev.id)
                 continue
 
             scored = ScoredEvent(
@@ -1144,7 +1146,8 @@ def run_ranking_and_selection(
                         ctx=ctx,
                     )
                     if not is_elig or dom_score < 60.0:
-                        rejected_domestic_event_ids.add(ev.id)
+                        if not (dom_reason and "REJECT_STALE" in dom_reason):
+                            rejected_domestic_event_ids.add(ev.id)
                         continue
                     scored = ScoredEvent(
                         event=ev,
@@ -1174,6 +1177,214 @@ def run_ranking_and_selection(
                     ctx.log_exec(
                         f"[DOMESTIC_RECOVERY_ACCEPTED] title=\"{ev.canonical_title}\" score={dom_score:.1f}"
                     )
+
+        # 4. Progressive multi-horizon fallback expansion (36h -> 48h -> 72h) if still < 5
+        if len(dom_final) < 5:
+            from app.verification import MAX_CORROBORATION_SEARCHES_PER_RUN, get_corroboration_count, increment_corroboration_count
+            from app.filtering.rules import URLFilterRule
+
+            expanded_horizons = [h for h in [36.0, 48.0, 72.0] if h > effective_domestic_horizon]
+            for horizon in expanded_horizons:
+                if len(dom_final) >= 5:
+                    break
+                ctx.log_exec(f"[DOMESTIC_RECOVERY_EXPANSION] Expanding domestic recovery horizon to {int(horizon)}h (current={len(dom_final)}/5)")
+                reconsider_date_deferred_candidates(NewsCategory.DOMESTIC, horizon, ctx)
+
+                all_mem_events = list(ctx.verified_events) + list(ctx.high_confidence_single_candidates) + list(ctx.single_source_events)
+                for ev in all_mem_events:
+                    if len(dom_final) >= 5:
+                        break
+                    if ev.id in selected_event_ids or ev.id in rejected_domestic_event_ids:
+                        continue
+                    if ev.event_category != NewsCategory.DOMESTIC:
+                        continue
+                    cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                    if not cand_art:
+                        continue
+
+                    is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                        ev, cand_art, requested_region=NewsCategory.DOMESTIC
+                    )
+                    if not is_reg_valid:
+                        rejected_domestic_event_ids.add(ev.id)
+                        continue
+
+                    is_dup = False
+                    for ex in dom_final:
+                        ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                        if ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                            is_dup = True
+                            break
+                    if is_dup:
+                        rejected_domestic_event_ids.add(ev.id)
+                        continue
+
+                    is_elig, dom_score, dom_reason = is_domestic_final_eligible(
+                        ev,
+                        cand_art,
+                        now_utc=ctx.run_reference_time,
+                        max_age_hours=horizon,
+                        evaluator=getattr(ctx, "domestic_evaluator", None),
+                        ctx=ctx,
+                    )
+                    if not is_elig or dom_score < 60.0:
+                        rejected_domestic_event_ids.add(ev.id)
+                        continue
+
+                    ev.metadata = getattr(ev, "metadata", {}) or {}
+                    ev.metadata["fallback_horizon_hours"] = max(ev.metadata.get("fallback_horizon_hours", 24.0), horizon)
+                    scored = ScoredEvent(
+                        event=ev,
+                        score_breakdown=ScoreBreakdown(
+                            financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                            corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                            editorial_signals=0.0, relevance_penalties=0.0, total_score=dom_score, rationale=f"recovery_{int(horizon)}h",
+                        ),
+                        investment_score=dom_score,
+                        rank=len(dom_final) + 1,
+                    )
+                    dom_final.append(scored)
+                    selected_event_ids.add(ev.id)
+                    effective_domestic_horizon = max(effective_domestic_horizon, horizon)
+                    ctx.effective_domestic_horizon = effective_domestic_horizon
+                    ctx.log_exec(f"[DOMESTIC_RECOVERY_ACCEPTED] title=\"{ev.canonical_title}\" score={dom_score:.1f} horizon={int(horizon)}h")
+
+                if len(dom_final) < 5:
+                    unseen_dom = [c for c in (getattr(ctx, "domestic_reserve_pool", []) or []) if c.url.strip().lower().rstrip("/") not in ctx.seen_urls]
+                    for c in unseen_dom[:20]:
+                        if len(dom_final) >= 5:
+                            break
+                        ctx.seen_urls.add(c.url.strip().lower().rstrip("/"))
+                        process_candidate_item(c, "domestic", ctx, active_horizon=horizon)
+                        new_events = [
+                            e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                            if e.event_category == NewsCategory.DOMESTIC and e.id not in selected_event_ids and e.id not in rejected_domestic_event_ids
+                        ]
+                        for ev in new_events:
+                            if len(dom_final) >= 5:
+                                break
+                            cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                            if not cand_art:
+                                continue
+                            is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                                ev, cand_art, requested_region=NewsCategory.DOMESTIC
+                            )
+                            if not is_reg_valid:
+                                rejected_domestic_event_ids.add(ev.id)
+                                continue
+                            is_dup = False
+                            for ex in dom_final:
+                                ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                                if ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                                    is_dup = True
+                                    break
+                            if is_dup:
+                                rejected_domestic_event_ids.add(ev.id)
+                                continue
+                            is_elig, dom_score, dom_reason = is_domestic_final_eligible(
+                                ev,
+                                cand_art,
+                                now_utc=ctx.run_reference_time,
+                                max_age_hours=horizon,
+                                evaluator=getattr(ctx, "domestic_evaluator", None),
+                                ctx=ctx,
+                            )
+                            if not is_elig or dom_score < 60.0:
+                                rejected_domestic_event_ids.add(ev.id)
+                                continue
+                            ev.metadata = getattr(ev, "metadata", {}) or {}
+                            ev.metadata["fallback_horizon_hours"] = max(ev.metadata.get("fallback_horizon_hours", 24.0), horizon)
+                            scored = ScoredEvent(
+                                event=ev,
+                                score_breakdown=ScoreBreakdown(
+                                    financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                                    corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                                    editorial_signals=0.0, relevance_penalties=0.0, total_score=dom_score, rationale=f"recovery_{int(horizon)}h",
+                                ),
+                                investment_score=dom_score,
+                                rank=len(dom_final) + 1,
+                            )
+                            dom_final.append(scored)
+                            selected_event_ids.add(ev.id)
+                            effective_domestic_horizon = max(effective_domestic_horizon, horizon)
+                            ctx.effective_domestic_horizon = effective_domestic_horizon
+                            ctx.log_exec(f"[DOMESTIC_RECOVERY_ACCEPTED] title=\"{ev.canonical_title}\" score={dom_score:.1f} horizon={int(horizon)}h")
+
+                if len(dom_final) < 5 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
+                    rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+                    if rem_budget > 0:
+                        when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else 3)
+                        when_param = f"when:{when_days}d"
+                        DOM_DISCOVERY_QUERIES = [
+                            f"site:thehindu.com India government policy national {when_param}",
+                            f"site:indianexpress.com India Cabinet Parliament decision {when_param}",
+                            f"site:hindustantimes.com India national news politics {when_param}",
+                            f"site:ndtv.com India national major development {when_param}",
+                        ]
+                        for dfq in DOM_DISCOVERY_QUERIES:
+                            if len(dom_final) >= 5 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                                break
+                            items = ctx.discovery_service.provider.discover(query=dfq, country="India", max_results=10)
+                            increment_corroboration_count(1)
+                            ctx.corroboration_searches += 1
+                            for rit in items:
+                                u = rit.url.strip()
+                                if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
+                                    ctx.seen_urls.add(u.lower().rstrip("/"))
+                                    process_candidate_item(rit, "domestic", ctx, active_horizon=horizon)
+                                    new_events = [
+                                        e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
+                                        if e.event_category == NewsCategory.DOMESTIC and e.id not in selected_event_ids and e.id not in rejected_domestic_event_ids
+                                    ]
+                                    for ev in new_events:
+                                        if len(dom_final) >= 5:
+                                            break
+                                        cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                                        if not cand_art:
+                                            continue
+                                        is_reg_valid, reg_reason = reg_classifier.verify_region_eligibility(
+                                            ev, cand_art, requested_region=NewsCategory.DOMESTIC
+                                        )
+                                        if not is_reg_valid:
+                                            rejected_domestic_event_ids.add(ev.id)
+                                            continue
+                                        is_dup = False
+                                        for ex in dom_final:
+                                            ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                                            if ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                                                is_dup = True
+                                                break
+                                        if is_dup:
+                                            rejected_domestic_event_ids.add(ev.id)
+                                            continue
+                                        is_elig, dom_score, dom_reason = is_domestic_final_eligible(
+                                            ev,
+                                            cand_art,
+                                            now_utc=ctx.run_reference_time,
+                                            max_age_hours=horizon,
+                                            evaluator=getattr(ctx, "domestic_evaluator", None),
+                                            ctx=ctx,
+                                        )
+                                        if not is_elig or dom_score < 60.0:
+                                            rejected_domestic_event_ids.add(ev.id)
+                                            continue
+                                        ev.metadata = getattr(ev, "metadata", {}) or {}
+                                        ev.metadata["fallback_horizon_hours"] = max(ev.metadata.get("fallback_horizon_hours", 24.0), horizon)
+                                        scored = ScoredEvent(
+                                            event=ev,
+                                            score_breakdown=ScoreBreakdown(
+                                                financial_magnitude=0.0, market_impact=0.0, investor_relevance=0.0,
+                                                corporate_significance=0.0, source_quality=70.0, strategic_bonuses=0.0,
+                                                editorial_signals=0.0, relevance_penalties=0.0, total_score=dom_score, rationale=f"recovery_{int(horizon)}h",
+                                            ),
+                                            investment_score=dom_score,
+                                            rank=len(dom_final) + 1,
+                                        )
+                                        dom_final.append(scored)
+                                        selected_event_ids.add(ev.id)
+                                        effective_domestic_horizon = max(effective_domestic_horizon, horizon)
+                                        ctx.effective_domestic_horizon = effective_domestic_horizon
+                                        ctx.log_exec(f"[DOMESTIC_RECOVERY_ACCEPTED] title=\"{ev.canonical_title}\" score={dom_score:.1f} horizon={int(horizon)}h")
 
         ctx.log_exec(f"[DOMESTIC_RECOVERY_PASS_COMPLETE] final_count={len(dom_final)}")
 
@@ -2582,8 +2793,13 @@ def run_ranking_and_selection(
             if not is_geo_elig:
                 continue
             # Canonical check: must not be classified as India
-            text_to_chk = f"{ev.canonical_title} {cand_art.content_text[:500] if cand_art else ''}"
-            chk_cat, _ = reg_classifier_final.classify_with_reason(text_to_chk)
+            cand_content = cand_art.content_text[:500] if cand_art else None
+            chk_cat, _ = reg_classifier_final.classify_with_reason(
+                title=ev.canonical_title,
+                content=cand_content,
+                companies=ev.companies_involved,
+                discovery_region=NewsCategory.INTERNATIONAL,
+            )
             if chk_cat == NewsCategory.INDIA:
                 continue
 
@@ -2628,8 +2844,13 @@ def run_ranking_and_selection(
         cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
         is_nexus, nex_reason = _verify_nexus_final(ev, cand_art)
 
-        full_text = f"{ev.canonical_title} {cand_art.content_text[:500] if cand_art else ''}"
-        detected_cat, cat_reason = reg_classifier_final.classify_with_reason(full_text)
+        cand_content = cand_art.content_text[:500] if cand_art else None
+        detected_cat, cat_reason = reg_classifier_final.classify_with_reason(
+            title=ev.canonical_title,
+            content=cand_content,
+            companies=ev.companies_involved,
+            discovery_region=NewsCategory.INTERNATIONAL,
+        )
 
         is_actually_india = (
             is_nexus

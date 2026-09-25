@@ -586,11 +586,23 @@ def is_generic_headline(title: str) -> Tuple[bool, str]:
             if len(normalized.split()) <= len(g.split()) + 1:
                 return True, f"Headline '{title}' is a generic index title"
 
+    # Bare regulatory filing / form code (e.g. 'N-2/A', '10-K', '8-K', 'Form 4', 'SC 13D/A', '424B2', 'DEF 14A')
+    bare_form_pattern = (
+        r"^(?:form\s+|schedule\s+|sc\s+|def\s+|defa\s+|pre\s+|prea\s+)?[a-z0-9]{1,6}(?:[-/][a-z0-9]{1,5})+$"
+        r"|^(?:form\s+|schedule\s+|sc\s+|def\s+|defa\s+|pre\s+|prea\s+)[a-z0-9\-]+$"
+    )
+    if re.match(bare_form_pattern, t_lower):
+        return True, f"Headline '{title}' is a bare regulatory form/filing code lacking subject and event details"
+
     words = t_clean.split()
     if len(words) <= 3 and not re.search(r"[\$₹\d%]", t_clean):
         has_action = bool(re.search(r"\b(buys|acquired?|profit|loss|rises|falls|jumps|drops|wins|bags|files|hikes|cuts|merges|deal)\b", t_lower))
         if not has_action:
             return True, f"Headline '{title}' is too short and lacks a concrete action/event"
+    elif len(words) <= 2 and re.match(r"^[a-z0-9\-/]+$", t_lower):
+        return True, f"Headline '{title}' is too short and non-descriptive"
+    elif len(words) <= 2 and re.match(r"^(?:form|schedule|sc|def|defa|pre)\s+[a-z0-9\-]+$", t_lower):
+        return True, f"Headline '{title}' is a bare regulatory form/filing code lacking subject and event details"
 
     return False, "Valid specific headline"
 

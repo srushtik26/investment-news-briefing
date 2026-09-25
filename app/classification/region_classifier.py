@@ -156,7 +156,7 @@ class EventRegionClassifier:
     ]
 
     FOREIGN_GEOGRAPHY_AND_DEMONYMS: List[str] = [
-        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.|us\b|united states|u\.k\.|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi arabia|saudi|riyadh|jeddah|cuba|cuban|havana|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka|kuwait|qatar|bahrain|oman|venezuela|turkey|turkish|egypt|south africa|nigeria|kenya|indonesia|malaysia|thailand|vietnam|philippines)\b",
+        r"\b(australia|australian|australia's|canadian|canada|canada's|u\.s\.(?!\w)|us\b|united states|u\.k\.(?!\w)|uk\b|british|britain|european|europe|germany|german|france|french|japan|japanese|china|chinese|singapore|south korea|korean|sweden|swedish|switzerland|swiss|netherlands|dutch|new zealand|saudi arabia|saudi|riyadh|jeddah|cuba|cuban|havana|uae|dubai|brazil|brazilian|israel|israeli|mexico|mexican|nepal|tibet|russia|russian|ukraine|ukrainian|taiwan|taiwanese|pakistan|bangladesh|sri lanka|kuwait|qatar|bahrain|oman|venezuela|turkey|turkish|egypt|south africa|nigeria|kenya|indonesia|malaysia|thailand|vietnam|philippines)\b",
     ]
 
 
@@ -337,6 +337,18 @@ class EventRegionClassifier:
                    any(re.search(pat, context_text) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS) or \
                    any(re.search(pat, context_text) for pat in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE)
 
+        has_intl_reg_title = any(re.search(pat, title_text) for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY)
+        if (has_intl_reg_title or has_foreign_geo) and not signal_a:
+            # If headline is explicitly an international central bank / macro policy event or foreign geography,
+            # and no Indian entity/principal is in title, an Indian regulator in body copy is merely comparative context.
+            has_indian_reg_in_title = (
+                any(re.search(pat, title_text) for pat in self.INDIAN_REGULATORY_AND_POLICY)
+                or any(re.search(pat, title_text) for pat in self.INDIAN_BUSINESS_POLICY_AND_REGULATORS)
+                or any(re.search(pat, title_text) for pat in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE)
+            )
+            if not has_indian_reg_in_title:
+                signal_c = False
+
         # ----------------------------------------------------------------
         # SIGNAL D: Transaction involves Indian assets / company / subsidiary
         # ----------------------------------------------------------------
@@ -399,6 +411,18 @@ class EventRegionClassifier:
                 event.metadata["india_nexus_verified"] = is_pass
                 event.metadata["india_nexus_reason"] = reason_str
             return is_pass, reason_str
+
+        # ----------------------------------------------------------------
+        # INTERNATIONAL CENTRAL BANK / MACRO EVENT REJECTION
+        # ----------------------------------------------------------------
+        if has_intl_reg_title and not signal_a and not signal_d and not signal_e and not signal_f:
+            reason = (
+                f"INDIA_NEXUS_REJECT: primary headline is international central bank / macro policy event. "
+                f"title='{event.canonical_title[:80]}'"
+            )
+            logger.info("INDIA_NEXUS_REJECT: title=\"%s\" reason=\"international central bank/policy in headline\"",
+                        event.canonical_title[:80])
+            return _finish(False, reason)
 
         # ----------------------------------------------------------------
         # FOREIGN-LEAKAGE REJECTION: primary entity foreign + event foreign + no India impact
@@ -556,18 +580,20 @@ class EventRegionClassifier:
         companies_text = " ".join(companies or []).lower()
         figures_text = " ".join(financial_figures or []).lower()
 
-        # Bug 3: Indian capital markets infrastructure (NSE, BSE, Indian listed exchanges, SEBI, RBI, Indian IPOs)
+        # Bug 3: Indian capital markets infrastructure vs. Global central bank / regulatory policy
         # Classify by PRIMARY SUBJECT + EVENT GEOGRAPHY + BUSINESS IMPACT.
-        # Do not classify as International just because a comparison mentions Nasdaq/Wall Street or publisher is foreign (CNBC, etc.)
+        for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY:
+            m = re.search(pat, title_lower)
+            if m:
+                has_indian_in_title = any(re.search(p, title_lower) for p in self.INDIAN_ENTITIES) or \
+                                      any(re.search(p, title_lower) for p in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE)
+                if not has_indian_in_title:
+                    return NewsCategory.INTERNATIONAL, f"Global regulatory / macro policy match: '{m.group(0)}'"
+
         for pat in self.INDIAN_CAPITAL_MARKETS_INFRASTRUCTURE:
             m_cm = re.search(pat, title_lower)
             if m_cm:
                 return NewsCategory.INDIA, f"Indian capital markets infrastructure / regulatory event: '{m_cm.group(0)}'"
-
-        for pat in self.INTERNATIONAL_REGULATORY_AND_POLICY:
-            m = re.search(pat, title_lower)
-            if m:
-                return NewsCategory.INTERNATIONAL, f"Global regulatory / macro policy match: '{m.group(0)}'"
 
         indian_entity_matches = [
             re.search(pat, title_lower).group(0)
