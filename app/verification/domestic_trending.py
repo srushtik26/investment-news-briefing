@@ -326,6 +326,17 @@ LOCAL_MUNICIPAL_PATTERNS: List[str] = [
     r"\b(?:civic|municipal|district)\s+(?:officials?|authorities|project|scheme|body|inspection|engineers?)\b",
 ]
 
+
+POLITICAL_ATTACK_NOISE_PATTERNS: List[str] = [
+    r"\b(?:bjp|congress|aap|tmc|sp|bsp|rjd|nda|india bloc|leader|mp|mla|minister|rahul gandhi|modi|amit shah|kharge|kejriwal)\s+(?:slams?|attacks?|hits? out at|lashes? out at|targets?|corners?|takes? dig at|takes? a jibe at|ridicules?|mocks?|scoffs? at)\s+(?:bjp|congress|aap|tmc|sp|bsp|rjd|nda|india bloc|pm|government|centre|opposition|leader|modi|rahul|kharge)\b",
+    r"\b(?:war of words|verbal duel|political spat|trading barbs|exchange of barbs|mud-slinging|slugfest|wordy duel|political slugfest)\b",
+    r"\b(?:reacts? to (?:remarks?|statement|comment|tweet|post|speech|charge|allegation)|hits? back at (?:remarks?|comment|statement|charge))\b",
+    r"\b(?:claims? (?:bjp|congress|opposition|conspiracy)|alleges? (?:bjp|congress|pm|opposition|conspiracy))\b",
+    r"^(?:bjp|congress|aap|tmc)\s+(?:slams|attacks|hits out|corners|demands resignation|lashes out)\b",
+    r"\b(?:slams?|attacks?|hits? out at|lashes? out at|criticises?|targets?|corners?|takes? dig at|takes? a jibe at)\s+(?:opposition|ruling party|rivals?|centre|govt|government)\b",
+    r"\b(?:alleges? scam|claims? victory|demands? apology|accuses? govt of|targets? govt over|hits? out at rivals?)\b",
+]
+
 DOMESTIC_EVALUATOR_MIN_SCORE: float = 60.0
 
 
@@ -377,9 +388,21 @@ class DomesticTrendingEvaluator:
                 return True, "Rhetorical question / commentary framing without concrete action event"
 
         comb = f"{title} {(text or '')[:300]}".lower()
+        t_low = title.lower()
+        has_major_institutional_anchor = bool(re.search(
+            r"\b(election commission|ec rift|cec|chief election commissioner|dissent row|supreme court|high court|constitution bench|union cabinet|cabinet approves|parliament passes|bill passed|isro|drdo|vande bharat)\b",
+            t_low
+        ))
+        is_pure_partisan_attack_headline = bool(re.search(
+            r"^(?:bjp|congress|aap|tmc|sp|bsp|nda|india bloc)\s+(?:slams|attacks|hits out|corners|demands resignation|lashes out)\b",
+            t_low
+        ))
+
         for pat in DOMESTIC_NOISE_PATTERNS:
             m = re.search(pat, comb)
             if m:
+                if pat in POLITICAL_ATTACK_NOISE_PATTERNS and has_major_institutional_anchor and not is_pure_partisan_attack_headline:
+                    continue
                 return True, f"Noise pattern match: '{m.group(0)}'"
         return False, None
 

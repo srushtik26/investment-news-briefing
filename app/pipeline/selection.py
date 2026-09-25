@@ -147,6 +147,19 @@ def get_final_selectable_unique_events(
                 continue
             selectable.append(cand)
         else:
+            if category == NewsCategory.DOMESTIC:
+                from app.verification.domestic_trending import is_domestic_final_eligible, get_effective_domestic_max_age_hours
+                effective_h = get_effective_domestic_max_age_hours(ctx)
+                is_elig, dom_score, _ = is_domestic_final_eligible(
+                    cand,
+                    cand_art,
+                    now_utc=ctx.run_reference_time,
+                    max_age_hours=effective_h,
+                    evaluator=getattr(ctx, "domestic_evaluator", None),
+                    ctx=ctx,
+                )
+                if not is_elig or dom_score < 60.0:
+                    continue
             selectable.append(cand)
 
     return selectable
@@ -596,6 +609,30 @@ def run_post_dedup_refill(
             accepted_event_ids.add(ev.id)
             needed -= 1
             ctx.log_exec(f"[POST_DEDUP_REFILL] Added existing candidate to {sec_str.upper()}: '{ev.canonical_title}'")
+
+        # Priority 3.5: Process unseen reserve pool items if available
+        if needed > 0:
+            reserve_pool = []
+            if sec_str == "domestic":
+                reserve_pool = getattr(ctx, "domestic_reserve_pool", []) or []
+            elif sec_str == "india":
+                reserve_pool = getattr(ctx, "india_reserve_pool", []) or []
+            elif sec_str == "international":
+                reserve_pool = getattr(ctx, "intl_reserve_pool", []) or []
+
+            unseen_res = [c for c in reserve_pool if c.url.strip().lower().rstrip("/") not in ctx.seen_urls]
+            for c in unseen_res[:15]:
+                if needed <= 0:
+                    break
+                ev = process_candidate_item(c, sec_str, ctx, active_horizon=72.0)
+                if ev and ev.event_category == sec_cat and ev.id not in accepted_event_ids:
+                    cand_story = _make_candidate_story_dict(ev, ctx)
+                    if is_refill_candidate_safe(ev, cand_story, sec_str, accepted_stories, event_by_id, ctx, target_date, lookback):
+                        accepted_stories.append(cand_story)
+                        event_by_id[ev.id] = ev
+                        accepted_event_ids.add(ev.id)
+                        needed -= 1
+                        ctx.log_exec(f"[POST_DEDUP_REFILL] Added reserve candidate to {sec_str.upper()}: '{ev.canonical_title}'")
 
         # Priority 4: Free RSS Final-Mile Search if still deficient
         if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
@@ -1100,7 +1137,6 @@ def run_ranking_and_selection(
             for c in unseen_dom[:20]:
                 if len(dom_final) >= 5:
                     break
-                ctx.seen_urls.add(c.url.strip().lower().rstrip("/"))
                 process_candidate_item(c, "domestic", ctx, active_horizon=effective_domestic_horizon)
                 new_events = [
                     e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
@@ -1254,7 +1290,6 @@ def run_ranking_and_selection(
                     for c in unseen_dom[:20]:
                         if len(dom_final) >= 5:
                             break
-                        ctx.seen_urls.add(c.url.strip().lower().rstrip("/"))
                         process_candidate_item(c, "domestic", ctx, active_horizon=horizon)
                         new_events = [
                             e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)

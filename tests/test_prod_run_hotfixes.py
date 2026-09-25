@@ -220,3 +220,84 @@ def test_domestic_multi_horizon_recovery():
     assert len(dom_res) == 5, f"Expected 5 domestic candidates, got {len(dom_res)}"
     selected_titles = [s.event.canonical_title for s in dom_res]
     assert older_ev.canonical_title in selected_titles, "30h old domestic event was not recovered during horizon expansion"
+
+
+def test_institutional_anchor_not_rejected_by_political_attack_pattern():
+    """Verify that major constitutional/institutional events with political fallout are not rejected as noise."""
+    from app.verification.domestic_trending import DomesticTrendingEvaluator
+
+    evaluator = DomesticTrendingEvaluator()
+
+    # 1. Headline about Election Commission rift with political attack in subordinate clause: MUST PASS
+    title = "Election Commission Rift Sparks Political Face-Off as BJP Attacks Rahul Gandhi"
+    text = "The Election Commission faced internal dissent as commissioners clashed over electoral revision rules."
+    is_noise, reason = evaluator.is_domestic_noise(title, text)
+    assert not is_noise, f"Election Commission rift should not be noise: {reason}"
+
+    # 2. Pure mudslinging headline: MUST BE REJECTED
+    mudslinging_title = "BJP attacks Rahul Gandhi over remarks in London"
+    mudslinging_text = "The BJP launched a sharp counter-attack against Rahul Gandhi over his recent statements."
+    is_noise, reason = evaluator.is_domestic_noise(mudslinging_title, mudslinging_text)
+    assert is_noise, "Pure political mudslinging should be flagged as noise"
+
+    # 3. Pure partisan attack headline starting with party: MUST BE REJECTED
+    attack_title = "BJP slams Election Commission over poll date announcement"
+    attack_text = "Party leaders accused the commission of bias in election scheduling."
+    is_noise, reason = evaluator.is_domestic_noise(attack_title, attack_text)
+    assert is_noise, "Partisan attack headline starting with 'BJP slams' should be flagged as noise"
+
+
+def test_get_final_selectable_unique_events_filters_ineligible_domestic():
+    """Verify get_final_selectable_unique_events filters out ineligible domestic events when category=DOMESTIC."""
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import get_final_selectable_unique_events
+    from app.verification.domestic_trending import DomesticTrendingEvaluator
+
+    ctx = PipelineContext(run_reference_time=datetime.now(timezone.utc))
+    ctx.domestic_evaluator = DomesticTrendingEvaluator()
+
+    # Eligible domestic article
+    art_elig = Article(
+        id="art_el_1",
+        title="Cabinet approves Rs 10,000 crore expansion for Vande Bharat train network",
+        url="https://www.thehindu.com/news/national/vande-bharat-expansion",
+        content_text="The Union Cabinet approved a Rs 10,000 crore infrastructure package for railway expansion across India.",
+        published_at=datetime.now(timezone.utc),
+        source_name="The Hindu",
+    )
+    ev_elig = Event(
+        canonical_title=art_elig.title,
+        article_ids=[art_elig.id],
+        description="Cabinet approved Vande Bharat expansion",
+        event_category=NewsCategory.DOMESTIC,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        single_source_confidence_score=90.0,
+    )
+
+    # Ineligible domestic article (routine petty theft / local accident)
+    art_inelig = Article(
+        id="art_inel_1",
+        title="Two held for theft in local market by city police",
+        url="https://www.hindustantimes.com/india-news/local-theft-arrest",
+        content_text="Local police arrested two individuals for stealing a motorcycle in the city market.",
+        published_at=datetime.now(timezone.utc),
+        source_name="Hindustan Times",
+    )
+    ev_inelig = Event(
+        canonical_title=art_inelig.title,
+        article_ids=[art_inelig.id],
+        description="Petty theft arrest",
+        event_category=NewsCategory.DOMESTIC,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        single_source_confidence_score=90.0,
+    )
+
+    ctx.articles_lookup = {art_elig.id: art_elig, art_inelig.id: art_inelig}
+    ctx.high_confidence_single_candidates = [ev_elig, ev_inelig]
+
+    selectable = get_final_selectable_unique_events(ctx, category=NewsCategory.DOMESTIC)
+    sel_ids = {e.id for e in selectable}
+
+    assert ev_elig.id in sel_ids, "Eligible domestic event was omitted from selectable events"
+    assert ev_inelig.id not in sel_ids, "Ineligible domestic event (petty crime) was incorrectly included in selectable events"
+
