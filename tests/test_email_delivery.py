@@ -73,6 +73,7 @@ https://tinyurl.com/y8k3m9pw
 
 @pytest.fixture
 def mock_env(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("GMAIL_SENDER", "sender@example.com")
     monkeypatch.setenv("GMAIL_RECIPIENT", "ic-briefings@example.com")
     monkeypatch.setenv("GMAIL_APP_PASSWORD", "mock-app-password-1234")
@@ -360,6 +361,7 @@ def test_daily_runner_smtp_failure_does_not_record_date(mock_env, temp_data_dir)
 
 def test_daily_runner_missing_credentials_fails_cleanly(monkeypatch, temp_data_dir):
     """Test that missing email credentials exits non-zero without attempting SMTP."""
+    monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
     (temp_data_dir / "final_briefing.txt").write_text(SAMPLE_BRIEFING_TEXT, encoding="utf-8")
     target_d = date(2026, 8, 28)

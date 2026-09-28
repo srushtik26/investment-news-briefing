@@ -189,7 +189,7 @@ def test_cross_runner_history_persistence_and_window(tmp_path: Path):
     db_file = tmp_path / "briefings.db"
 
     # Runner 1 (Monday, Sep 14): Save stories
-    store_mon = HistoryStore(db_path=db_file)
+    store_mon = HistoryStore(db_path=db_file, is_isolated=False)
     fp_mon, _ = generate_event_fingerprint(
         company="Reliance Industries",
         event_type="acquisition",
@@ -208,22 +208,22 @@ def test_cross_runner_history_persistence_and_window(tmp_path: Path):
     ])
 
     # Runner 2 (Tuesday, Sep 15): Restored cache with briefings.db
-    store_tue = HistoryStore(db_path=db_file)
+    store_tue = HistoryStore(db_path=db_file, is_isolated=False)
     recent_tue = store_tue.get_recent_fingerprints(reference_date=date(2026, 9, 15), days=3)
     assert fp_mon in recent_tue, "Tuesday run must detect Monday's story as recent duplicate"
 
     # Runner 3 (Wednesday, Sep 16): Restored cache
-    store_wed = HistoryStore(db_path=db_file)
+    store_wed = HistoryStore(db_path=db_file, is_isolated=False)
     recent_wed = store_wed.get_recent_fingerprints(reference_date=date(2026, 9, 16), days=3)
     assert fp_mon in recent_wed, "Wednesday run must still detect Monday's story (within 3 days)"
 
     # Runner 4 (Thursday, Sep 17): Exactly 3 days later
-    store_thu = HistoryStore(db_path=db_file)
+    store_thu = HistoryStore(db_path=db_file, is_isolated=False)
     recent_thu = store_thu.get_recent_fingerprints(reference_date=date(2026, 9, 17), days=3)
     assert fp_mon in recent_thu, "Thursday is exactly 3 days after Monday and still covered"
 
     # Runner 5 (Friday, Sep 18): 4 days later (beyond 3-day window)
-    store_fri = HistoryStore(db_path=db_file)
+    store_fri = HistoryStore(db_path=db_file, is_isolated=False)
     recent_fri = store_fri.get_recent_fingerprints(reference_date=date(2026, 9, 18), days=3)
     assert fp_mon not in recent_fri, "Friday run must allow story (outside 3-day window)"
 

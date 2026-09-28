@@ -47,7 +47,7 @@ def test_1_production_history_db_unchanged_by_validation_mode(tmp_path, monkeypa
     val_db_url = f"sqlite:///{val_db.as_posix()}"
 
     # Pre-populate production database with an existing story
-    prod_store = HistoryStore(db_path=prod_db_url)
+    prod_store = HistoryStore(db_path=prod_db_url, is_isolated=False)
     prod_story = _create_sample_story("prod_evt_1", "Tata Motors announces ₹5000 cr capex", "Tata Motors")
     prod_store.save_briefing(date.today() - timedelta(days=1), [prod_story])
 
@@ -57,7 +57,7 @@ def test_1_production_history_db_unchanged_by_validation_mode(tmp_path, monkeypa
     assert prod_count_before == 1
 
     # Now create an isolated validation history store and save a briefing to it
-    val_store = HistoryStore(db_path=val_db_url)
+    val_store = HistoryStore(db_path=val_db_url, is_isolated=False)
     val_story = _create_sample_story("val_evt_1", "Reliance signs green energy joint venture", "Reliance")
     val_store.save_briefing(date.today(), [val_story])
 
@@ -83,7 +83,7 @@ def test_2_production_dedup_still_rejects_genuine_3day_repeats(tmp_path):
     """
     prod_db = tmp_path / "prod_briefings.db"
     prod_db_url = f"sqlite:///{prod_db.as_posix()}"
-    prod_store = HistoryStore(db_path=prod_db_url)
+    prod_store = HistoryStore(db_path=prod_db_url, is_isolated=False)
 
     # Insert a story published 1 day ago
     past_story = _create_sample_story("evt_past", "L&T wins ₹15,000 crore mega infrastructure order", "L&T")
@@ -127,7 +127,7 @@ def test_3_validation_mode_deduplicates_within_its_own_run(tmp_path):
     """
     val_db = tmp_path / "validation_briefings.db"
     val_db_url = f"sqlite:///{val_db.as_posix()}"
-    val_store = HistoryStore(db_path=val_db_url)
+    val_store = HistoryStore(db_path=val_db_url, is_isolated=False)
 
     # Save a story inside validation history
     story = _create_sample_story("val_evt_1", "Adani Ports signs concession pact for Colombo terminal", "Adani Ports")
@@ -158,7 +158,7 @@ def test_4_repeated_validation_runs_reset_isolated_history(tmp_path):
     val_db_url = f"sqlite:///{val_db.as_posix()}"
 
     # Simulate run 1: writes a story to validation DB
-    store_run_1 = HistoryStore(db_path=val_db_url)
+    store_run_1 = HistoryStore(db_path=val_db_url, is_isolated=False)
     story_1 = _create_sample_story("run1_evt", "Maruti Suzuki announces ₹35,000 cr plant in Gujarat", "Maruti Suzuki")
     store_run_1.save_briefing(date.today(), [story_1])
 
@@ -168,7 +168,7 @@ def test_4_repeated_validation_runs_reset_isolated_history(tmp_path):
         val_db.unlink()
 
     # Create fresh validation store for run 2
-    store_run_2 = HistoryStore(db_path=val_db_url)
+    store_run_2 = HistoryStore(db_path=val_db_url, is_isolated=False)
     val_engine_run_2 = DeduplicationEngine(history_store=store_run_2)
 
     # Maruti Suzuki should NOT be blocked in run 2!

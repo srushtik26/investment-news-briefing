@@ -303,7 +303,7 @@ def test_regression_test_f_history_saves_15_stories():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test_history.db"
-        history_store = HistoryStore(db_path=str(db_path))
+        history_store = HistoryStore(db_path=str(db_path), is_isolated=False)
 
         payload = BriefingEditorialPayload(
             domestic_stories=[
