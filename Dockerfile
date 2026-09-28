@@ -1,16 +1,21 @@
+# Use an official, lightweight Python runtime as the base image
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    APP_ENV=production
-
+# Set the working directory inside the container
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Copy only the requirements first to cache the dependency installation
+COPY requirements.txt .
 
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of your application code into the container
 COPY . .
-RUN mkdir -p data logs tmp
 
-CMD ["sh", "scripts/run_render_cron.sh"]
+# Expose Render's default port
+EXPOSE 10000
+
+# Start the FastAPI server using Uvicorn pointed to your web.py app object
+# Render dynamically assigns the port via the $PORT environment variable
+CMD ["sh", "-c", "uvicorn app.dashboard.web:app --host 0.0.0.0 --port ${PORT:-10000}"]

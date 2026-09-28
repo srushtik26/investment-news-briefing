@@ -1,14 +1,23 @@
-.env
+# Git
 .git
-.venv
-__pycache__
-.pytest_cache
-.mypy_cache
-data/*.db
-data/*.db-*
-data/*.json
-logs
-tmp
-scratch
-tests
+.github
+.gitignore
+
+# Environment variables
+.env
+.env.example
+
+# Python cache and compiled files
+__pycache__/
 *.pyc
+*.pyo
+
+# Project specific exclusions
+tests/
+tmp/
+logs/
+data/
+
+# SQLite databases
+*.db
+*.sqlite3
