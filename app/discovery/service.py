@@ -32,7 +32,15 @@ class NewsDiscoveryService:
     def __init__(self, provider: Optional[DiscoveryProvider] = None) -> None:
         self.provider: DiscoveryProvider = provider or MockDiscoveryProvider()
         self.portfolio_discovery_executed: bool = False
+        self.search_window = "when:1d"
         logger.info("NewsDiscoveryService initialized with provider: %s", self.provider.provider_name)
+
+    def _apply_search_window(self, query: str) -> str:
+        """Apply the run's discovery window consistently to every provider query."""
+        query = re.sub(r"\bwhen:\d+d\b", self.search_window, query)
+        if not re.search(r"\bwhen:\d+d\b", query):
+            query = f"{query} {self.search_window}"
+        return query
 
     def _deduplicate_candidates(self, articles: List[DiscoveredArticle]) -> List[DiscoveredArticle]:
         """
@@ -74,13 +82,17 @@ class NewsDiscoveryService:
             if _early_stop:
                 break
             for phrase in phrase_list:
-                query = f"{phrase}{site_clause}"
-                results = self.provider.discover(
-                    query=query,
-                    country="India",
-                    max_results=max_per_query,
-                    category_tag=cat_name,
-                )
+                query = self._apply_search_window(f"{phrase}{site_clause}")
+                try:
+                    results = self.provider.discover(
+                        query=query,
+                        country="India",
+                        max_results=max_per_query,
+                        category_tag=cat_name,
+                    ) or []
+                except Exception as exc:
+                    logger.warning("Skipping failed India discovery query category=%s query=%r: %s", cat_name, query, exc)
+                    continue
                 discovered.extend(results)
 
                 if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
@@ -144,15 +156,20 @@ class NewsDiscoveryService:
         matched_companies: Set[str] = set()
 
         for grp_name, query in portfolio_queries:
+            query = self._apply_search_window(query)
             _log(f'[PORTFOLIO_DISCOVERY_QUERY]\ngroup={grp_name}\nquery="{query}"')
             if budget:
                 budget.record_portfolio_query()
-            results = self.provider.discover(
-                query=query,
-                country="India",
-                max_results=max_per_query,
-                category_tag="india",
-            )
+            try:
+                results = self.provider.discover(
+                    query=query,
+                    country="India",
+                    max_results=max_per_query,
+                    category_tag="india",
+                ) or []
+            except Exception as exc:
+                _log(f"[PORTFOLIO_QUERY_ERROR] group={grp_name} error={exc}")
+                continue
             _log(f'[PORTFOLIO_DISCOVERY_RESULT]\nquery="{query}"\nresults={len(results)}')
 
             # Step 2: Deduplicate URLs immediately
@@ -183,16 +200,22 @@ class NewsDiscoveryService:
             site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources[:4]]) + ")"
 
             for cname in missing_companies[:max_fallback_queries]:
-                fallback_query = f'"{cname}" {PORTFOLIO_EVENT_TERMS} when:1d{site_clause}'
+                fallback_query = self._apply_search_window(
+                    f'"{cname}" {PORTFOLIO_EVENT_TERMS} when:1d{site_clause}'
+                )
                 _log(f'[PORTFOLIO_FALLBACK_QUERY]\ncompany="{cname}"\nquery="{fallback_query}"')
                 if budget:
                     budget.record_portfolio_query()
-                fb_results = self.provider.discover(
-                    query=fallback_query,
-                    country="India",
-                    max_results=5,
-                    category_tag="india",
-                )
+                try:
+                    fb_results = self.provider.discover(
+                        query=fallback_query,
+                        country="India",
+                        max_results=5,
+                        category_tag="india",
+                    ) or []
+                except Exception as exc:
+                    _log(f"[PORTFOLIO_FALLBACK_QUERY_ERROR] company={cname} error={exc}")
+                    continue
                 added_for_company = False
                 for r in fb_results:
                     if _add_article(r):
@@ -244,13 +267,17 @@ class NewsDiscoveryService:
             if _early_stop:
                 break
             for phrase in phrase_list:
-                query = f"{phrase}{site_clause}"
-                results = self.provider.discover(
-                    query=query,
-                    country="International",
-                    max_results=max_per_query,
-                    category_tag=cat_name,
-                )
+                query = self._apply_search_window(f"{phrase}{site_clause}")
+                try:
+                    results = self.provider.discover(
+                        query=query,
+                        country="International",
+                        max_results=max_per_query,
+                        category_tag=cat_name,
+                    ) or []
+                except Exception as exc:
+                    logger.warning("Skipping failed International discovery query category=%s query=%r: %s", cat_name, query, exc)
+                    continue
                 discovered.extend(results)
 
                 if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
@@ -292,13 +319,17 @@ class NewsDiscoveryService:
         for cat_name, phrase_list in target_cats.items():
             cat_results: List[DiscoveredArticle] = []
             for phrase in phrase_list:
-                query = f"{phrase}{site_clause}"
-                results = self.provider.discover(
-                    query=query,
-                    country="India",
-                    max_results=max_per_query,
-                    category_tag=cat_name,
-                )
+                query = self._apply_search_window(f"{phrase}{site_clause}")
+                try:
+                    results = self.provider.discover(
+                        query=query,
+                        country="India",
+                        max_results=max_per_query,
+                        category_tag=cat_name,
+                    ) or []
+                except Exception as exc:
+                    logger.warning("Skipping failed Domestic discovery query category=%s query=%r: %s", cat_name, query, exc)
+                    continue
                 cat_results.extend(results)
                 all_discovered.extend(results)
 
@@ -385,6 +416,7 @@ class NewsDiscoveryService:
         max_international: int = 40,
         max_domestic: int = 40,
         budget: Optional[Any] = None,
+        search_window: str = "when:1d",
     ) -> Dict[str, List[DiscoveredArticle]]:
         """
         Run staged discovery across Domestic, India Business, and International categories,
@@ -392,6 +424,7 @@ class NewsDiscoveryService:
         General India discovery fills gaps based on portfolio candidate yield.
         """
         logger.info("Running staged news discovery for Investment Committee briefing (Portfolio -> General India -> Domestic -> Intl)...")
+        self.search_window = search_window
         domestic_candidates = self.discover_domestic_news(max_candidates=max_domestic) if max_domestic > 0 else []
         portfolio_candidates = self.discover_portfolio_news(
             max_candidates=50,

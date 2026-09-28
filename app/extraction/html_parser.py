@@ -70,6 +70,15 @@ class HTMLArticleParser:
         ".entry-content",
         ".content-article",
     ]
+    PUBLISHER_CONTAINER_SELECTORS = {
+        "reuters.com": ("[data-testid='article-body']", "[data-testid='paragraph']"),
+        "bbc.com": ("[data-component='text-block']", "[data-testid='article-body']"),
+        "thehindu.com": (".articlebodycontent", "#content-body", ".paywall"),
+        "livemint.com": ("[class*='storyPage_storyContent']", ".storyPage_storyContent__"),
+        "business-standard.com": (".story-content", ".story-body", ".article-content"),
+        "economictimes.indiatimes.com": (".artText", ".articleContent", "[class*='artText']"),
+        "cnbc.com": ("#article_body", "[data-module='ArticleBody']", "[class*='ArticleBody']"),
+    }
 
     def parse(
         self,
@@ -136,7 +145,7 @@ class HTMLArticleParser:
         )
 
         # 8. Extract and Clean Body Text
-        content_text = json_ld_data.get("body_text") or self._extract_body_text(soup)
+        content_text = json_ld_data.get("body_text") or self._extract_body_text(soup, url=url)
         word_count = len(content_text.split()) if content_text else 0
 
         # 9. Verify legitimate article criteria
@@ -391,7 +400,7 @@ class HTMLArticleParser:
         logger.debug("Could not reliably parse date string: '%s'. Marking date_verified=False", raw_date_str)
         return None, False
 
-    def _extract_body_text(self, soup: BeautifulSoup) -> str:
+    def _extract_body_text(self, soup: BeautifulSoup, url: str = "") -> str:
         """
         Extract clean, readable article body paragraphs from HTML.
         """
@@ -400,16 +409,28 @@ class HTMLArticleParser:
 
         # Strip unwanted elements
         for selector in self.UNWANTED_SELECTORS:
-            for elem in soup_copy.select(selector):
-                elem.decompose()
+            try:
+                for elem in soup_copy.select(selector):
+                    elem.decompose()
+            except Exception as exc:
+                logger.debug("Ignoring broken unwanted-element selector %r: %s", selector, exc)
 
         # Locate article body container
         container: Optional[Tag] = None
-        for sel in self.ARTICLE_CONTAINER_SELECTORS:
-            match = soup_copy.select_one(sel)
-            if match:
-                container = match
-                break
+        host = urlparse(url).hostname or ""
+        publisher_selectors = next(
+            (selectors for domain, selectors in self.PUBLISHER_CONTAINER_SELECTORS.items()
+             if host == domain or host.endswith(f".{domain}")),
+            (),
+        )
+        for sel in (*publisher_selectors, *self.ARTICLE_CONTAINER_SELECTORS):
+            try:
+                match = soup_copy.select_one(sel)
+                if match:
+                    container = match
+                    break
+            except Exception as exc:
+                logger.debug("Ignoring broken article-body selector %r for %s: %s", sel, host, exc)
 
         if container is None:
             container = soup_copy.find("main") or soup_copy.find("body")

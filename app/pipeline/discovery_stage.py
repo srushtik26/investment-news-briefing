@@ -4,7 +4,7 @@ Discovery stage: initial candidate reserve pool loading and query scoring.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 
 from app.pipeline.context import PipelineContext
 
@@ -33,9 +33,14 @@ def _score_discovery_candidate(title: str) -> float:
     return score
 
 
-def get_fallback_search_window(expansion_pass: int = 1) -> str:
-    """Return the search window for discovery queries (strictly when:1d)."""
-    return "when:1d"
+def get_fallback_search_window(
+    expansion_pass: int = 1,
+    target_date: Optional[date] = None,
+) -> str:
+    """Use a 72-hour initial discovery window on Mondays to cover the weekend."""
+    from app.pipeline.weekend_recovery import get_initial_discovery_lookback_days
+
+    return f"when:{get_initial_discovery_lookback_days(target_date)}d"
 
 
 def discover_initial_reserves(
@@ -50,11 +55,14 @@ def discover_initial_reserves(
     """
     ctx.metrics.start_timer("discovery_seconds")
     ctx.log_exec(f"Fetching discovery reserve pools (up to {max_domestic} Domestic, {max_india} India, {max_international} International)...")
+    search_window = get_fallback_search_window(target_date=ctx.target_date)
+    ctx.log_exec(f"[DISCOVERY_LOOKBACK] target_date={ctx.target_date} window={search_window}")
     initial_discovery = ctx.discovery_service.discover_all(
         max_india=max_india,
         max_international=max_international,
         max_domestic=max_domestic,
         budget=getattr(ctx, "budget", None),
+        search_window=search_window,
     )
     ctx.metrics.stop_timer("discovery_seconds")
     ctx.portfolio_discovery_executed = bool(

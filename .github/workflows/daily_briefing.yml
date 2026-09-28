@@ -46,6 +46,7 @@ jobs:
           path: |
             data/briefings.db
             data/briefing_history.json
+            tmp/briefings.db
           key: briefing-history-${{ steps.current-date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
             briefing-history-
@@ -79,6 +80,9 @@ jobs:
           echo "Starting canonical 15-story daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
+          mkdir -p tmp
+          find tmp -type f \( -name '*.db.lock' -o -name '*-journal' \) -print -delete
+          find data -type f \( -name '*.db.lock' -o -name '*-journal' \) -print -delete
           python run_daily_15.py
 
       - name: Sync emailed briefing to dashboard
@@ -95,6 +99,11 @@ jobs:
 
           if [ "$BRIEFING_DATE" != "$CURRENT_DATE" ]; then
             echo "DASHBOARD_SYNC_SKIPPED: no valid current-date briefing artifact because pipeline failed (expected $CURRENT_DATE, got $BRIEFING_DATE)"
+            exit 0
+          fi
+
+          if [ -f "data/no_news_found.txt" ] && [ "$(tr -d '[:space:]' < data/no_news_found.txt)" = "$CURRENT_DATE" ]; then
+            echo "DASHBOARD_SYNC_SKIPPED: pipeline completed successfully with no articles for $CURRENT_DATE"
             exit 0
           fi
 

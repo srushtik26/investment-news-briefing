@@ -268,6 +268,12 @@ def run_daily_briefing(
             print(f"\nERROR: Pipeline execution failed with exit code {pipeline_exit_code}.\n")
             return 1
 
+        no_news_marker = data_dir / "no_news_found.txt"
+        if no_news_marker.exists() and no_news_marker.read_text(encoding="utf-8").strip() == today_str:
+            logger.info("NO_NEWS_FOUND: Pipeline completed successfully without an article; delivery skipped.")
+            print(f"\nNo News Found for {today_str}; email delivery skipped.\n")
+            return 0
+
     # 4. Verify Final Briefing Artifact & Freshness
     if not final_briefing_path.exists():
         logger.error("BRIEFING_FILE_MISSING: %s does not exist.", final_briefing_path)

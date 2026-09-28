@@ -109,6 +109,8 @@ def run_pipeline(
     data_dir = data_dir or Path("data")
     logs_dir = Path("logs")
     data_dir.mkdir(parents=True, exist_ok=True)
+    no_news_marker = data_dir / "no_news_found.txt"
+    no_news_marker.unlink(missing_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(log_level=settings.LOG_LEVEL, log_file=logs_dir / "app.log")
 
@@ -228,6 +230,9 @@ def run_pipeline(
         extract_res = _extract_candidates(
             pass1_candidates, extractor, ctx.seen_urls, log_exec
         )
+        if extract_res is None:
+            log_exec("[EXTRACTION_EMPTY_RESULT] Extraction returned None; treating it as an empty result set.")
+            extract_res = ([], [], 0, 0, 0, 0, 0, 0)
         if len(extract_res) == 8:
             batch_arts, batch_recs, gc, ro, fo, pur, dup, sps = extract_res
         else:
@@ -253,6 +258,7 @@ def run_pipeline(
         log_exec(f"Pass 1 extracted: {len(batch_arts)} articles (Reserve remaining: {reserve_remaining})")
         log_exec(f"Pass 1: {len(batch_arts)} articles extracted from {initial_dom + initial_india + initial_intl} candidates.")
         log_exec(f"  SOURCE_POLICY_SKIPS={total_source_policy_skips}  PRE_URL_REJECTS={total_pre_url_rejects}  DUPLICATES_SKIPPED={duplicate_seen_candidates}")
+
     
         # =========================================================================
         # STAGE 3: Hard Filtering
@@ -981,5 +987,17 @@ def run_pipeline(
     summary_metrics = metrics.format_summary()
     print("\n" + summary_metrics + "\n")
     logger.info("\n%s", summary_metrics)
+
+    if (
+        not ctx.all_extracted
+        and not (sufficient and validation_report and validation_report.is_valid)
+    ):
+        message = "No News Found: discovery and recovery produced zero extracted articles; skipping publication."
+        log_exec(message)
+        no_news_marker.write_text(date_str, encoding="utf-8")
+        with open(data_dir / "pipeline_execution_log.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(execution_log_lines))
+        history_store.close()
+        return 0
 
     return 0 if (sufficient and validation_report and validation_report.is_valid and formatting_succeeded) else 1

@@ -139,35 +139,34 @@ class GoogleNewsRSSDiscoveryProvider(DiscoveryProvider):
 
             items = channel.findall("item")
             for item in items[: max_results * 2]:
-                title_elem = item.find("title")
-                link_elem = item.find("link")
-                pub_elem = item.find("pubDate")
-                desc_elem = item.find("description")
-                source_elem = item.find("source")
-
-                if title_elem is None or not title_elem.text or link_elem is None or not link_elem.text:
-                    continue
-
-                raw_title = title_elem.text.strip()
-                raw_url = link_elem.text.strip()
-                pub_date = self._parse_pub_date(pub_elem.text if pub_elem is not None else None)
-                snippet = self._clean_snippet(desc_elem.text if desc_elem is not None else None)
-
-                # Extract source name and clean title
-                if source_elem is not None and source_elem.text:
-                    source_name = source_elem.text.strip()
-                    if raw_title.endswith(f" - {source_name}"):
-                        raw_title = raw_title[: -len(f" - {source_name}")].strip()
-                    elif " - " in raw_title:
-                        raw_title = raw_title.rsplit(" - ", 1)[0].strip()
-                elif " - " in raw_title:
-                    parts = raw_title.rsplit(" - ", 1)
-                    raw_title = parts[0].strip()
-                    source_name = parts[1].strip()
-                else:
-                    source_name = "Unknown Source"
-
                 try:
+                    title_elem = item.find("title")
+                    link_elem = item.find("link")
+                    pub_elem = item.find("pubDate")
+                    desc_elem = item.find("description")
+                    source_elem = item.find("source")
+
+                    if title_elem is None or not title_elem.text or link_elem is None or not link_elem.text:
+                        continue
+
+                    raw_title = title_elem.text.strip()
+                    raw_url = link_elem.text.strip()
+                    pub_date = self._parse_pub_date(pub_elem.text if pub_elem is not None else None)
+                    snippet = self._clean_snippet(desc_elem.text if desc_elem is not None else None)
+
+                    if source_elem is not None and source_elem.text:
+                        source_name = source_elem.text.strip()
+                        if raw_title.endswith(f" - {source_name}"):
+                            raw_title = raw_title[: -len(f" - {source_name}")].strip()
+                        elif " - " in raw_title:
+                            raw_title = raw_title.rsplit(" - ", 1)[0].strip()
+                    elif " - " in raw_title:
+                        parts = raw_title.rsplit(" - ", 1)
+                        raw_title = parts[0].strip()
+                        source_name = parts[1].strip()
+                    else:
+                        source_name = "Unknown Source"
+
                     article = DiscoveredArticle(
                         title=raw_title,
                         url=raw_url,
@@ -180,7 +179,7 @@ class GoogleNewsRSSDiscoveryProvider(DiscoveryProvider):
                     )
                     results.append(article)
                 except Exception as val_err:
-                    logger.debug("Skipping invalid RSS article entry: %s", val_err)
+                    logger.warning("Skipping RSS entry after parse/model error: %s", val_err)
                     continue
 
                 if len(results) >= max_results:

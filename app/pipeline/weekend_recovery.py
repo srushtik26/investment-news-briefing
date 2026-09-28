@@ -7,7 +7,7 @@ scheduled recovery attempt so targeted rescue passes can complete the briefing
 without re-running full baseline discovery from scratch.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import logging
 import os
@@ -22,6 +22,11 @@ from app.pipeline.context import PipelineContext
 logger = logging.getLogger("pipeline.weekend_recovery")
 
 PARTIAL_STATE_FILENAME = "partial_weekend_state.json"
+
+
+def get_initial_discovery_lookback_days(target_date: Optional[date]) -> int:
+    """Return three days on Monday to include weekend news; otherwise one day."""
+    return 3 if target_date is not None and target_date.weekday() == 0 else 1
 
 
 def save_partial_weekend_state(

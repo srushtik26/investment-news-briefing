@@ -39,7 +39,7 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     target_path = resolve_db_path(db_path)
     is_uri = target_path.startswith("file:")
-    conn = sqlite3.connect(target_path, check_same_thread=False, uri=is_uri)
+    conn = sqlite3.connect(target_path, timeout=15, check_same_thread=False, uri=is_uri)
     conn.row_factory = sqlite3.Row
     return conn
 

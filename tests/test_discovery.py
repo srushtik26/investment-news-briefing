@@ -14,7 +14,11 @@ from app.discovery.queries import (
     SearchQueryBuilder,
 )
 from app.discovery.mock_provider import MockDiscoveryProvider, SAMPLE_MOCK_ARTICLES
+from datetime import date
+
 from app.discovery.rss_provider import GoogleNewsRSSDiscoveryProvider
+from app.pipeline.discovery_stage import get_fallback_search_window
+from app.pipeline.weekend_recovery import get_initial_discovery_lookback_days
 from app.discovery.service import NewsDiscoveryService
 
 
@@ -249,6 +253,29 @@ class TestGoogleNewsRSSProvider:
         assert provider.parse_rss_feed("", "query", "India") == []
         assert provider.parse_rss_feed("<broken>xml", "query", "India") == []
 
+    def test_bad_rss_item_does_not_discard_later_items(self, monkeypatch):
+        provider = GoogleNewsRSSDiscoveryProvider()
+        clean_snippet = provider._clean_snippet
+        calls = 0
+
+        def fail_first_snippet(value):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise AttributeError("malformed snippet node")
+            return clean_snippet(value)
+
+        monkeypatch.setattr(provider, "_clean_snippet", fail_first_snippet)
+        results = provider.parse_rss_feed(
+            SAMPLE_RSS_XML,
+            query="business news",
+            country="India",
+            max_results=10,
+        )
+
+        assert len(results) == 1
+        assert results[0].title == "Nvidia Reports Q2 Record Revenue of $30B"
+
 
 class TestNewsDiscoveryService:
     """Tests for NewsDiscoveryService orchestration and deduplication."""
@@ -276,6 +303,18 @@ class TestNewsDiscoveryService:
         assert "international" in results
         assert len(results["india"]) > 0
         assert len(results["international"]) > 0
+
+    def test_monday_search_window_is_applied_to_discovery_queries(self):
+        service = NewsDiscoveryService(provider=MockDiscoveryProvider())
+        service.search_window = get_fallback_search_window(
+            target_date=date(2026, 9, 28)
+        )
+
+        assert service.search_window == "when:3d"
+        assert service._apply_search_window("India company results when:1d") == "India company results when:3d"
+        assert service._apply_search_window("Nvidia acquisition") == "Nvidia acquisition when:3d"
+        assert get_initial_discovery_lookback_days(date(2026, 9, 28)) == 3
+        assert get_initial_discovery_lookback_days(date(2026, 9, 29)) == 1
 
     def test_url_deduplication(self):
         """Test deterministic URL deduplication across searches."""
