@@ -73,6 +73,7 @@ def test_stage4_classification_result_contract_offline_fallback(tmp_path):
          patch("app.pipeline.runner.discover_initial_reserves") as mock_disc, \
          patch("app.pipeline.runner._extract_candidates") as mock_ext, \
          patch("app.pipeline.runner.AIArticleClassifier") as mock_clf_cls, \
+         patch("app.pipeline.runner.ActiveCorroborator") as mock_corrob_cls, \
          patch("app.pipeline.runner.run_expansion_and_fallbacks") as mock_exp, \
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
@@ -80,6 +81,7 @@ def test_stage4_classification_result_contract_offline_fallback(tmp_path):
         mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
+        mock_corrob_cls.return_value.corroborate.return_value = MagicMock(success=False, corroborating_article=None)
 
         mock_classifier_instance = MagicMock()
         mock_classifier_instance.classify.return_value = offline_result
@@ -89,6 +91,7 @@ def test_stage4_classification_result_contract_offline_fallback(tmp_path):
             max_india=5,
             max_international=5,
             run_reference_time=datetime.now(timezone.utc),
+            data_dir=tmp_path,
         )
 
         assert exit_code in (0, 1)
@@ -130,6 +133,7 @@ def test_stage4_classification_result_contract_live_gemini(tmp_path):
          patch("app.pipeline.runner.discover_initial_reserves") as mock_disc, \
          patch("app.pipeline.runner._extract_candidates") as mock_ext, \
          patch("app.pipeline.runner.AIArticleClassifier") as mock_clf_cls, \
+         patch("app.pipeline.runner.ActiveCorroborator") as mock_corrob_cls, \
          patch("app.pipeline.runner.run_expansion_and_fallbacks") as mock_exp, \
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
@@ -137,6 +141,7 @@ def test_stage4_classification_result_contract_live_gemini(tmp_path):
         mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
+        mock_corrob_cls.return_value.corroborate.return_value = MagicMock(success=False, corroborating_article=None)
 
         mock_classifier_instance = MagicMock()
         mock_classifier_instance.classify.return_value = live_result
@@ -146,6 +151,7 @@ def test_stage4_classification_result_contract_live_gemini(tmp_path):
             max_india=5,
             max_international=5,
             run_reference_time=datetime.now(timezone.utc),
+            data_dir=tmp_path,
         )
 
         assert exit_code in (0, 1)
@@ -174,6 +180,7 @@ def test_stage4_classification_failure_and_rejection_paths(tmp_path):
          patch("app.pipeline.runner.discover_initial_reserves") as mock_disc, \
          patch("app.pipeline.runner._extract_candidates") as mock_ext, \
          patch("app.pipeline.runner.AIArticleClassifier") as mock_clf_cls, \
+         patch("app.pipeline.runner.ActiveCorroborator") as mock_corrob_cls, \
          patch("app.pipeline.runner.run_expansion_and_fallbacks") as mock_exp, \
          patch("app.pipeline.runner.run_second_source_enrichment") as mock_enr:
 
@@ -181,6 +188,7 @@ def test_stage4_classification_failure_and_rejection_paths(tmp_path):
         mock_ext.return_value = ([art], [], 0, 0, 0, 0, 0, 0)
         mock_exp.return_value = "INSUFFICIENT_STORIES"
         mock_enr.return_value = None
+        mock_corrob_cls.return_value.corroborate.return_value = MagicMock(success=False, corroborating_article=None)
 
         mock_classifier_instance = MagicMock()
         mock_classifier_instance.classify.return_value = fail_result
@@ -190,6 +198,7 @@ def test_stage4_classification_failure_and_rejection_paths(tmp_path):
             max_india=5,
             max_international=5,
             run_reference_time=datetime.now(timezone.utc),
+            data_dir=tmp_path,
         )
 
         assert exit_code in (0, 1)

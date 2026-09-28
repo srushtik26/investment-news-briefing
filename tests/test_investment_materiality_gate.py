@@ -89,6 +89,7 @@ def _make_evt(
 
 def _make_ctx(ref_time=None):
     from app.verification import TwoSourceVerifier
+    from app.deduplication.history import HistoryStore
 
     ref = ref_time or datetime(2026, 9, 8, 2, 0, tzinfo=timezone.utc)
     settings = MagicMock()
@@ -99,6 +100,7 @@ def _make_ctx(ref_time=None):
         data_dir=None,
         logs_dir=None,
         settings=settings,
+        history_store=HistoryStore(db_path=":memory:", is_isolated=False),
         log_exec=lambda m: logs.append(m),
     )
     ctx.logs = logs

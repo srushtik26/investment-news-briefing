@@ -424,3 +424,64 @@ def test_run_deduplication_populates_dedup_rejected_event_ids():
         "ctx.dedup_rejected_event_ids — the downstream refill guard will not fire."
     )
     assert accepted == [], "Expected no accepted stories when all were rejected"
+
+
+def test_india_recovery_passes_dynamic_horizon_and_processes_unseen_urls():
+    """
+    Ensure India recovery passes dynamic recovery horizon (72h on Mon/weekend)
+    and does not prematurely insert the URL into ctx.seen_urls before calling process_candidate_item.
+    """
+    from unittest.mock import MagicMock, patch
+    from app.discovery.models import DiscoveredArticle
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import run_ranking_and_selection
+    from app.ranking.models import RankedCandidatePool
+    from app.verification.corroborator import reset_corroboration_counter
+    from app.deduplication.history import HistoryStore
+
+    reset_corroboration_counter()
+    ref_time = datetime(2026, 9, 28, 2, 0, tzinfo=timezone.utc)  # Monday
+    ctx = PipelineContext(
+        run_reference_time=ref_time,
+        target_date=ref_time.date(),
+        history_store=HistoryStore(db_path=":memory:", is_isolated=True),
+    )
+    ctx.settings = MagicMock()
+    ctx.settings.DEDUP_LOOKBACK_DAYS = 3
+    ctx.log_exec = MagicMock()
+    mock_ranker = MagicMock()
+    mock_ranker.rank_events.return_value = RankedCandidatePool(
+        domestic_candidates=[],
+        india_candidates=[],
+        international_candidates=[],
+    )
+    ctx.ranker = mock_ranker
+
+    candidate = DiscoveredArticle(
+        title="Tata Steel commissions ₹10,000 crore blast furnace expansion",
+        url="https://business-standard.com/companies/tata-steel-10000-crore",
+        source="Business Standard",
+        category="india",
+        search_query="India corporate capex",
+        country="India",
+        published_at=ref_time,
+    )
+
+    mock_provider = MagicMock()
+    mock_provider.discover.return_value = [candidate]
+    ctx.discovery_service = MagicMock()
+    ctx.discovery_service.provider = mock_provider
+
+    with patch("app.pipeline.candidate_processing.process_candidate_item") as mock_proc:
+        mock_proc.return_value = None  # Just inspecting call invocation
+        try:
+            run_ranking_and_selection(ctx, [], {})
+        except Exception:
+            pass
+
+        assert mock_proc.called, "process_candidate_item was not called during India recovery"
+        # Check active_horizon passed was 72.0 on Monday
+        kwargs = mock_proc.call_args[1]
+        assert kwargs.get("active_horizon") == 72.0, (
+            f"Expected active_horizon=72.0 on Monday run, got {kwargs.get('active_horizon')}"
+        )

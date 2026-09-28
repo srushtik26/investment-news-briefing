@@ -737,7 +737,6 @@ def run_post_dedup_refill(
                         if u in ctx.failed_urls or u_norm in ctx.seen_urls or (cand_netloc != "news.google.com" and (cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)))):
                             continue
                         if URLFilterRule.is_valid_url(u)[0]:
-                            ctx.seen_urls.add(u_norm)
                             process_candidate_item(it, sec_str, ctx)
                             new_events = [
                                 e for e in (ctx.verified_events + ctx.high_confidence_single_candidates)
@@ -1972,15 +1971,18 @@ def run_ranking_and_selection(
             rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rem_budget > 0:
                 ctx.log_exec(f"[INDIA_RECOVERY] RSS discovery for {needed} missing stories (budget rem: {rem_budget})")
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
+                when_param = "when:3d" if is_weekend_or_mon else "when:2d"
+                rec_horizon = 72.0 if is_weekend_or_mon else 48.0
                 INDIA_RECOVERY_QUERIES = [
-                    "India business corporate deals earnings when:1d",
-                    "India companies M&A acquisition results when:1d",
-                    "India capex investment plant manufacturing when:1d",
-                    "India banking finance NBFC results when:1d",
-                    "India markets BSE NSE corporate announcement when:1d",
-                    "SEBI RBI regulatory corporate action when:1d",
-                    "Indian startups funding IPO listing when:1d",
-                    "Indian infrastructure contract order wins when:1d",
+                    f"India business corporate deals earnings {when_param}",
+                    f"India companies M&A acquisition results {when_param}",
+                    f"India capex investment plant manufacturing {when_param}",
+                    f"India banking finance NBFC results {when_param}",
+                    f"India markets BSE NSE corporate announcement {when_param}",
+                    f"SEBI RBI regulatory corporate action {when_param}",
+                    f"Indian startups funding IPO listing {when_param}",
+                    f"Indian infrastructure contract order wins {when_param}",
                 ]
                 INDIA_RSS_SOURCES = "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com OR site:economictimes.indiatimes.com)"
 
@@ -1994,8 +1996,7 @@ def run_ranking_and_selection(
                     for it in items:
                         u = it.url.strip()
                         if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
-                            ctx.seen_urls.add(u.lower().rstrip("/"))
-                            process_candidate_item(it, "india", ctx)
+                            process_candidate_item(it, "india", ctx, active_horizon=rec_horizon)
                             new_cands = [
                                 ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
                                 if ev.id not in india_recovery_selected_ids
@@ -2020,9 +2021,12 @@ def run_ranking_and_selection(
             serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
             if serp_key and serp_key.strip():
                 serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
+                when_param = "when:3d" if is_weekend_or_mon else "when:2d"
+                rec_horizon = 72.0 if is_weekend_or_mon else 48.0
                 INDIA_SERP_RECOVERY_QUERIES = [
-                    "Indian company acquisition contract capex earnings IPO funding regulation when:1d",
-                    "India corporate net profit revenue quarterly results deal order when:1d",
+                    f"Indian company acquisition contract capex earnings IPO funding regulation {when_param}",
+                    f"India corporate net profit revenue quarterly results deal order {when_param}",
                 ]
                 for sq in INDIA_SERP_RECOVERY_QUERIES:
                     if needed <= 0:
@@ -2032,14 +2036,13 @@ def run_ranking_and_selection(
                     if get_serpapi_count() >= MAX_SERPAPI_SEARCHES_PER_RUN:
                         break
                     try:
-                        serp_items = serp_corrob.discover(sq, active_horizon=24.0, section="india")
+                        serp_items = serp_corrob.discover(sq, active_horizon=rec_horizon, section="india")
                         candidates_found = len(serp_items)
                         final_eligible_in_query = 0
                         for sit in serp_items:
                             u = sit.url.strip()
                             if URLFilterRule.is_valid_url(u)[0] and u.lower().rstrip("/") not in ctx.seen_urls:
-                                ctx.seen_urls.add(u.lower().rstrip("/"))
-                                process_candidate_item(sit, "india", ctx)
+                                process_candidate_item(sit, "india", ctx, active_horizon=rec_horizon)
                                 new_cands = [
                                     ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
                                     if ev.id not in india_recovery_selected_ids
@@ -2712,16 +2715,19 @@ def run_ranking_and_selection(
             rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
             if rem_budget > 0:
                 ctx.log_exec(f"[INTERNATIONAL_RECOVERY] Search discovery for {needed} missing stories (budget rem: {rem_budget})")
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
+                when_param = "when:3d" if is_weekend_or_mon else "when:2d"
+                rec_horizon = 72.0 if is_weekend_or_mon else 48.0
                 INTL_RECOVERY_QUERIES = [
-                    "acquisition OR acquired OR buyout when:1d",
-                    "merger OR merged when:1d",
-                    "earnings OR 'quarterly profit' OR revenue when:1d",
-                    "capex OR 'capital expenditure' OR 'investment plan' when:1d",
-                    "funding OR 'fundraise' OR 'raised capital' when:1d",
-                    "IPO OR 'initial public offering' OR debuts when:1d",
-                    "'contract award' OR 'secures contract' when:1d",
-                    "restructuring OR reorganization when:1d",
-                    "'regulatory action' OR antitrust OR penalty when:1d",
+                    f"acquisition OR acquired OR buyout {when_param}",
+                    f"merger OR merged {when_param}",
+                    f"earnings OR 'quarterly profit' OR revenue {when_param}",
+                    f"capex OR 'capital expenditure' OR 'investment plan' {when_param}",
+                    f"funding OR 'fundraise' OR 'raised capital' {when_param}",
+                    f"IPO OR 'initial public offering' OR debuts {when_param}",
+                    f"'contract award' OR 'secures contract' {when_param}",
+                    f"restructuring OR reorganization {when_param}",
+                    f"'regulatory action' OR antitrust OR penalty {when_param}",
                 ]
                 INTL_RECOVERY_SOURCES = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
 
@@ -2739,8 +2745,7 @@ def run_ranking_and_selection(
                         if u in ctx.failed_urls or u_norm in ctx.seen_urls or (cand_netloc != "news.google.com" and (cand_netloc in ctx.failed_domains or (ctx.extractor and ctx.extractor.is_domain_degraded(cand_netloc)))):
                             continue
                         if URLFilterRule.is_valid_url(u)[0]:
-                            ctx.seen_urls.add(u_norm)
-                            process_candidate_item(it, "international", ctx)
+                            process_candidate_item(it, "international", ctx, active_horizon=rec_horizon)
                             new_cands = [
                                 ev for ev in (ctx.verified_events + ctx.high_confidence_single_candidates)
                                 if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids
