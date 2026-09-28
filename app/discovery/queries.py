@@ -254,6 +254,31 @@ INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "Federal Reserve FOMC interest rate decision when:1d",
         "Fed interest rate policy statement basis points when:1d",
     ],
+    "central_bank_policy": [
+        "central bank rate cut hike interest rate decision when:1d",
+        "ECB Bank of England rate decision inflation outlook when:1d",
+        "monetary policy tightening easing inflation GDP when:1d",
+    ],
+    "trade_tariff": [
+        "tariff trade war sanctions import export restriction when:1d",
+        "trade deal agreement bilateral WTO tariff removal when:1d",
+        "sanctions imposed lifted trade embargo economy when:1d",
+    ],
+    "geopolitical_market": [
+        "war conflict ceasefire oil price market impact when:1d",
+        "geopolitical risk supply chain disruption economy when:1d",
+        "oil OPEC production cut price energy market when:1d",
+    ],
+    "tech_regulation": [
+        "AI artificial intelligence regulation law bill passed when:1d",
+        "tech company fine antitrust data privacy breach penalty when:1d",
+        "semiconductor chip ban export restriction technology when:1d",
+    ],
+    "major_corporate_news": [
+        "CEO resigns appointed fired major company executive when:1d",
+        "company bankruptcy Chapter 11 debt restructuring filing when:1d",
+        "stock market crash rally record high low economy when:1d",
+    ],
 }
 
 

@@ -235,7 +235,10 @@ class NewsDiscoveryService:
         sources = SearchQueryBuilder.get_accessible_sources_for_country("International")
         site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources]) + ")"
 
+        _early_stop = False
         for cat_name, phrase_list in target_cats.items():
+            if _early_stop:
+                break
             for phrase in phrase_list:
                 query = f"{phrase}{site_clause}"
                 results = self.provider.discover(
@@ -247,6 +250,7 @@ class NewsDiscoveryService:
                 discovered.extend(results)
 
                 if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
+                    _early_stop = True
                     break
 
         unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
