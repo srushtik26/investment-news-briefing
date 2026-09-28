@@ -128,9 +128,17 @@ def run_pipeline(
     log_exec(f"PIPELINE RUN: {date_str} (Reference Time: {run_reference_time.isoformat()}){mode_str}")
     log_exec("=" * 60)
 
-    max_india = max_india or settings.MAX_DISCOVERY_INDIA
-    max_international = max_international or settings.MAX_DISCOVERY_INTL
+    from config import is_testing_or_dry_run
+    is_dry_run_mode = validation_run or is_testing_or_dry_run()
+
     max_domestic = getattr(settings, "MAX_DISCOVERY_DOMESTIC", 40)
+    if not is_dry_run_mode:
+        max_india = max(max_india or 0, settings.MAX_DISCOVERY_INDIA)
+        max_international = max(max_international or 0, settings.MAX_DISCOVERY_INTL)
+        max_domestic = max(max_domestic, 40)
+    else:
+        max_india = max_india or settings.MAX_DISCOVERY_INDIA
+        max_international = max_international or settings.MAX_DISCOVERY_INTL
 
     # Initialize performance metrics
     metrics = PipelineMetrics.reset()
@@ -140,8 +148,6 @@ def run_pipeline(
     reset_serpapi_counter()
     GeminiUsageLogger.reset()
 
-    from config import is_testing_or_dry_run
-    is_dry_run_mode = validation_run or is_testing_or_dry_run()
     if is_dry_run_mode:
         log_exec("DRY_RUN_HISTORY_MODE=isolated")
         logger.info("DRY_RUN_HISTORY_MODE=isolated")

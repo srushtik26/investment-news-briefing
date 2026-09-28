@@ -253,8 +253,8 @@ def run_daily_briefing(
         try:
             from run_pipeline import run_pipeline
             pipeline_exit_code = run_pipeline(
-                max_india=max_india or 5,
-                max_international=max_international or 5,
+                max_india=max_india,
+                max_international=max_international,
                 target_date=today,
                 data_dir=data_dir,
             )

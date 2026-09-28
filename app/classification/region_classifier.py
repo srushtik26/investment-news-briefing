@@ -663,7 +663,14 @@ class EventRegionClassifier:
         ):
             return NewsCategory.INDIA, "Indian principal company acting abroad qualifies as India business"
 
-        if has_foreign_geo and not has_india_nexus_title:
+        if (
+            has_foreign_geo
+            and not has_india_nexus_title
+            and not (
+                (discovery_region == NewsCategory.INDIA or has_india_nexus_context)
+                and (has_indian_currency_local or re.search(r"\b(?:ipo|drhp|nclt|sebi|bse|nse|rbi)\b", title_lower))
+            )
+        ):
             return NewsCategory.INTERNATIONAL, "Explicit foreign geography / non-India subject routed to INTERNATIONAL: foreign subject without Indian headline nexus"
 
         if intl_entity_matches:

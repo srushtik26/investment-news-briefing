@@ -154,7 +154,9 @@ def is_testing_or_dry_run() -> bool:
     app_env = os.environ.get("APP_ENV", "").strip().lower()
     if app_env == "production":
         return False
-    if app_env == "test":
+    if app_env in ("test", "testing"):
+        return True
+    if "pytest" in sys.modules or "pytest" in (getattr(sys, "argv", [""])[0] if sys.argv else ""):
         return True
     if os.environ.get("PIPELINE_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
         return True

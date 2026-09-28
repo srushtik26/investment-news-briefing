@@ -42,6 +42,7 @@ LARGE_CAP_ENTITIES: Set[str] = {
     "maruti", "maruti suzuki", "mahindra", "mahindra & mahindra", "m&m",
     "sun pharma", "dr reddy", "cipla", "lupin",
     "britannia", "britannia industries", "havells", "havells india",
+    "dabur", "dabur india", "sesa care", "godrej", "pidilite", "zydus",
     "ntpc", "ongc", "coal india", "power grid", "bhel", "ioc", "bpcl", "hpcl",
     "vedanta", "hindalco", "jsw", "jsw steel", "titan", "asian paints",
     "ultratech", "grasim", "zomato", "swiggy", "paytm",
@@ -232,6 +233,7 @@ class InvestmentMaterialityEvaluator:
         is_policy_macro = bool(
             re.search(
                 r"\b(?:union cabinet|cabinet approves|cabinet clears|finance ministry|rbi|reserve bank of india|"
+                r"nclt|national company law tribunal|nclt clears|nclt approves|merger approval|tribunal clears|"
                 r"monetary policy|repo rate|sebi|securities and exchange board|cci approves|cci clears|"
                 r"antitrust approval|gst council|gdp growth|retail inflation|cpi inflation|wholesale inflation|"
                 r"fiscal deficit|pli scheme|semiconductor mission|national highway authority|nhai|sovereign bond|"
@@ -435,6 +437,20 @@ class InvestmentMaterialityEvaluator:
             score += 10.0
             breakdown["institutional_control_buyout"] = 10.0
             positive_reasons.append("institutional_sponsor_control_buyout(+10)")
+
+        # 10b. Key executive / CEO appointment or leadership transition (+10)
+        is_leadership_change = bool(
+            re.search(
+                r"\b(?:appoints? (?:new )?(?:ceo|managing director|md|cfo|chairman)|"
+                r"(?:ceo|md|cfo|chairman) (?:resigns|steps down|retires)|"
+                r"leadership change|names? (?:new )?(?:ceo|md))\b",
+                full_text,
+            )
+        )
+        if is_leadership_change:
+            score += 10.0
+            breakdown["leadership_change"] = 10.0
+            positive_reasons.append("leadership_executive_appointment(+10)")
 
         # 11. Portfolio Watchlist Concrete Event Bonus (+20)
         from app.ranking.watchlist import get_watchlist_match_details
