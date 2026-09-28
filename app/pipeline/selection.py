@@ -91,7 +91,15 @@ def get_final_selectable_unique_events(
     selected_india_companies: Set[str] = set()
     selected_portfolio_companies: Set[str] = set()
 
+    # Pre-compute the dedup reject set once for O(1) per-candidate checks.
+    _dedup_rejected: Set[str] = getattr(ctx, "dedup_rejected_event_ids", set())
+
     for cand in sorted_cands:
+        # CRITICAL FIX (2026-09-28): Never surface events that Stage 6 rejected via
+        # 3-day history deduplication — they must not re-enter refill or recovery pools.
+        if cand.id in _dedup_rejected:
+            continue
+
         cand_art = ctx.articles_lookup.get(cand.article_ids[0]) if cand.article_ids else None
         if not cand_art:
             continue
@@ -309,9 +317,21 @@ def run_deduplication(ctx: PipelineContext) -> Tuple[List[Dict[str, Any]], Dict[
         lookback_days=getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3),
     )
     ctx.stage6_rejected_stories = rejected_stories
+
+    # CRITICAL FIX (2026-09-28): Populate ctx.dedup_rejected_event_ids with every event
+    # rejected by the 3-day history deduplication so that subsequent refill / recovery
+    # passes in run_post_dedup_refill and get_final_selectable_unique_events cannot
+    # accidentally resurrect a story that already appeared in recent briefings.
+    # Without this, the POST_DEDUP_REFILL fallback pulled rejected events back into the
+    # candidate pool, causing Stage 9 Check #9 (no-repeat-in-3-days) to abort the pipeline.
+    for rej in rejected_stories:
+        eid = rej.get("event_id") if isinstance(rej, dict) else getattr(rej, "event_id", None)
+        if eid:
+            ctx.dedup_rejected_event_ids.add(eid)
+
     ctx.log_exec(f"Stage 6 Summary:")
     ctx.log_exec(f"  Accepted: {len(accepted_stories)}")
-    ctx.log_exec(f"  Removed:  {len(rejected_stories)}")
+    ctx.log_exec(f"  Removed:  {len(rejected_stories)} (event IDs written to ctx.dedup_rejected_event_ids)")
 
     return accepted_stories, event_by_id
 

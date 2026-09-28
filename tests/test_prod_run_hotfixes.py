@@ -301,3 +301,126 @@ def test_get_final_selectable_unique_events_filters_ineligible_domestic():
     assert ev_elig.id in sel_ids, "Eligible domestic event was omitted from selectable events"
     assert ev_inelig.id not in sel_ids, "Ineligible domestic event (petty crime) was incorrectly included in selectable events"
 
+
+
+def test_stage6_history_reject_blocked_from_refill_pool():
+    """
+    Regression test for 2026-09-28 production failure (Check #9 / FINAL_VALIDATION).
+
+    Root cause: run_deduplication did not write rejected event IDs into
+    ctx.dedup_rejected_event_ids, so get_final_selectable_unique_events and
+    run_post_dedup_refill could pull a Stage-6-rejected event back into the
+    candidate pool.  Stage 9 validation (Check #9) then detected the 3-day
+    fingerprint collision and aborted the pipeline.
+
+    This test verifies that:
+    1. After run_deduplication, ctx.dedup_rejected_event_ids contains the IDs
+       of every story rejected by filter_stories.
+    2. get_final_selectable_unique_events never returns an event whose ID is in
+       ctx.dedup_rejected_event_ids, even when that event is otherwise valid and
+       present in ctx.verified_events / ctx.high_confidence_single_candidates.
+    """
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import get_final_selectable_unique_events
+
+    ref_time = datetime.now(timezone.utc)
+    ctx = PipelineContext(run_reference_time=ref_time)
+
+    # Build a valid international article & event that would normally pass all
+    # quality gates — simulating "Buy these two stocks..." (Mizuho, 2026-09-28).
+    art_repeat = Article(
+        id="art_repeat_intl_1",
+        title="Mizuho Recommends Select Real Estate Equities as 10-Year Treasury Yield Touches 5%",
+        url="https://www.livemint.com/market/stock-market-news/mizuho-real-estate-reco-2026",
+        content_text=(
+            "Mizuho Securities issued a buy recommendation on select real estate equities "
+            "yielding 4% as the US 10-year Treasury yield crossed 5%, offering relative value."
+        ),
+        published_at=ref_time,
+        source_name="Mint",
+    )
+    ev_repeat = Event(
+        canonical_title=art_repeat.title,
+        article_ids=[art_repeat.id],
+        description="Mizuho buy recommendation on real estate equities",
+        event_category=NewsCategory.INTERNATIONAL,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        single_source_confidence_score=92.0,
+    )
+
+    # Simulate Stage 6 having rejected this event (3-day history repeat).
+    ctx.dedup_rejected_event_ids.add(ev_repeat.id)
+
+    ctx.articles_lookup = {art_repeat.id: art_repeat}
+    ctx.high_confidence_single_candidates = [ev_repeat]
+
+    # get_final_selectable_unique_events must NOT return the rejected event.
+    selectable = get_final_selectable_unique_events(ctx, category=NewsCategory.INTERNATIONAL)
+    sel_ids = {e.id for e in selectable}
+
+    assert ev_repeat.id not in sel_ids, (
+        "Stage 6 history-rejected event was incorrectly returned by "
+        "get_final_selectable_unique_events — it would re-enter the refill pool "
+        "and trigger Check #9 in Stage 9 validation."
+    )
+
+
+def test_run_deduplication_populates_dedup_rejected_event_ids():
+    """
+    Verify that run_deduplication writes rejected event IDs into
+    ctx.dedup_rejected_event_ids immediately after filter_stories.
+
+    This is the upstream half of the 2026-09-28 hotfix: without this write,
+    the check in get_final_selectable_unique_events is never triggered.
+    """
+    from unittest.mock import MagicMock, patch
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import run_deduplication
+
+    ref_time = datetime.now(timezone.utc)
+    ctx = PipelineContext(run_reference_time=ref_time)
+
+    art1 = Article(
+        id="art_jsw_1",
+        title="JSW One Platforms Files DRHP With SEBI To Raise ₹3,054 Crore via IPO",
+        url="https://economictimes.com/jsw-one-drhp-sebi-ipo",
+        content_text="JSW One Platforms filed its DRHP with SEBI for an IPO to raise up to ₹3,054 crore.",
+        published_at=ref_time,
+        source_name="Economic Times",
+    )
+    ev1 = Event(
+        canonical_title=art1.title,
+        article_ids=[art1.id],
+        description="JSW One Platforms DRHP filing",
+        event_category=NewsCategory.INDIA,
+        verification_tier=VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE,
+        single_source_confidence_score=88.0,
+        companies_involved=["JSW One Platforms"],
+    )
+
+    ctx.articles_lookup = {art1.id: art1}
+    ctx.verified_events = []
+    ctx.high_confidence_single_candidates = [ev1]
+    ctx.single_source_events = []
+
+    # Stub the dedup engine: reject ev1 (simulates 3-day repeat)
+    fake_rejected = [{"event_id": ev1.id, "headline": ev1.canonical_title, "category": "india"}]
+    ctx.dedup_engine = MagicMock()
+    ctx.dedup_engine.filter_stories.return_value = ([], fake_rejected)
+
+    # Stub the class_map entry so candidate dict building doesn't fail
+    mock_cls = MagicMock()
+    mock_cls.event_type.value = "IPO"
+    ctx.class_map = {art1.id: mock_cls}
+
+    # Stub ctx.log_exec to avoid side effects
+    ctx.log_exec = MagicMock()
+
+    accepted, _ = run_deduplication(ctx)
+
+    # The rejected event ID must now be in ctx.dedup_rejected_event_ids
+    assert ev1.id in ctx.dedup_rejected_event_ids, (
+        "run_deduplication did not write rejected event_id into "
+        "ctx.dedup_rejected_event_ids — the downstream refill guard will not fire."
+    )
+    assert accepted == [], "Expected no accepted stories when all were rejected"
