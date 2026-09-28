@@ -67,7 +67,23 @@ jobs:
           restore-keys: |
             briefing-delivery-${{ steps.current-date.outputs.date }}-
 
+      - name: Check if email already sent today
+        id: check-delivery
+        run: |
+          CURRENT_DATE="${{ steps.current-date.outputs.date }}"
+          if [ -f "data/last_email_date.txt" ] && [ "$(tr -d '[:space:]' < data/last_email_date.txt)" = "$CURRENT_DATE" ]; then
+            echo "=========================================================="
+            echo "Mail sent successfully for $CURRENT_DATE."
+            echo "Email already delivered today; skipping pipeline execution"
+            echo "and skipping dashboard update. Workflow successfully passed."
+            echo "=========================================================="
+            echo "already_sent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_sent=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate and email canonical 15-story briefing
+        if: steps.check-delivery.outputs.already_sent != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
@@ -77,6 +93,11 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TZ: Asia/Kolkata
         run: |
+          CURRENT_DATE="${{ steps.current-date.outputs.date }}"
+          if [ -f "data/last_email_date.txt" ] && [ "$(tr -d '[:space:]' < data/last_email_date.txt)" = "$CURRENT_DATE" ]; then
+            echo "Mail sent successfully for $CURRENT_DATE. Email already delivered; skipping duplicate send."
+            exit 0
+          fi
           echo "Starting canonical 15-story daily briefing..."
           echo "Current IST time:"
           TZ=Asia/Kolkata date
@@ -86,12 +107,16 @@ jobs:
           python run_daily_15.py
 
       - name: Sync emailed briefing to dashboard
-        if: always()
+        if: always() && steps.check-delivery.outputs.already_sent != 'true'
         env:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
           TZ: Asia/Kolkata
         run: |
           CURRENT_DATE="${{ steps.current-date.outputs.date }}"
+          if [ -f "data/last_email_date.txt" ] && [ "$(tr -d '[:space:]' < data/last_email_date.txt)" = "$CURRENT_DATE" ] && [ -f "data/dashboard_sync_date.txt" ] && [ "$(tr -d '[:space:]' < data/dashboard_sync_date.txt)" = "$CURRENT_DATE" ]; then
+            echo "DASHBOARD_SYNC_SKIPPED: mail sent successfully and dashboard already updated for $CURRENT_DATE"
+            exit 0
+          fi
           BRIEFING_DATE=""
           if [ -f "data/briefing_date.txt" ]; then
             BRIEFING_DATE=$(cat data/briefing_date.txt | tr -d '[:space:]')

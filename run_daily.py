@@ -208,7 +208,7 @@ def run_daily_briefing(
             else:
                 logger.error("Could not restore a valid 15-story copy_paste_briefing.txt.")
 
-        print(f"\nSTATUS: EMAIL_ALREADY_SENT_TODAY (Date: {today_str})\n")
+        print(f"\nSTATUS: EMAIL_ALREADY_SENT_TODAY (Date: {today_str})\nMail sent successfully for {today_str}. Skipping duplicate send.\n")
         return 0
 
     # 2. Check Email Credentials Presence Early
