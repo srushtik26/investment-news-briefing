@@ -335,3 +335,44 @@ def test_8_no_extra_gemini_call_count():
         assert 35 <= len(words) <= 55
         assert len(words) <= 65
         assert story.summary.endswith(".")
+
+
+def test_sanitize_extracted_figures():
+    """Verify bare currency identifiers, empty strings, and small unitless numbers are filtered out."""
+    from app.ai.summary_grounding import sanitize_extracted_figures
+
+    raw = ["rs", "₹", "$", "", "  ", "0.6", "1", "2.5", "$18 billion", "₹1,500 crore", "45%"]
+    cleaned = sanitize_extracted_figures(raw)
+    assert "rs" not in cleaned
+    assert "₹" not in cleaned
+    assert "$" not in cleaned
+    assert "" not in cleaned
+    assert "0.6" not in cleaned
+    assert "1" not in cleaned
+    assert "$18 billion" in cleaned
+    assert "₹1,500 crore" in cleaned
+    assert "45%" in cleaned
+
+
+def test_ipo_and_governance_archetypes_and_anthropic_cases():
+    """Verify Anthropic governance and IPO prospectus cases produce distinct, clean summaries."""
+    from app.ai.summary_grounding import build_descriptive_investment_summary
+
+    h1 = "Anthropic leaders to control AI lab to promote public good over market forces: Reuters"
+    s1 = build_descriptive_investment_summary(h1)
+    assert "rs, , $18 billion" not in s1
+    assert "governance" in s1.lower() or "leadership" in s1.lower()
+    words1 = s1.split()
+    assert 35 <= len(words1) <= 65
+
+    h2 = "Anthropic's $2 trillion IPO prospectus has leaked - here's a snapshot of its income statements"
+    s2 = build_descriptive_investment_summary(h2)
+    assert "0.6" not in s2
+    assert "$2 trillion" in s2
+    assert "prospectus" in s2.lower() or "listing" in s2.lower()
+    words2 = s2.split()
+    assert 35 <= len(words2) <= 65
+
+    # Ensure the two summaries are completely distinct and not identical boilerplate
+    assert s1 != s2
+

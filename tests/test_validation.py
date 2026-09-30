@@ -414,6 +414,24 @@ class TestFinalValidationEngine:
         assert report.failed_check_id == 10
         assert "Duplicate company 'IndiaCorp1'" in (report.failure_reason or "")
 
+    def test_check_10_fails_on_duplicate_international_company(self, valid_briefing_fixtures):
+        """Test check 10 fails when same International company appears twice."""
+        payload, events_map, articles_map, cand_urls = valid_briefing_fixtures
+        # Make international event 2 belong to GlobalCorp1 as well
+        events_map["evt-intl-2"].companies_involved = ["GlobalCorp1"]
+
+        engine = FinalValidationEngine()
+        report = engine.validate_briefing(
+            payload=payload,
+            events_lookup=events_map,
+            articles_lookup=articles_map,
+            candidate_urls=cand_urls,
+        )
+
+        assert report.status == ValidationStatus.FAILED
+        assert report.failed_check_id == 10
+        assert "Duplicate company 'GlobalCorp1'" in (report.failure_reason or "")
+
     def test_check_11_and_12_fails_on_fabricated_number(self, valid_briefing_fixtures):
         """Test check 11 and 12 fail on invented financial number in headline."""
         payload, events_map, articles_map, cand_urls = valid_briefing_fixtures

@@ -412,7 +412,9 @@ class GeminiEditorialEngine:
         from app.models.entity_sanitizer import sanitize_company_entities
         seen_india_companies: Set[str] = set()
         for story in payload.india_stories:
-            scored = valid_events[story.event_id]
+            scored = valid_events.get(story.event_id)
+            if not scored:
+                continue
             raw_comps = scored.event.companies_involved or []
             companies = sanitize_company_entities(raw_comps, publisher=story.source)
             for comp in companies:
@@ -421,7 +423,31 @@ class GeminiEditorialEngine:
                     raise ValueError(f"India section selected duplicate company: '{comp}'")
                 seen_india_companies.add(norm)
 
-        # 3. Validate International Geopolitical Quantified Impact Gate
+        # 3. Validate International Same-Company Restriction
+        seen_intl_companies: Set[str] = set()
+        for story in payload.international_stories:
+            scored = valid_events.get(story.event_id)
+            if not scored:
+                continue
+            raw_comps = scored.event.companies_involved or []
+            companies = sanitize_company_entities(raw_comps, publisher=story.source)
+            for comp in companies:
+                norm = normalize_entity_name(comp)
+                if norm in seen_intl_companies and norm != "unspecified_entity":
+                    # Only reject if there were enough distinct companies available in candidate pool
+                    from app.models.enums import NewsCategory
+                    avail_intl = set()
+                    for s in valid_events.values():
+                        if getattr(s.event, "event_category", None) == NewsCategory.INTERNATIONAL:
+                            for rc in (getattr(s.event, "companies_involved", []) or []):
+                                n = normalize_entity_name(rc)
+                                if n not in ("unspecified_entity", ""):
+                                    avail_intl.add(n)
+                    if len(avail_intl) >= 5:
+                        raise ValueError(f"International section selected duplicate company: '{comp}'")
+                seen_intl_companies.add(norm)
+
+        # 4. Validate International Geopolitical Quantified Impact Gate
         from app.verification.international import is_geopolitical_market_impact_eligible
         for story in payload.international_stories:
             is_geo_elig, geo_reason = is_geopolitical_market_impact_eligible(story.headline)
@@ -572,10 +598,30 @@ class GeminiEditorialEngine:
                 selected_ids.add(e.id)
 
         intl_selected: List[Dict[str, str]] = []
-        for scored in ranked_pool.international_candidates[:5]:
+        seen_intl_comps: Set[str] = set()
+
+        for scored in ranked_pool.international_candidates:
+            if len(intl_selected) >= 5:
+                break
             e = scored.event
             art = articles_map.get(e.article_ids[0]) if e.article_ids else None
             source_name = art.source_name if art else "Reuters"
+
+            raw_comps = e.companies_involved or []
+            companies = sanitize_company_entities(raw_comps, publisher=source_name)
+
+            duplicate = False
+            for comp in companies:
+                norm = normalize_entity_name(comp)
+                if norm in seen_intl_comps and norm != "unspecified_entity":
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+
+            for comp in companies:
+                seen_intl_comps.add(normalize_entity_name(comp))
+
             url = art.url if art else f"https://example.com/intl-{e.id}"
             inst_headline = generate_grounded_fallback_headline(event=e, article=art)
             sum_text = generate_deterministic_summary(art, e, inst_headline)
@@ -588,6 +634,30 @@ class GeminiEditorialEngine:
                 "source": source_name,
                 "url": url,
             })
+
+        # Fill remaining slots if deduplication reduced count below 5
+        if len(intl_selected) < 5:
+            selected_ids = {s["event_id"] for s in intl_selected}
+            for scored in ranked_pool.international_candidates:
+                if len(intl_selected) >= 5:
+                    break
+                e = scored.event
+                if e.id in selected_ids:
+                    continue
+                art = articles_map.get(e.article_ids[0]) if e.article_ids else None
+                source_name = art.source_name if art else "Reuters"
+                url = art.url if art else f"https://example.com/intl-{e.id}"
+                inst_headline = generate_grounded_fallback_headline(event=e, article=art)
+                sum_text = generate_deterministic_summary(art, e, inst_headline)
+                intl_selected.append({
+                    "section": "international",
+                    "event_id": e.id,
+                    "headline": inst_headline,
+                    "summary": sum_text,
+                    "source": source_name,
+                    "url": url,
+                })
+                selected_ids.add(e.id)
 
         return json.dumps({
             "domestic_stories": domestic_selected[:5],

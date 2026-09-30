@@ -168,3 +168,54 @@ class TestCandidatePoolRanker:
 
         intl_scores = [c.investment_score for c in pool.international_candidates]
         assert intl_scores == sorted(intl_scores, reverse=True)
+
+    def test_international_ranking_prioritizes_distinct_companies(self):
+        """Test that top international candidates prioritize distinct companies over duplicate events."""
+        events: list[Event] = [
+            # Two events for Anthropic with high scores
+            Event(
+                canonical_title="Anthropic Leaders Control AI Lab for Public Good: Reuters",
+                description="Anthropic governance structure updated",
+                companies_involved=["Anthropic"],
+                financial_figures=["$18 billion"],
+                event_category=NewsCategory.INTERNATIONAL,
+                article_ids=["art-ant-1"],
+            ),
+            Event(
+                canonical_title="Anthropic Leaks $2 Trillion IPO Prospectus",
+                description="Anthropic IPO filing details disclosed",
+                companies_involved=["Anthropic"],
+                financial_figures=["$2 trillion"],
+                event_category=NewsCategory.INTERNATIONAL,
+                article_ids=["art-ant-2"],
+            ),
+            # Other distinct company events
+            Event(
+                canonical_title="Apple Unveils New $10 Billion AI Chip Investment",
+                description="Apple capital expenditure plan",
+                companies_involved=["Apple"],
+                financial_figures=["$10 billion"],
+                event_category=NewsCategory.INTERNATIONAL,
+                article_ids=["art-app-1"],
+            ),
+            Event(
+                canonical_title="Microsoft Signs $5 Billion Datacenter Power Deal",
+                description="Microsoft energy agreement",
+                companies_involved=["Microsoft"],
+                financial_figures=["$5 billion"],
+                event_category=NewsCategory.INTERNATIONAL,
+                article_ids=["art-msft-1"],
+            ),
+        ]
+
+        ranker = CandidatePoolRanker()
+        pool = ranker.rank_events(events=events, top_n=3)
+
+        # Top 3 should contain 3 distinct companies: Anthropic, Apple, Microsoft (not Anthropic twice!)
+        assert len(pool.international_candidates) == 3
+        top_companies = [c.event.companies_involved[0] for c in pool.international_candidates]
+        assert len(set(top_companies)) == 3
+        assert "Anthropic" in top_companies
+        assert "Apple" in top_companies
+        assert "Microsoft" in top_companies
+

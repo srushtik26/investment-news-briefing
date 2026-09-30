@@ -19,7 +19,7 @@ CRITICAL EDITORIAL RULES:
 1. OUTPUT JSON ONLY. Do not include markdown code fences, commentary, or text outside the JSON object.
 2. USE ONLY SUPPLIED EVENTS. Do not invent, hallucinate, or extrapolate facts or numbers.
 3. DO NOT INVENT OR MODIFY URLs. Every 'url' field MUST be copied EXACTLY as provided in the candidate list.
-4. DO NOT SELECT THE SAME COMPANY TWICE IN THE INDIA SECTION. Each India story must cover a distinct company.
+4. DO NOT SELECT THE SAME COMPANY TWICE IN EITHER THE INDIA OR INTERNATIONAL SECTION. Each story within a section must cover a distinct company.
 5. PREFER HARD BUSINESS EVENTS with quantified figures (earnings with numbers, M&A deal values, QIPs, major regulatory decisions).
 6. INSTITUTIONAL HEADLINE SYNTHESIS: Generate an investment-committee grade headline for each selected event.
    - HEADLINE STRUCTURE:

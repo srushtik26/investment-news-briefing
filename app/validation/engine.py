@@ -578,7 +578,7 @@ class FinalValidationEngine:
                 story.headline = _clean_headline_text(art.title)
 
         # -------------------------------------------------------------
-        # CHECK 10: No India company appears twice
+        # CHECK 10: No company appears twice in India or International sections
         # -------------------------------------------------------------
         from app.models.entity_sanitizer import sanitize_company_entities
         seen_india_comps: Set[str] = set()
@@ -597,6 +597,23 @@ class FinalValidationEngine:
                         failed_story_id=story.event_id,
                     ))
                 seen_india_comps.add(norm)
+
+        seen_intl_comps: Set[str] = set()
+        for story in payload.international_stories:
+            event = events_lookup.get(story.event_id)
+            raw_comps = event.companies_involved if event and event.companies_involved else []
+            companies = sanitize_company_entities(raw_comps, publisher=story.source)
+            for comp in companies:
+                norm = normalize_entity_name(comp)
+                if norm in seen_intl_comps and norm != "unspecified_entity":
+                    check_results.append(ValidationCheckResult(
+                        check_id=10,
+                        check_name="No International company appears twice",
+                        passed=False,
+                        failure_reason=f"Duplicate company '{comp}' selected twice in International section",
+                        failed_story_id=story.event_id,
+                    ))
+                seen_intl_comps.add(norm)
 
         # -------------------------------------------------------------
         # CHECK 8 (Section Ratio): MIN 3 two-source, MAX 2 single-source

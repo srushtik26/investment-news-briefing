@@ -89,6 +89,7 @@ def get_final_selectable_unique_events(
 
     selectable: List[Event] = []
     selected_india_companies: Set[str] = set()
+    selected_intl_companies: Set[str] = set()
     selected_portfolio_companies: Set[str] = set()
 
     # Pre-compute the dedup reject set once for O(1) per-candidate checks.
@@ -153,7 +154,17 @@ def get_final_selectable_unique_events(
             is_geo_elig, _ = is_geopolitical_market_impact_eligible(cand, cand_art)
             if not is_geo_elig:
                 continue
+
+            cand_entities = EventQueryBuilder.extract_entities(cand_art, event=cand)
+            clean_comps = sanitize_company_entities(
+                (cand.companies_involved or []) + cand_entities,
+                publisher=cand_art.source_name,
+            )
+            norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+            if norm_comps and norm_comps.intersection(selected_intl_companies):
+                continue
             selectable.append(cand)
+            selected_intl_companies.update(norm_comps)
         else:
             if category == NewsCategory.DOMESTIC:
                 from app.verification.domestic_trending import is_domestic_final_eligible, get_effective_domestic_max_age_hours

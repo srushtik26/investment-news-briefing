@@ -101,7 +101,35 @@ class CandidatePoolRanker:
         # Select top candidates for each section
         top_domestic = domestic_sorted[:top_n]
         top_india = india_sorted[:top_n]
-        top_intl = intl_sorted[:top_n]
+        # International: prioritize distinct companies in top pool
+        from app.deduplication.fingerprint import normalize_entity_name
+        top_intl: List[ScoredEvent] = []
+        seen_intl_comps: set = set()
+        deferred_intl: List[ScoredEvent] = []
+
+        for scored in intl_sorted:
+            ev = scored.event
+            raw_comps = getattr(ev, "companies_involved", []) or []
+            comp_norm = ""
+            for c in raw_comps:
+                norm = normalize_entity_name(c)
+                if norm not in ("unspecified_entity", "unspecified", "unknown", "none", ""):
+                    comp_norm = norm
+                    break
+            if comp_norm and comp_norm in seen_intl_comps:
+                deferred_intl.append(scored)
+            else:
+                if comp_norm:
+                    seen_intl_comps.add(comp_norm)
+                top_intl.append(scored)
+                if len(top_intl) >= top_n:
+                    break
+
+        if len(top_intl) < top_n:
+            for s in deferred_intl:
+                if len(top_intl) >= top_n:
+                    break
+                top_intl.append(s)
 
         # For India, ensure qualified portfolio candidates outside top_n are not crowded out
         top_india_ids = {id(s) for s in top_india}
