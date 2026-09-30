@@ -61,7 +61,7 @@ def calculate_semantic_token_overlap(
     headline: str,
     article_or_text: Any,
 ) -> Tuple[bool, int, Set[str]]:
-    """
+    r"""
     Evaluate semantic token overlap between headline and source article/text.
     Matches the exact tokenization rules of Stage 9 Check #6:
         headline_tokens = set(re.findall(r"\w{4,}", headline.lower()))

@@ -646,59 +646,16 @@ def run_post_dedup_refill(
                 dom_count += 1
                 valid_accepted_stories.append(s)
         elif cat_str == "india":
-            if ev is not None:
-                is_nex, reason = _v_nex_refill(ev, art)
-                if is_nex:
-                    india_count += 1
-                    valid_accepted_stories.append(s)
-                else:
-                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INDIA] Dropping non-eligible story '{s.get('headline')}' ({reason})")
-            else:
-                india_count += 1
-                valid_accepted_stories.append(s)
+            india_count += 1
+            valid_accepted_stories.append(s)
         elif cat_str == "international":
-            if ev is not None:
-                is_geo_ok, geo_reason = is_geopolitical_market_impact_eligible(ev, art)
-                eval_text = f"{(art.title if art else ev.canonical_title)} {(art.content_text or '')[:500] if art else ''}".lower()
-                is_noise = False
-                noise_reason = ""
-                for pat_name, pat_regex in st_rule_refill.REJECT_NOISE_PATTERNS:
-                    if re.search(pat_regex, eval_text, re.IGNORECASE):
-                        if pat_name in ("speculative_transaction", "speculative_deal_talks"):
-                            has_completed = bool(re.search(
-                                r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
-                                eval_text,
-                                re.IGNORECASE,
-                            ))
-                            if has_completed:
-                                continue
-                        is_noise = True
-                        noise_reason = f"Prohibited noise pattern '{pat_name}'"
-                        break
-                is_st_ok = True
-                st_rej = ""
-                if art and getattr(art, "category", None) == NewsCategory.DOMESTIC:
-                    st_res = st_rule_refill.evaluate(art)
-                    if not st_res.is_accepted:
-                        is_st_ok = False
-                        st_rej = st_res.rejection_reason or "Lacks concrete hard business event indicators"
-
-                is_nex, _ = _v_nex_refill(ev, art)
-
-                if not is_geo_ok:
-                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({geo_reason})")
-                elif is_noise:
-                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({noise_reason})")
-                elif not is_st_ok:
-                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({st_rej})")
-                elif is_nex:
-                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping story '{s.get('headline')}' due to Indian nexus")
-                else:
-                    intl_count += 1
-                    valid_accepted_stories.append(s)
-            else:
-                intl_count += 1
-                valid_accepted_stories.append(s)
+            if ev is not None and art is not None and getattr(art, "category", None) == NewsCategory.DOMESTIC:
+                st_res = st_rule_refill.evaluate(art)
+                if not st_res.is_accepted:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({st_res.rejection_reason})")
+                    continue
+            intl_count += 1
+            valid_accepted_stories.append(s)
         else:
             valid_accepted_stories.append(s)
 
