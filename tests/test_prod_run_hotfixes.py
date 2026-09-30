@@ -485,3 +485,122 @@ def test_india_recovery_passes_dynamic_horizon_and_processes_unseen_urls():
         assert kwargs.get("active_horizon") == 72.0, (
             f"Expected active_horizon=72.0 on Monday run, got {kwargs.get('active_horizon')}"
         )
+
+
+def test_us_geography_regex_and_nexus_reject():
+    """Verify headlines with U.S. or U.K. are identified as foreign geography and not misclassified with Indian nexus."""
+    from app.classification.region_classifier import verify_india_business_nexus
+    from app.models.event import Event
+    from app.models.article import Article
+
+    ev = Event(
+        canonical_title="83% of CFOs say U.S. stocks are overvalued, even as optimism about their compani",
+        description="A survey of CFOs regarding US stocks",
+        event_category=NewsCategory.INTERNATIONAL,
+    )
+    art = Article(
+        id="art-cfo-1",
+        title="83% of CFOs say U.S. stocks are overvalued, even as optimism about their compani",
+        url="https://economictimes.indiatimes.com/cfo-us-stocks",
+        published_at=datetime.now(timezone.utc),
+        content_text="83% of CFOs say U.S. stocks are overvalued. BSE and NSE market trading updates.",
+        source_name="Economic Times",
+    )
+    is_nexus, reason = verify_india_business_nexus(ev, art)
+    assert not is_nexus, f"Expected is_nexus=False for U.S. CFO article, got True ({reason})"
+    assert "foreign geography" in reason.lower()
+
+
+def test_run_post_dedup_refill_prunes_international_noise():
+    """Verify run_post_dedup_refill prunes non-business/weather disaster stories from accepted_stories."""
+    from unittest.mock import MagicMock
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import run_post_dedup_refill
+    from app.models.event import Event
+    from app.models.article import Article
+
+    ref_time = datetime(2026, 9, 30, 11, 0, 0, tzinfo=timezone.utc)
+    ctx = PipelineContext(run_reference_time=ref_time)
+    ctx.settings.DEDUP_LOOKBACK_DAYS = 3
+    ctx.log_exec = MagicMock()
+
+    ev_weather = Event(
+        canonical_title="27 killed, 4 missing in Nepal's latest weather disaster; scary visuals surface | World News",
+        description="Nepal weather disaster causes fatalities",
+        event_category=NewsCategory.INTERNATIONAL,
+    )
+    art_weather = Article(
+        id="art-weather-1",
+        title="27 killed, 4 missing in Nepal's latest weather disaster; scary visuals surface | World News",
+        url="https://hindustantimes.com/world-news/nepal-disaster",
+        published_at=ref_time,
+        content_text="27 killed, 4 missing in Nepal's latest weather disaster.",
+        source_name="Hindustan Times",
+        category=NewsCategory.DOMESTIC,
+    )
+    ev_weather.article_ids = [art_weather.id]
+    ctx.articles_lookup[art_weather.id] = art_weather
+
+    accepted_stories = [
+        {"event_id": ev_weather.id, "category": "international", "headline": ev_weather.canonical_title}
+    ]
+    event_by_id = {ev_weather.id: ev_weather}
+
+    # Should prune the weather disaster
+    valid_stories, _ = run_post_dedup_refill(ctx, accepted_stories, event_by_id)
+    assert len(valid_stories) == 0, f"Expected weather disaster to be pruned, got {valid_stories}"
+
+
+def test_get_final_selectable_unique_events_international_backfill():
+    """Verify get_final_selectable_unique_events filters noise and backfills from deferred duplicates if count < 5."""
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import get_final_selectable_unique_events
+    from app.models.event import Event
+    from app.models.article import Article
+
+    ref_time = datetime(2026, 9, 30, 11, 0, 0, tzinfo=timezone.utc)
+    ctx = PipelineContext(run_reference_time=ref_time)
+
+    # Event 1 & 2 share the same company "Google"
+    ev1 = Event(
+        canonical_title="Google acquires cybersecurity startup for $2B",
+        description="Google deal",
+        event_category=NewsCategory.INTERNATIONAL,
+        companies_involved=["Google"],
+    )
+    art1 = Article(
+        id="a1",
+        title="Google acquires cybersecurity startup for $2B",
+        url="https://techcrunch.com/google-acquires",
+        published_at=ref_time,
+        content_text="Google announced the $2B buyout.",
+        source_name="TechCrunch",
+    )
+    ev1.article_ids = [art1.id]
+    ctx.articles_lookup[art1.id] = art1
+
+    ev2 = Event(
+        canonical_title="Google unveils new quantum computing chip investing $5B capex",
+        description="Google quantum",
+        event_category=NewsCategory.INTERNATIONAL,
+        companies_involved=["Google"],
+    )
+    art2 = Article(
+        id="a2",
+        title="Google unveils new quantum computing chip investing $5B capex",
+        url="https://reuters.com/google-quantum",
+        published_at=ref_time,
+        content_text="Google plans $5B capex in quantum.",
+        source_name="Reuters",
+    )
+    ev2.article_ids = [art2.id]
+    ctx.articles_lookup[art2.id] = art2
+
+    ctx.verified_events = [ev1, ev2]
+    ctx.high_confidence_single_candidates = []
+
+    selectable = get_final_selectable_unique_events(ctx, category=NewsCategory.INTERNATIONAL)
+    # Both events should be kept because total international < 5, so ev2 is backfilled from deferred_intl
+    assert len(selectable) == 2
+    assert {e.id for e in selectable} == {ev1.id, ev2.id}
+

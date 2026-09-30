@@ -91,6 +91,7 @@ def get_final_selectable_unique_events(
     selected_india_companies: Set[str] = set()
     selected_intl_companies: Set[str] = set()
     selected_portfolio_companies: Set[str] = set()
+    deferred_intl: List[Event] = []
 
     # Pre-compute the dedup reject set once for O(1) per-candidate checks.
     _dedup_rejected: Set[str] = getattr(ctx, "dedup_rejected_event_ids", set())
@@ -155,6 +156,35 @@ def get_final_selectable_unique_events(
             if not is_geo_elig:
                 continue
 
+            from app.filtering.rules import StoryTypeFilterRule
+            st_rule = StoryTypeFilterRule()
+            eval_text = f"{(cand_art.title if cand_art else cand.canonical_title)} {(cand_art.content_text or '')[:500] if cand_art else ''}".lower()
+            is_noise = False
+            for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+                if re.search(pat_regex, eval_text, re.IGNORECASE):
+                    if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                        has_completed = bool(re.search(
+                            r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                            eval_text,
+                            re.IGNORECASE,
+                        ))
+                        if has_completed:
+                            continue
+                    is_noise = True
+                    break
+            if is_noise:
+                continue
+
+            if getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                st_res = st_rule.evaluate(cand_art)
+                if not st_res.is_accepted:
+                    continue
+
+            from app.classification.region_classifier import verify_india_business_nexus as _v_nex_intl
+            is_nex, _ = _v_nex_intl(cand, cand_art)
+            if is_nex:
+                continue
+
             cand_entities = EventQueryBuilder.extract_entities(cand_art, event=cand)
             clean_comps = sanitize_company_entities(
                 (cand.companies_involved or []) + cand_entities,
@@ -162,6 +192,7 @@ def get_final_selectable_unique_events(
             )
             norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
             if norm_comps and norm_comps.intersection(selected_intl_companies):
+                deferred_intl.append(cand)
                 continue
             selectable.append(cand)
             selected_intl_companies.update(norm_comps)
@@ -180,6 +211,15 @@ def get_final_selectable_unique_events(
                 if not is_elig or dom_score < 60.0:
                     continue
             selectable.append(cand)
+
+    if category is None or category == NewsCategory.INTERNATIONAL:
+        intl_count = len([e for e in selectable if e.event_category == NewsCategory.INTERNATIONAL])
+        if intl_count < 5:
+            for def_cand in deferred_intl:
+                if intl_count >= 5:
+                    break
+                selectable.append(def_cand)
+                intl_count += 1
 
     return selectable
 
@@ -450,6 +490,33 @@ def check_refill_candidate_safety(
             ctx.dedup_rejected_event_ids.add(ev.id)
             return False, f"GEOPOLITICAL_UNQUANTIFIED ({geo_reason})"
 
+        if sec_str == "international":
+            from app.filtering.rules import StoryTypeFilterRule
+            st_rule = StoryTypeFilterRule()
+            eval_text = f"{(cand_art.title if cand_art else ev.canonical_title)} {(cand_art.content_text or '')[:500] if cand_art else ''}".lower()
+            for pat_name, pat_regex in st_rule.REJECT_NOISE_PATTERNS:
+                if re.search(pat_regex, eval_text, re.IGNORECASE):
+                    if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                        has_completed = bool(re.search(
+                            r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                            eval_text,
+                            re.IGNORECASE,
+                        ))
+                        if has_completed:
+                            continue
+                    ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False, f"INTERNATIONAL_NOISE ({pat_name})"
+            if cand_art and getattr(cand_art, "category", None) == NewsCategory.DOMESTIC:
+                st_res = st_rule.evaluate(cand_art)
+                if not st_res.is_accepted:
+                    ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False, f"INTERNATIONAL_NON_BUSINESS ({st_res.rejection_reason})"
+            from app.classification.region_classifier import verify_india_business_nexus as _v_nex_intl
+            is_nex, _ = _v_nex_intl(ev, cand_art)
+            if is_nex:
+                ctx.dedup_rejected_event_ids.add(ev.id)
+                return False, "INTERNATIONAL_HAS_INDIA_NEXUS"
+
     # 4. India one-story-per-company and portfolio diversity rule
     if sec_str == "india":
         from app.ranking.watchlist import is_watchlist_company
@@ -546,20 +613,27 @@ def run_post_dedup_refill(
     5. Fallback ladder (36h -> 48h -> 72h) only if still necessary
     """
     from app.verification import MAX_CORROBORATION_SEARCHES_PER_RUN, get_corroboration_count, increment_corroboration_count
-    from app.filtering.rules import URLFilterRule
+    from app.filtering.rules import URLFilterRule, StoryTypeFilterRule
     from app.pipeline.candidate_processing import process_candidate_item
     from app.pipeline.fallback_manager import reconsider_date_deferred_candidates
-
     from app.verification.domestic_trending import is_domestic_final_eligible
+    from app.verification.international import is_geopolitical_market_impact_eligible
+    from app.classification.region_classifier import verify_india_business_nexus as _v_nex_refill
+
+    st_rule_refill = StoryTypeFilterRule()
     dom_count = 0
+    india_count = 0
+    intl_count = 0
     valid_accepted_stories = []
+
     for s in accepted_stories:
         cat = s.get("category")
         cat_str = cat.value if hasattr(cat, "value") else str(cat).lower()
+        ev = event_by_id.get(s.get("event_id")) if event_by_id else None
+        art = ctx.articles_lookup.get(ev.article_ids[0]) if (ev and getattr(ctx, "articles_lookup", None) and ev.article_ids) else None
+
         if cat_str == "domestic":
-            ev = event_by_id.get(s.get("event_id")) if event_by_id else None
             if ev is not None:
-                art = ctx.articles_lookup.get(ev.article_ids[0]) if (getattr(ctx, "articles_lookup", None) and ev.article_ids) else None
                 is_elig, score, reason = is_domestic_final_eligible(
                     ev, art, now_utc=ctx.run_reference_time, max_age_hours=72.0, evaluator=getattr(ctx, "domestic_evaluator", None)
                 )
@@ -571,12 +645,64 @@ def run_post_dedup_refill(
             else:
                 dom_count += 1
                 valid_accepted_stories.append(s)
+        elif cat_str == "india":
+            if ev is not None:
+                is_nex, reason = _v_nex_refill(ev, art)
+                if is_nex:
+                    india_count += 1
+                    valid_accepted_stories.append(s)
+                else:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INDIA] Dropping non-eligible story '{s.get('headline')}' ({reason})")
+            else:
+                india_count += 1
+                valid_accepted_stories.append(s)
+        elif cat_str == "international":
+            if ev is not None:
+                is_geo_ok, geo_reason = is_geopolitical_market_impact_eligible(ev, art)
+                eval_text = f"{(art.title if art else ev.canonical_title)} {(art.content_text or '')[:500] if art else ''}".lower()
+                is_noise = False
+                noise_reason = ""
+                for pat_name, pat_regex in st_rule_refill.REJECT_NOISE_PATTERNS:
+                    if re.search(pat_regex, eval_text, re.IGNORECASE):
+                        if pat_name in ("speculative_transaction", "speculative_deal_talks"):
+                            has_completed = bool(re.search(
+                                r"\b(block deal|bulk deal|equity changes hands|net profit|revenue rises|revenue jumps|revenue falls|profit rises|profit falls|q[1-4] profit|q[1-4] net profit|earnings beat|earnings miss|beats? (?:quarterly |q[1-4] |earnings |wall street )?estimates|hikes? (?:its )?(?:full.year )?outlook|agrees to buy|signed definitive agreement|all-cash deal|nclt scheme|bags (?:mega )?order|secures contract|issues bonds|files for ipo|share buyback|dividend|quarterly results|annual results)\b",
+                                eval_text,
+                                re.IGNORECASE,
+                            ))
+                            if has_completed:
+                                continue
+                        is_noise = True
+                        noise_reason = f"Prohibited noise pattern '{pat_name}'"
+                        break
+                is_st_ok = True
+                st_rej = ""
+                if art and getattr(art, "category", None) == NewsCategory.DOMESTIC:
+                    st_res = st_rule_refill.evaluate(art)
+                    if not st_res.is_accepted:
+                        is_st_ok = False
+                        st_rej = st_res.rejection_reason or "Lacks concrete hard business event indicators"
+
+                is_nex, _ = _v_nex_refill(ev, art)
+
+                if not is_geo_ok:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({geo_reason})")
+                elif is_noise:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({noise_reason})")
+                elif not is_st_ok:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping non-eligible story '{s.get('headline')}' ({st_rej})")
+                elif is_nex:
+                    ctx.log_exec(f"[POST_DEDUP_PRUNE_INTERNATIONAL] Dropping story '{s.get('headline')}' due to Indian nexus")
+                else:
+                    intl_count += 1
+                    valid_accepted_stories.append(s)
+            else:
+                intl_count += 1
+                valid_accepted_stories.append(s)
         else:
             valid_accepted_stories.append(s)
-    accepted_stories = valid_accepted_stories
 
-    india_count = len([s for s in accepted_stories if (s.get("category").value if hasattr(s.get("category"), "value") else str(s.get("category")).lower()) == "india"])
-    intl_count = len([s for s in accepted_stories if (s.get("category").value if hasattr(s.get("category"), "value") else str(s.get("category")).lower()) == "international"])
+    accepted_stories = valid_accepted_stories
 
     if dom_count >= 5 and india_count >= 5 and intl_count >= 5:
         ctx.log_exec(f"[POST_DEDUP_REFILL] All sections sufficient (Dom={dom_count}/5, India={india_count}/5, Intl={intl_count}/5). No refill needed.")
@@ -667,7 +793,7 @@ def run_post_dedup_refill(
 
         # Priority 4: Free RSS Final-Mile Search if still deficient
         if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
-            rem_rss = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            rem_rss = max(5, MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count())
             if rem_rss > 0:
                 from urllib.parse import urlparse
                 ctx.log_exec(f"[POST_DEDUP_REFILL] Deficient {sec_str.upper()} still needs {needed}. Running targeted RSS search (budget rem: {rem_rss})...")
@@ -727,18 +853,20 @@ def run_post_dedup_refill(
                     SOURCE_GROUP = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
                     country = "US"
 
+                refill_searches_run = 0
                 for item in TEMPLATES:
                     if isinstance(item, tuple):
                         is_pf_query, grp_name, tmpl = item
                     else:
                         is_pf_query, grp_name, tmpl = False, "", item
-                    if needed <= 0 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                    if needed <= 0 or refill_searches_run >= rem_rss:
                         break
                     query = f"{tmpl} {SOURCE_GROUP}"
                     if is_pf_query:
                         ctx.log_exec(f'[PORTFOLIO_DISCOVERY_QUERY] group={grp_name} query="{query}"')
                         ctx.portfolio_discovery_executed = True
                     items = ctx.discovery_service.provider.discover(query=query, country=country, max_results=10)
+                    refill_searches_run += 1
                     increment_corroboration_count(1)
                     ctx.corroboration_searches += 1
                     for it in items:
@@ -2723,7 +2851,7 @@ def run_ranking_and_selection(
 
         # 5. Bounded secondary discovery via existing search infrastructure
         if (needed > 0 or len(ctx.intl_reserve_pool) < 3) and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
-            rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            rem_budget = max(5, MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count())
             if rem_budget > 0:
                 ctx.log_exec(f"[INTERNATIONAL_RECOVERY] Search discovery for {needed} missing stories (budget rem: {rem_budget})")
                 is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
@@ -2742,11 +2870,13 @@ def run_ranking_and_selection(
                 ]
                 INTL_RECOVERY_SOURCES = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
 
+                recovery_searches_run = 0
                 for qry in INTL_RECOVERY_QUERIES:
-                    if (needed <= 0 and len(ctx.intl_reserve_pool) >= 3) or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                    if (needed <= 0 and len(ctx.intl_reserve_pool) >= 3) or recovery_searches_run >= rem_budget:
                         break
                     full_query = f"{qry} {INTL_RECOVERY_SOURCES}"
                     items = ctx.discovery_service.provider.discover(query=full_query, country="US", max_results=10)
+                    recovery_searches_run += 1
                     increment_corroboration_count(1)
                     ctx.corroboration_searches += 1
                     for it in items:
