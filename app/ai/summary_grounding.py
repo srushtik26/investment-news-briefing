@@ -377,7 +377,8 @@ def build_descriptive_investment_summary(
     2. What is the scale/magnitude? (using only verified facts, zero invented numbers)
     3. Why does it matter for the company, sector, market, or investor?
     """
-    from app.models.entity_sanitizer import GENERIC_STANDALONE_ENTITY_BLACKLIST
+    from app.models.entity_sanitizer import GENERIC_STANDALONE_ENTITY_BLACKLIST, clean_company_name
+    from app.ai.headline_synthesis import _is_valid_named_entity
 
     clean_h = headline.strip().rstrip(" .!?:;-—")
 
@@ -404,9 +405,10 @@ def build_descriptive_investment_summary(
                 companies = [comp_match.group(1).strip()]
 
     clean_comps = [
-        c for c in companies
-        if c.lower() not in GENERIC_STANDALONE_ENTITY_BLACKLIST
-        and not any(c.lower().startswith(b + " ") for b in GENERIC_STANDALONE_ENTITY_BLACKLIST)
+        cleaned
+        for c in companies
+        if (cleaned := clean_company_name(c)) is not None
+        and _is_valid_named_entity(cleaned)
     ]
     primary_comp = clean_comps[0] if clean_comps else "The company"
     target_comp = clean_comps[1] if len(clean_comps) > 1 else None
@@ -634,27 +636,59 @@ def build_descriptive_investment_summary(
         s3 = "The contract win expands the company's executable order backlog, bolstering multi-year revenue predictability and solidifying competitive market standing."
         return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
 
+
     # =========================================================================
-    # ARCHETYPE 6: Default General Business Development
-    action_match = re.search(r"\b(launches?|unveils?|partners?|collaborates?|expands?|restructures?|initiates?|approves?|finalizes?|targets?)\b", clean_h, re.IGNORECASE)
+    # ARCHETYPE 6: Default — try article body first, then simple factual sentence
+    # =========================================================================
+    # Step 1: Try to pull 1-2 clean factual sentences from article body
+    if article and article.content_text:
+        raw_body = article.content_text.strip()
+        # Split into sentences
+        body_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw_body) if len(s.strip().split()) >= 8]
+        for s in body_sentences[:8]:
+            s_low = s.lower()
+            # Skip boilerplate / nav / UI noise
+            if any(b in s_low for b in BOILERPLATE_PHRASES):
+                continue
+            words = s.split()
+            if len(words) < 8 or len(words) > 65:
+                continue
+            last_word = re.sub(r"[^\w]", "", words[-1]).lower()
+            if last_word in INCOMPLETE_ENDINGS:
+                continue
+            # Must be reasonably grounded to the headline
+            is_ok, _ = validate_summary_grounding(s, clean_h, event=event, article=article)
+            if not is_ok:
+                continue
+            if is_summary_substantially_identical_to_headline(s, clean_h):
+                continue
+            if not s.endswith((".", "!", "?")):
+                s += "."
+            clamped = clamp_summary_length(s, max_words=65)
+            if len(clamped.split()) >= 20:
+                return clamped
+
+    # Step 2: Build a plain factual sentence from the headline itself (no corporate boilerplate)
+    action_match = re.search(r"\b(launches?|unveils?|partners?|collaborates?|expands?|restructures?|initiates?|approves?|finalizes?|targets?|announces?|reports?|posts?|files?|acquires?|merges?|raises?|secures?|wins?|bags?|cuts?|hikes?)\b", clean_h, re.IGNORECASE)
     action_verb = action_match.group(1).lower() if action_match else "announced"
 
-    if action_verb in ("launches", "unveils", "initiates"):
+    if clean_comps and action_verb in ("launches", "unveils", "initiates"):
         s1 = f"{primary_comp} rolled out a key commercial initiative to expand market presence across core operational segments."
-    elif action_verb in ("partners", "collaborates"):
+    elif clean_comps and action_verb in ("partners", "collaborates"):
         s1 = f"{primary_comp} entered a strategic commercial collaboration to accelerate industry execution and technology deployment."
-    elif action_verb in ("restructures", "approves", "finalizes"):
+    elif clean_comps and action_verb in ("restructures", "approves", "finalizes"):
         s1 = f"{primary_comp} concluded a major operational restructuring to optimize execution efficiency across target business lines."
     else:
-        s1 = f"{primary_comp} advanced a strategic operational initiative to strengthen market execution across key commercial sectors."
+        # Use the headline as a plain factual sentence instead of corporate boilerplate
+        plain = clean_h.rstrip(".!?:;-\u2014") + "."
+        s1 = plain
 
     if extracted_figures:
-        s2 = f"The development establishes dedicated operating commitments involving {', '.join(extracted_figures[:2])} to support commercial delivery."
+        s2 = f"The development involves {', '.join(extracted_figures[:2])} and carries significant implications for sector participants and institutional investors."
     else:
-        s2 = "The operational initiative coordinates internal resources to accelerate product delivery and scale core business performance."
+        s2 = "The development is expected to have meaningful implications for market participants and sector dynamics."
 
-    s3 = "The corporate action provides institutional investors clarity on strategic execution, competitive differentiation, and long-term market positioning."
-    return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+    return clamp_summary_length(f"{s1} {s2}", max_words=65)
 
 
 def build_structured_fallback_summary(

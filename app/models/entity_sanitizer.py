@@ -37,6 +37,8 @@ GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
     "gdr", "gdrs", "etf", "etfs", "mutual fund", "mutual funds", "m&a", "pe", "vc",
     "bonds", "bond", "debenture", "debentures", "equity", "debt", "nclt",
     "ipo market", "stock market", "share market",
+    "attacks", "attack", "opposition", "march", "elections", "election", "voters",
+    "scientists", "weather", "army", "navy", "air force", "police", "judiciary",
 }
 
 
@@ -116,6 +118,9 @@ DATE_AND_METRIC_PATTERNS = [
     r"^(?:fy\s*\d{2,4}|q[1-4](?:\s*fy\s*\d{2,4})?)$",
     # Pure numbers, decimals, percentages or currencies: '1.06', '₹84.5 crore', '$100 million', '25%'
     r"^(?:₹|\$|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:%|crore|cr|billion|million|lakh|pct)?$",
+    # Tenors, maturities, yield basis points: '25-yr', '10-year', '30-year', '5-year', '100 bps'
+    r"^\d+(?:\.\d+)?\s*-(?:yr|year|years|month|months|day|days|week|weeks|hour|hours|bps)$",
+    r"^\d+(?:\.\d+)?\s*(?:yr|year|years|month|months|day|days|week|weeks|bps|basis points)$",
     # Standalone financial words
     r"^(?:net profit|revenue|quarterly profit|standalone profit|profit|net loss|ebitda|operating income|sales|pat|pbt)$",
 ]

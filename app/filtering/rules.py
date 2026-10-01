@@ -676,7 +676,13 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "ipo_intraday",
-            r"\b(day [123] subscription|subscribed \d+(\.\d+)?x on day|ipo subscription status|ipo bidding status|ipo day [123] update)\b",
+            r"(?:\b(day [123] subscription|subscribed \d+(\.\d+)?x on day|ipo subscription status|ipo bidding status|ipo day [123] update"
+            r"|ipo day [123]:|day [123]:\s*check gmp"
+            r"|check gmp[,\s].*subscription status"
+            r"|gmp[,\s].*subscription status"
+            r"|ipo allotment status|ipo allotment date"
+            r"|grey market premium.*ipo|ipo.*grey market premium"
+            r"|ipo.*gmp today|gmp today.*ipo)\b|\b(?:should you subscribe|should you bid)\b)",
         ),
     ]
 
