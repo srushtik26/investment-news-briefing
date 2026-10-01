@@ -117,6 +117,7 @@ def run_pipeline(
     run_reference_time = run_reference_time or datetime.now(timezone.utc)
     from config import get_target_date_ist, is_testing_or_dry_run
     target_date = target_date or get_target_date_ist(run_reference_time)
+    target_briefing_date = target_date
     date_str = target_date.strftime("%Y-%m-%d")
 
     execution_log_lines: List[str] = []
