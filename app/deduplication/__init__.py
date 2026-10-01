@@ -9,6 +9,7 @@ from app.deduplication.engine import DeduplicationEngine
 from app.deduplication.fingerprint import (
     are_articles_same_event,
     generate_event_fingerprint,
+    is_event_historical_repeat,
     normalize_entity_name,
     normalize_metric_facts,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "HistoryStore",
     "are_articles_same_event",
     "generate_event_fingerprint",
+    "is_event_historical_repeat",
     "normalize_entity_name",
     "normalize_metric_facts",
 ]

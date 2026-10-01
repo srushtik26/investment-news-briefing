@@ -9,7 +9,7 @@ import os
 import time
 from datetime import datetime, date, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 from config import get_settings
 from app.logging_config import setup_logging, get_logger
@@ -33,7 +33,7 @@ from app.verification import (
     PORTFOLIO_RESERVED_RSS_SEARCHES,
 )
 from app.deduplication import DeduplicationEngine, HistoryStore
-from app.deduplication.fingerprint import generate_event_fingerprint
+from app.deduplication.fingerprint import generate_event_fingerprint, is_event_historical_repeat
 from app.deduplication.clusterer import EventClusterer
 from app.ranking import CandidatePoolRanker, ArticlePreRanker
 from app.ranking.scorer import InvestmentRelevanceScorer
@@ -375,6 +375,7 @@ def run_pipeline(
         for event in raw_events:
             companies: Set[str] = set()
             facts: Set[str] = set(event.financial_figures)
+            event_types: List[str] = []
             for aid in event.article_ids:
                 if aid in class_map:
                     c = class_map[aid]
@@ -384,8 +385,14 @@ def run_pipeline(
                         facts.update(c.financial_numbers)
                     if c.percentages:
                         facts.update(c.percentages)
+                    if getattr(c, "event_types", None):
+                        event_types.extend(c.event_types)
             event.companies_involved = sorted(list(companies))
             event.financial_figures = sorted(list(facts))[:5]
+            if event_types:
+                if event.metadata is None:
+                    event.metadata = {}
+                event.metadata["event_type"] = event_types[0]
             primary_art = ctx.articles_lookup.get(event.article_ids[0])
             if primary_art:
                 event.event_category = reg_clf.classify_event(event, [primary_art])
@@ -713,6 +720,20 @@ def run_pipeline(
             for res_ev in reserves_to_try:
                 if not isinstance(res_ev, Event) or res_ev.id in cur_india_ids or res_ev.event_category != NewsCategory.INDIA:
                     continue
+                if hasattr(ctx, "dedup_rejected_event_ids") and res_ev.id in ctx.dedup_rejected_event_ids:
+                    continue
+                if history_store:
+                    is_rep, _ = is_event_historical_repeat(
+                        event=res_ev,
+                        history_store=history_store,
+                        target_date=target_briefing_date,
+                        lookback_days=3,
+                        headline=res_ev.canonical_title,
+                    )
+                    if is_rep:
+                        if hasattr(ctx, "dedup_rejected_event_ids"):
+                            ctx.dedup_rejected_event_ids.add(res_ev.id)
+                        continue
                 res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
                 if not res_art:
                     continue
@@ -756,6 +777,125 @@ def run_pipeline(
                     story_list[idx] = prepare_final_story(
                         sc, ctx=ctx, preferred_headline=story.headline, preferred_summary=story.summary
                     )
+
+        # =========================================================================
+        # STAGE 8.5: Autonomous Deduplication Self-Healing Guard
+        # Pre-emptively replaces any 3-day historical duplicate stories in selection_payload
+        # with qualified clean reserve candidates before Stage 9 Final Validation.
+        # =========================================================================
+        if history_store:
+            sections_to_check = [
+                ("domestic", selection_payload.domestic_stories, NewsCategory.DOMESTIC),
+                ("india", selection_payload.india_stories, NewsCategory.INDIA),
+                ("international", selection_payload.international_stories, NewsCategory.INTERNATIONAL),
+            ]
+
+            used_event_ids: Set[str] = {
+                s.event_id for s in (
+                    (selection_payload.domestic_stories or [])
+                    + (selection_payload.india_stories or [])
+                    + (selection_payload.international_stories or [])
+                ) if s and s.event_id
+            }
+
+            for sec_name, story_list, sec_cat in sections_to_check:
+                if not story_list:
+                    continue
+                for idx, story in enumerate(story_list):
+                    ev = event_by_id.get(story.event_id)
+                    if not ev:
+                        continue
+                    is_rep, rep_reason = is_event_historical_repeat(
+                        event=ev,
+                        history_store=history_store,
+                        target_date=target_briefing_date,
+                        lookback_days=3,
+                        headline=story.headline,
+                    )
+                    if not is_rep:
+                        continue
+
+                    log_exec(
+                        f"[STAGE8_DEDUP_SELF_HEALING] Story in {sec_name} '{story.headline}' (event_id={ev.id}) "
+                        f"is a 3-day historical repeat ({rep_reason}). Seeking qualified reserve replacement..."
+                    )
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+
+                    if sec_cat == NewsCategory.DOMESTIC:
+                        raw_cands = [s.event for s in (getattr(candidate_pool, "domestic_candidates", []) or [])]
+                    elif sec_cat == NewsCategory.INDIA:
+                        raw_cands = (
+                            (getattr(ctx, "india_reserve_pool", []) or [])
+                            + [s.event for s in (getattr(candidate_pool, "india_candidates", []) or [])]
+                        )
+                    else:
+                        raw_cands = [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
+                    raw_cands = raw_cands + (ctx.verified_events or [])
+
+                    cur_india_comps: Set[str] = set()
+                    if sec_cat == NewsCategory.INDIA:
+                        for s_other in story_list:
+                            if s_other.event_id != ev.id:
+                                o_ev = event_by_id.get(s_other.event_id)
+                                if o_ev and o_ev.companies_involved:
+                                    cur_india_comps.add(o_ev.companies_involved[0].lower().strip())
+
+                    for res_ev in raw_cands:
+                        if not isinstance(res_ev, Event) or res_ev.id in used_event_ids:
+                            continue
+                        if res_ev.event_category != sec_cat:
+                            continue
+                        if hasattr(ctx, "dedup_rejected_event_ids") and res_ev.id in ctx.dedup_rejected_event_ids:
+                            continue
+
+                        if sec_cat == NewsCategory.INDIA and res_ev.companies_involved:
+                            comp_name = res_ev.companies_involved[0].lower().strip()
+                            if comp_name in cur_india_comps:
+                                continue
+
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=res_ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=res_ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(res_ev.id)
+                            continue
+
+                        res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
+                        if not res_art:
+                            continue
+
+                        if sec_cat == NewsCategory.INDIA:
+                            is_nex, _ = verify_india_business_nexus(res_ev, res_art)
+                            if not is_nex:
+                                continue
+                            is_g_ok, _ = is_geopolitical_market_impact_eligible(res_ev.canonical_title, res_art)
+                            if not is_g_ok:
+                                continue
+
+                        tier = getattr(res_ev, "verification_tier", None)
+                        if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+                            continue
+
+                        sc = build_story_context(res_ev, res_art, ctx=ctx)
+                        if not sc:
+                            continue
+
+                        replacement_story = prepare_final_story(sc, ctx=ctx)
+                        used_event_ids.discard(ev.id)
+                        used_event_ids.add(res_ev.id)
+                        event_by_id[res_ev.id] = res_ev
+                        story_list[idx] = replacement_story
+                        log_exec(
+                            f"[STAGE8_DEDUP_SELF_HEALING] Successfully swapped duplicate '{story.headline}' "
+                            f"with qualified reserve '{replacement_story.headline}' (event_id={res_ev.id})"
+                        )
+                        break
 
         # Count PORTFOLIO_SELECTED from actual final India selections using canonical PortfolioMatch
         from app.ranking.watchlist import match_portfolio_company
@@ -895,11 +1035,12 @@ def run_pipeline(
                 for s in all_final:
                     ev = event_by_id.get(s.event_id)
                     comp = ev.companies_involved[0] if (ev and ev.companies_involved) else "unspecified"
-                    ev_type = getattr(ev, "event_type", None) or "general"
+                    ev_type = (ev.metadata or {}).get("event_type") if (ev and ev.metadata) else getattr(ev, "event_type", None) or "general"
                     fp_key, _ = generate_event_fingerprint(
                         company=comp,
                         event_type=ev_type,
                         key_facts=ev.financial_figures if ev else None,
+                        event_date=target_briefing_date,
                     )
                     history_stories.append({
                         "event_id":          s.event_id,

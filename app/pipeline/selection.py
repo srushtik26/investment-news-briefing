@@ -32,7 +32,7 @@ from app.logging_config import get_logger
 
 logger = get_logger("pipeline.selection")
 from app.models.entity_sanitizer import sanitize_company_entities
-from app.deduplication.fingerprint import normalize_entity_name
+from app.deduplication.fingerprint import is_event_historical_repeat, normalize_entity_name
 from app.ranking.models import ScoredEvent, ScoreBreakdown
 from app.ranking.topic_classifier import classify_topic_bucket, audit_topic_distribution
 from app.ranking.sorter import (
@@ -437,7 +437,7 @@ def check_refill_candidate_safety(
     ctx.refill_attempted_event_ids.add(ev.id)
 
     # 1. 3_DAY_HISTORY Deduplication
-    if ctx.dedup_engine:
+    if ctx.dedup_engine and cand_story:
         acc, _ = ctx.dedup_engine.filter_stories(
             candidate_stories=[cand_story],
             target_date=target_date,
@@ -446,6 +446,19 @@ def check_refill_candidate_safety(
         if not acc:
             ctx.dedup_rejected_event_ids.add(ev.id)
             return False, "3_DAY_HISTORY"
+
+    if ctx.history_store:
+        cand_hl = cand_story.get("headline") if isinstance(cand_story, dict) else getattr(cand_story, "headline", None) if cand_story else None
+        is_rep, rep_reason = is_event_historical_repeat(
+            event=ev,
+            history_store=ctx.history_store,
+            target_date=target_date,
+            lookback_days=lookback_days,
+            headline=cand_hl,
+        )
+        if is_rep:
+            ctx.dedup_rejected_event_ids.add(ev.id)
+            return False, f"3_DAY_HISTORY: {rep_reason}"
 
     # 2. Semantic same-event check against ALL accepted stories (intra-section AND cross-section)
     cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None

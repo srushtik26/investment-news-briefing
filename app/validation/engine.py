@@ -34,7 +34,7 @@ from app.models.article import Article
 from app.models.event import Event
 from app.models.enums import NewsCategory
 from app.ai.models import BriefingEditorialPayload, EditorialStorySelection
-from app.deduplication.fingerprint import generate_event_fingerprint, normalize_entity_name
+from app.deduplication.fingerprint import generate_event_fingerprint, is_event_historical_repeat, normalize_entity_name
 from app.deduplication.history import HistoryStore
 from app.filtering.rules import DateFilterRule, StoryTypeFilterRule, URLFilterRule
 from app.validation.models import (
@@ -384,20 +384,19 @@ class FinalValidationEngine:
             # CHECK 9: No event appeared in previous 3 days
             # -------------------------------------------------------------
             if event and self.history_store:
-                comp = event.companies_involved[0] if event.companies_involved else "unspecified"
-                ev_type = getattr(event, "event_type", None) or "general"
-                fkey, fhash = generate_event_fingerprint(
-                    company=comp,
-                    event_type=ev_type,
-                    key_facts=event.financial_figures,
+                is_rep, rep_reason = is_event_historical_repeat(
+                    event=event,
+                    history_store=self.history_store,
+                    target_date=eval_date,
+                    lookback_days=3,
+                    headline=story.headline,
                 )
-                recent_fps = self.history_store.get_recent_fingerprints(target_date=eval_date, lookback_days=3)
-                if fhash in recent_fps or fkey in recent_fps or (event.canonical_title and event.canonical_title in recent_fps):
+                if is_rep:
                     check_results.append(ValidationCheckResult(
                         check_id=9,
                         check_name="No event appeared in previous 3 days",
                         passed=False,
-                        failure_reason=f"Event fingerprint already appeared in briefing within previous 3 days",
+                        failure_reason=rep_reason or "Event fingerprint already appeared in briefing within previous 3 days",
                         failed_story_id=story.event_id,
                     ))
 

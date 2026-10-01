@@ -96,16 +96,32 @@ class DeduplicationEngine:
 
             # CHECK 1: Previous 3-Day History Lookback
             is_history_repeat = False
-            from app.deduplication.fingerprint import strip_date_from_fingerprint
+            from app.deduplication.fingerprint import strip_date_from_fingerprint, normalize_event_type
+            import hashlib
             stable_fp = strip_date_from_fingerprint(fp_key)
-            if (
-                fp_key in historical_fps
-                or fp_hash in historical_fps
-                or (stable_fp and stable_fp in historical_fps)
-                or story.get("headline") in historical_fps
-            ):
+            types_to_try = {normalize_event_type(event_type), "general", "other"}
+            for t in types_to_try:
+                t_key, t_hash = generate_event_fingerprint(
+                    company=company,
+                    event_type=t,
+                    event_date=current_date,
+                    key_facts=key_facts,
+                )
+                t_stable = strip_date_from_fingerprint(t_key)
+                t_stable_hash = hashlib.sha256(t_stable.encode("utf-8")).hexdigest() if t_stable else ""
+                if (
+                    t_key in historical_fps
+                    or t_hash in historical_fps
+                    or (t_stable and t_stable in historical_fps)
+                    or (t_stable_hash and t_stable_hash in historical_fps)
+                ):
+                    is_history_repeat = True
+                    history_reason = f"Event already appeared in briefing within previous {lookback_days} days ({t_key})"
+                    break
+
+            if not is_history_repeat and story.get("headline") in historical_fps:
                 is_history_repeat = True
-                history_reason = f"Event already appeared in briefing within previous {lookback_days} days ({fp_key})"
+                history_reason = f"Event already appeared in briefing within previous {lookback_days} days ({story.get('headline')})"
             else:
                 # Semantic check against recent stories (catches same event reported by another publisher)
                 cand_head = story.get("headline", "")

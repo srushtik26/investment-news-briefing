@@ -86,6 +86,18 @@ class HistoryStore:
             with conn:
                 conn.execute(
                     """
+                    DELETE FROM historical_stories WHERE briefing_id IN (
+                        SELECT id FROM briefing_history WHERE briefing_date = ?
+                    ) OR published_date = ?
+                    """,
+                    (date_str, date_str),
+                )
+                conn.execute(
+                    "DELETE FROM briefing_history WHERE briefing_date = ?",
+                    (date_str,),
+                )
+                conn.execute(
+                    """
                     INSERT INTO briefing_history (id, briefing_date, status, story_count, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
@@ -131,6 +143,7 @@ class HistoryStore:
         self,
         lookback_days: int = 3,
         target_date: Optional[date] = None,
+        include_target_date: bool = True,
     ) -> List[dict]:
         """
         Fetch all historical stories recorded in the previous N days.
@@ -142,12 +155,13 @@ class HistoryStore:
         end_str = current_date.isoformat()
 
         conn, should_close = self._get_active_conn()
+        operator = "<=" if include_target_date else "<"
         try:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT id, event_id, event_fingerprint, headline, company_name, category, published_date
                 FROM historical_stories
-                WHERE published_date >= ? AND published_date <= ?
+                WHERE published_date >= ? AND published_date {operator} ?
                 """,
                 (start_str, end_str),
             )
@@ -174,11 +188,12 @@ class HistoryStore:
         target_date: Optional[date] = None,
         reference_date: Optional[date] = None,
         days: Optional[int] = None,
+        include_target_date: bool = True,
     ) -> Set[str]:
         """
         Fetch all event fingerprints and headlines recorded in the previous N days.
 
-        Lookback window: [target_date - lookback_days, target_date]
+        Lookback window: [target_date - lookback_days, target_date) (or <= if include_target_date)
         """
         effective_days = days if days is not None else lookback_days
         effective_date = reference_date or target_date
@@ -189,12 +204,13 @@ class HistoryStore:
         end_str = current_date.isoformat()
 
         conn, should_close = self._get_active_conn()
+        operator = "<=" if include_target_date else "<"
         try:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT event_fingerprint, headline
                 FROM historical_stories
-                WHERE published_date >= ? AND published_date <= ?
+                WHERE published_date >= ? AND published_date {operator} ?
                 """,
                 (start_str, end_str),
             )
@@ -211,6 +227,11 @@ class HistoryStore:
                     if stable_fp:
                         fingerprints.add(stable_fp)
                         fingerprints.add(hashlib.sha256(stable_fp.encode("utf-8")).hexdigest())
+                        import re
+                        gen_fp = re.sub(r"^([^:]+):[^:]+:", r"\1:general:", stable_fp)
+                        if gen_fp:
+                            fingerprints.add(gen_fp)
+                            fingerprints.add(hashlib.sha256(gen_fp.encode("utf-8")).hexdigest())
                 if r[1]:
                     fingerprints.add(r[1])
             logger.debug("Found %d historical fingerprints/headlines in %d-day lookback window", len(fingerprints), lookback_days)

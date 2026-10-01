@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 import hashlib
 import re
-from typing import List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from app.models.article import Article
 from app.models.event import Event
@@ -162,4 +162,61 @@ def are_articles_same_event(art1: Article, art2: Article) -> bool:
     from app.verification.verifier import TwoSourceVerifier
     is_same, _, _ = TwoSourceVerifier().is_same_underlying_event(art1, art2)
     return is_same
+
+
+def is_event_historical_repeat(
+    event: Optional[Any],
+    history_store: Optional[Any],
+    target_date: Optional[date] = None,
+    lookback_days: int = 3,
+    headline: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Check if an event (or headline) matches any story in history within lookback_days.
+    Uses canonical entity normalization, date-stripped fingerprints, and title checks.
+    """
+    if not event or not history_store:
+        return False, "OK"
+
+    eval_date = target_date or date.today()
+    recent_fps = history_store.get_recent_fingerprints(
+        target_date=eval_date, lookback_days=lookback_days, include_target_date=False
+    )
+    if not recent_fps:
+        return False, "OK"
+
+    # 1. Direct title/headline check
+    canon_title = getattr(event, "canonical_title", "") or ""
+    if canon_title and canon_title in recent_fps:
+        return True, f"Event canonical title '{canon_title}' already appeared in briefing within previous {lookback_days} days"
+
+    if headline and headline in recent_fps:
+        return True, f"Headline '{headline}' already appeared in briefing within previous {lookback_days} days"
+
+    # 2. Fingerprint check
+    companies = getattr(event, "companies_involved", None) or []
+    comp = companies[0] if companies else "unspecified"
+    fin_figures = getattr(event, "financial_figures", None) or []
+    ev_type = (getattr(event, "metadata", None) or {}).get("event_type") or getattr(event, "event_type", None) or "general"
+
+    # Try specific event_type, "general", and "other" to catch legacy DB records
+    types_to_try = {normalize_event_type(ev_type), "general", "other"}
+    for t in types_to_try:
+        fkey, fhash = generate_event_fingerprint(
+            company=comp,
+            event_type=t,
+            event_date=eval_date,
+            key_facts=fin_figures,
+        )
+        stable_fp = strip_date_from_fingerprint(fkey)
+        stable_hash = hashlib.sha256(stable_fp.encode("utf-8")).hexdigest() if stable_fp else ""
+
+        if fhash in recent_fps or fkey in recent_fps:
+            return True, f"Event fingerprint already appeared in briefing within previous {lookback_days} days ({fkey})"
+        if stable_fp and stable_fp in recent_fps:
+            return True, f"Event fingerprint already appeared in briefing within previous {lookback_days} days ({stable_fp})"
+        if stable_hash and stable_hash in recent_fps:
+            return True, f"Event fingerprint already appeared in briefing within previous {lookback_days} days ({stable_hash})"
+
+    return False, "OK"
 
