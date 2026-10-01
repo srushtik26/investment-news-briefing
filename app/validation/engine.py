@@ -755,8 +755,8 @@ class FinalValidationEngine:
         # Fill in passed check entries for checks that did not fail
         failed_ids = {r.check_id for r in check_results if not r.passed}
         all_check_names = {
-            1: "Exactly 5 India stories",
-            2: "Exactly 5 International stories",
+            1: "Exactly 5 Domestic stories",
+            2: "Exactly 5 India stories",
             3: "Every story has a verified URL",
             4: "URL opens successfully",
             5: "URL points to a specific article",

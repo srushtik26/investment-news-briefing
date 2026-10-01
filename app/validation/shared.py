@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any, Set, Tuple
 
+from app.ai.summary_grounding import is_summary_substantially_identical_to_headline
+
 _NUMBER_TOKEN_RE = re.compile(
     r"(?<!\w)(?:₹|\$|rs\.?\s*)?(\d[\d,]*(?:\.\d+)?)\s*(%|crore|cr|billion|million|b|m)?(?!\w)",
     re.IGNORECASE,

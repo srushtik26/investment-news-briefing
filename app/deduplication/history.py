@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Set
+import hashlib
+import re
 import uuid
 
 import sqlite3
@@ -217,7 +219,6 @@ class HistoryStore:
             rows = cursor.fetchall()
             fingerprints = set()
             from app.deduplication.fingerprint import strip_date_from_fingerprint
-            import hashlib
 
             for r in rows:
                 if r[0]:
@@ -227,7 +228,6 @@ class HistoryStore:
                     if stable_fp:
                         fingerprints.add(stable_fp)
                         fingerprints.add(hashlib.sha256(stable_fp.encode("utf-8")).hexdigest())
-                        import re
                         gen_fp = re.sub(r"^([^:]+):[^:]+:", r"\1:general:", stable_fp)
                         if gen_fp:
                             fingerprints.add(gen_fp)

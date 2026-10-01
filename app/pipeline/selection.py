@@ -218,6 +218,8 @@ def get_final_selectable_unique_events(
             for def_cand in deferred_intl:
                 if intl_count >= 5:
                     break
+                if def_cand.id in _dedup_rejected:
+                    continue
                 selectable.append(def_cand)
                 intl_count += 1
 
@@ -685,7 +687,15 @@ def run_post_dedup_refill(
     accepted_event_ids: Set[str] = {s["event_id"] for s in accepted_stories if "event_id" in s}
     target_date = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
     ref_date_ist = target_date
-    lookback = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3)
+    try:
+        lookback = int(getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3))
+    except (ValueError, TypeError):
+        lookback = 3
+
+    def _norm_sec(cat_val: Any) -> str:
+        if hasattr(cat_val, "value"):
+            return str(cat_val.value).lower()
+        return str(cat_val or "").lower()
 
     sections = [
         ("domestic", NewsCategory.DOMESTIC),
@@ -694,7 +704,7 @@ def run_post_dedup_refill(
     ]
 
     for sec_str, sec_cat in sections:
-        current_section_count = len([s for s in accepted_stories if s.get("category") == sec_str])
+        current_section_count = len([s for s in accepted_stories if _norm_sec(s.get("category")) == sec_str])
         needed = 5 - current_section_count
         if needed <= 0:
             continue
@@ -895,9 +905,9 @@ def run_post_dedup_refill(
                     needed -= 1
                     ctx.log_exec(f"[POST_DEDUP_REFILL] Added fallback {int(horizon)}h candidate to {sec_str.upper()}: '{ev.canonical_title}'")
 
-    final_dom = len([s for s in accepted_stories if s.get("category") == "domestic"])
-    final_in = len([s for s in accepted_stories if s.get("category") == "india"])
-    final_int = len([s for s in accepted_stories if s.get("category") == "international"])
+    final_dom = len([s for s in accepted_stories if _norm_sec(s.get("category")) == "domestic"])
+    final_in = len([s for s in accepted_stories if _norm_sec(s.get("category")) == "india"])
+    final_int = len([s for s in accepted_stories if _norm_sec(s.get("category")) == "international"])
     ctx.log_exec(f"[POST_DEDUP_REFILL] Completed: Domestic={final_dom}/5, India={final_in}/5, Intl={final_int}/5")
 
     return accepted_stories, event_by_id
@@ -1190,7 +1200,10 @@ def run_ranking_and_selection(
                 rejected_domestic_event_ids.add(ev.id)
                 continue
             lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
-            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
+            try:
+                eff_lookback_days = int(lookback_val)
+            except (ValueError, TypeError):
+                eff_lookback_days = 3
             if getattr(ctx, "history_store", None):
                 target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
                 cand_rep, _ = is_event_historical_repeat(
@@ -3051,6 +3064,8 @@ def run_ranking_and_selection(
             ev = item.event if hasattr(item, "event") else item
             if not isinstance(ev, Event) or ev.id in exclude_ids or ev.id in rejected_intl_event_ids:
                 continue
+            if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                continue
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             is_nex, _ = _verify_nexus_final(ev, cand_art)
             if is_nex:
@@ -3204,7 +3219,10 @@ def run_ranking_and_selection(
 
             # 3-day history check
             lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
-            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
+            try:
+                eff_lookback_days = int(lookback_val)
+            except (ValueError, TypeError):
+                eff_lookback_days = 3
             if getattr(ctx, "history_store", None):
                 target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
                 cand_rep, _ = is_event_historical_repeat(
@@ -3215,6 +3233,17 @@ def run_ranking_and_selection(
                     headline=ev.canonical_title,
                 )
                 if cand_rep:
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    continue
+            if ctx.dedup_engine:
+                c_story = _make_candidate_story_dict(ev, ctx)
+                acc, _ = ctx.dedup_engine.filter_stories(
+                    candidate_stories=[c_story],
+                    target_date=to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today(),
+                    lookback_days=eff_lookback_days,
+                )
+                if not acc:
                     if hasattr(ctx, "dedup_rejected_event_ids"):
                         ctx.dedup_rejected_event_ids.add(ev.id)
                     continue

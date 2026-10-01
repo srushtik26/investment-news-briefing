@@ -65,6 +65,12 @@ def normalize_entity_name(name: Optional[str]) -> str:
         "kotak": "kotak_mahindra_bank",
         "nvidias": "nvidia",
         "nvidia": "nvidia",
+        "bharti_airtel": "airtel",
+        "airtel": "airtel",
+        "bajaj_finance": "bajaj_finance",
+        "bajaj_finserv": "bajaj_finserv",
+        "wipro": "wipro",
+        "infosys": "infosys",
     }
     return KNOWN_ENTITY_ALIASES.get(cleaned, cleaned)
 
@@ -225,6 +231,19 @@ def is_event_historical_repeat(
             return True, f"Event fingerprint already appeared in briefing within previous {lookback_days} days ({stable_fp})"
         if stable_hash and stable_hash in recent_fps:
             return True, f"Event fingerprint already appeared in briefing within previous {lookback_days} days ({stable_hash})"
+
+        # Date-independent fingerprint check (catches historical records irrespective of event_date)
+        fkey_nodate, fhash_nodate = generate_event_fingerprint(
+            company=comp,
+            event_type=t,
+            key_facts=fin_figures,
+            include_date=False,
+        )
+        if fhash_nodate in recent_fps or fkey_nodate in recent_fps:
+            return True, f"Event fingerprint (date-independent) already appeared in briefing within previous {lookback_days} days ({fkey_nodate})"
+        nodate_hash = hashlib.sha256(fkey_nodate.encode("utf-8")).hexdigest() if fkey_nodate else ""
+        if nodate_hash and nodate_hash in recent_fps:
+            return True, f"Event fingerprint (date-independent) already appeared in briefing within previous {lookback_days} days ({fkey_nodate})"
 
     return False, "OK"
 

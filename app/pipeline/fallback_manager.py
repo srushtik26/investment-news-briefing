@@ -255,6 +255,8 @@ def reconsider_date_deferred_candidates(
             ctx.fallback_events.append(existing_fb_event)
 
         ev = existing_fb_event
+        if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+            continue
         ev.event_category = ctx.reg_clf.classify_event(ev, [art])
         if is_multi_event_roundup(ev.canonical_title):
             continue
@@ -268,6 +270,8 @@ def reconsider_date_deferred_candidates(
             None
         )
         if matched:
+            if hasattr(ctx, "dedup_rejected_event_ids") and matched.id in ctx.dedup_rejected_event_ids:
+                continue
             if art.id not in matched.article_ids:
                 matched.article_ids.append(art.id)
                 ev_arts = [ctx.articles_lookup[i] for i in matched.article_ids if i in ctx.articles_lookup]
@@ -288,6 +292,8 @@ def reconsider_date_deferred_candidates(
                 is_elig, conf, rsn = ctx.single_source_evaluator.evaluate_event(ev, art, now_utc=ctx.run_reference_time, max_age_hours=active_horizon)
 
             if is_elig:
+                if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                    continue
                 ev.verification_tier = VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE
                 ev.verification_confidence = conf
                 ev.single_source_confidence_score = conf
