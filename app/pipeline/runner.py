@@ -645,12 +645,27 @@ def run_pipeline(
                 [s.event for s in candidate_pool.india_candidates]
                 + (getattr(ctx, "india_reserve_pool", []) or [])
                 + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
+                + [e for e in (ctx.high_confidence_single_candidates or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
             )
             for ev in all_india_cands:
                 if len(india_stories_selected) >= 5:
                     break
                 if not isinstance(ev, Event) or ev.id in used_india_ev_ids:
                     continue
+                if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                    continue
+                if history_store:
+                    cand_rep, _ = is_event_historical_repeat(
+                        event=ev,
+                        history_store=history_store,
+                        target_date=target_briefing_date,
+                        lookback_days=3,
+                        headline=ev.canonical_title,
+                    )
+                    if cand_rep:
+                        if hasattr(ctx, "dedup_rejected_event_ids"):
+                            ctx.dedup_rejected_event_ids.add(ev.id)
+                        continue
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 raw_comps = getattr(ev, "companies_involved", []) or []
                 clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
@@ -678,12 +693,27 @@ def run_pipeline(
                 [s.event for s in candidate_pool.international_candidates]
                 + (getattr(ctx, "intl_reserve_pool", []) or [])
                 + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INTERNATIONAL]
+                + [e for e in (ctx.high_confidence_single_candidates or []) if getattr(e, "event_category", None) == NewsCategory.INTERNATIONAL]
             )
             for ev in all_intl_cands:
                 if len(intl_stories_selected) >= 5:
                     break
                 if not isinstance(ev, Event) or ev.id in used_intl_ev_ids:
                     continue
+                if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                    continue
+                if history_store:
+                    cand_rep, _ = is_event_historical_repeat(
+                        event=ev,
+                        history_store=history_store,
+                        target_date=target_briefing_date,
+                        lookback_days=3,
+                        headline=ev.canonical_title,
+                    )
+                    if cand_rep:
+                        if hasattr(ctx, "dedup_rejected_event_ids"):
+                            ctx.dedup_rejected_event_ids.add(ev.id)
+                        continue
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
                 raw_comps = getattr(ev, "companies_involved", []) or []
                 clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
@@ -888,15 +918,25 @@ def run_pipeline(
                         )
                     else:
                         raw_cands = [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
-                    raw_cands = raw_cands + (ctx.verified_events or [])
+                    raw_cands = (
+                        raw_cands
+                        + (ctx.verified_events or [])
+                        + (ctx.high_confidence_single_candidates or [])
+                        + (ctx.single_source_events or [])
+                    )
 
                     cur_india_comps: Set[str] = set()
                     if sec_cat == NewsCategory.INDIA:
                         for s_other in story_list:
                             if s_other.event_id != ev.id:
                                 o_ev = event_by_id.get(s_other.event_id)
-                                if o_ev and o_ev.companies_involved:
-                                    cur_india_comps.add(o_ev.companies_involved[0].lower().strip())
+                                if o_ev:
+                                    o_art = ctx.articles_lookup.get(o_ev.article_ids[0]) if o_ev.article_ids else None
+                                    o_clean = sanitize_company_entities(getattr(o_ev, "companies_involved", []) or [], publisher=o_art.source_name if o_art else None)
+                                    for oc in o_clean:
+                                        on = normalize_entity_name(oc)
+                                        if on != "unspecified_entity":
+                                            cur_india_comps.add(on)
 
                     for res_ev in raw_cands:
                         if not isinstance(res_ev, Event) or res_ev.id in used_event_ids:
@@ -906,9 +946,19 @@ def run_pipeline(
                         if hasattr(ctx, "dedup_rejected_event_ids") and res_ev.id in ctx.dedup_rejected_event_ids:
                             continue
 
-                        if sec_cat == NewsCategory.INDIA and res_ev.companies_involved:
-                            comp_name = res_ev.companies_involved[0].lower().strip()
-                            if comp_name in cur_india_comps:
+                        res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
+                        if not res_art:
+                            continue
+
+                        if sec_cat == NewsCategory.INDIA:
+                            res_clean = sanitize_company_entities(getattr(res_ev, "companies_involved", []) or [], publisher=res_art.source_name if res_art else None)
+                            res_conflict = False
+                            for rc in res_clean:
+                                rn = normalize_entity_name(rc)
+                                if rn in cur_india_comps and rn != "unspecified_entity":
+                                    res_conflict = True
+                                    break
+                            if res_conflict:
                                 continue
 
                         cand_rep, _ = is_event_historical_repeat(
@@ -921,10 +971,6 @@ def run_pipeline(
                         if cand_rep:
                             if hasattr(ctx, "dedup_rejected_event_ids"):
                                 ctx.dedup_rejected_event_ids.add(res_ev.id)
-                            continue
-
-                        res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
-                        if not res_art:
                             continue
 
                         if sec_cat == NewsCategory.INDIA:
@@ -1002,7 +1048,12 @@ def run_pipeline(
                         (getattr(ctx, "intl_reserve_pool", []) or [])
                         + [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
                     )
-                raw_cands = raw_cands + (ctx.verified_events or [])
+                raw_cands = (
+                    raw_cands
+                    + (ctx.verified_events or [])
+                    + (ctx.high_confidence_single_candidates or [])
+                    + (ctx.single_source_events or [])
+                )
 
                 for res_ev in raw_cands:
                     if not isinstance(res_ev, Event) or res_ev.id in used_event_ids:

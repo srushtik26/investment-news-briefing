@@ -1186,6 +1186,37 @@ def run_ranking_and_selection(
                 break
             if ev.id in selected_event_ids or ev.id in rejected_domestic_event_ids:
                 continue
+            if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                rejected_domestic_event_ids.add(ev.id)
+                continue
+            lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
+            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
+            if getattr(ctx, "history_store", None):
+                target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
+                cand_rep, _ = is_event_historical_repeat(
+                    event=ev,
+                    history_store=ctx.history_store,
+                    target_date=target_d,
+                    lookback_days=eff_lookback_days,
+                    headline=ev.canonical_title,
+                )
+                if cand_rep:
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    rejected_domestic_event_ids.add(ev.id)
+                    continue
+            if ctx.dedup_engine:
+                c_story = _make_candidate_story_dict(ev, ctx)
+                acc, _ = ctx.dedup_engine.filter_stories(
+                    candidate_stories=[c_story],
+                    target_date=to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today(),
+                    lookback_days=eff_lookback_days,
+                )
+                if not acc:
+                    rejected_domestic_event_ids.add(ev.id)
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    continue
             if ev.event_category != NewsCategory.DOMESTIC:
                 continue
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
@@ -1971,6 +2002,9 @@ def run_ranking_and_selection(
             """Check all gates for an India recovery candidate using canonical helper."""
             if ev.id in india_recovery_selected_ids or ev.id in india_recovery_rejected_ids:
                 return False
+            if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                india_recovery_rejected_ids.add(ev.id)
+                return False
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
                 return False
@@ -1990,6 +2024,22 @@ def run_ranking_and_selection(
                     india_recovery_rejected_ids.add(ev.id)
                     return False
 
+            # Company diversity check against existing india_final: max 1 per company
+            raw_comps = getattr(ev, "companies_involved", []) or []
+            clean_comps = sanitize_company_entities(raw_comps, publisher=cand_art.source_name if cand_art else None)
+            for ex_s in india_final:
+                ex_ev = ex_s.event
+                ex_art = ctx.articles_lookup.get(ex_ev.article_ids[0]) if ex_ev.article_ids else None
+                ex_clean = sanitize_company_entities(getattr(ex_ev, "companies_involved", []) or [], publisher=ex_art.source_name if ex_art else None)
+                for rc in clean_comps:
+                    rn = normalize_entity_name(rc)
+                    if rn != "unspecified_entity":
+                        for ec in ex_clean:
+                            en = normalize_entity_name(ec)
+                            if en == rn and en != "unspecified_entity":
+                                india_recovery_rejected_ids.add(ev.id)
+                                return False
+
             # Portfolio canonical company diversity check: max 1 per canonical company
             from app.ranking.watchlist import get_portfolio_company_role
             is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
@@ -1998,6 +2048,38 @@ def run_ranking_and_selection(
             if is_pf and pf_elig and pf_comp in global_seen_portfolio_companies:
                 india_recovery_rejected_ids.add(ev.id)
                 return False
+
+            # 3-day history check
+            lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
+            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
+            if ctx.dedup_engine:
+                c_story = _make_candidate_story_dict(ev, ctx)
+                acc, _ = ctx.dedup_engine.filter_stories(
+                    candidate_stories=[c_story],
+                    target_date=to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today(),
+                    lookback_days=eff_lookback_days,
+                )
+                if not acc:
+                    india_recovery_rejected_ids.add(ev.id)
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False
+
+            if getattr(ctx, "history_store", None):
+                target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
+                cand_rep, _ = is_event_historical_repeat(
+                    event=ev,
+                    history_store=ctx.history_store,
+                    target_date=target_d,
+                    lookback_days=eff_lookback_days,
+                    headline=ev.canonical_title,
+                )
+                if cand_rep:
+                    india_recovery_rejected_ids.add(ev.id)
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False
+
             return True
 
         def _try_add_recovery_candidate(ev: Event, step_name: str) -> bool:
@@ -2727,16 +2809,34 @@ def run_ranking_and_selection(
                     return False
 
             # 3-day history check
+            lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
+            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
             if ctx.dedup_engine:
                 c_story = _make_candidate_story_dict(ev, ctx)
                 acc, _ = ctx.dedup_engine.filter_stories(
                     candidate_stories=[c_story],
                     target_date=to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today(),
-                    lookback_days=getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3),
+                    lookback_days=eff_lookback_days,
                 )
                 if not acc:
                     intl_recovery_rejected_ids.add(ev.id)
-                    ctx.dedup_rejected_event_ids.add(ev.id)
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    return False
+
+            if getattr(ctx, "history_store", None):
+                target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
+                cand_rep, _ = is_event_historical_repeat(
+                    event=ev,
+                    history_store=ctx.history_store,
+                    target_date=target_d,
+                    lookback_days=eff_lookback_days,
+                    headline=ev.canonical_title,
+                )
+                if cand_rep:
+                    intl_recovery_rejected_ids.add(ev.id)
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
                     return False
 
             return True
@@ -3099,6 +3199,26 @@ def run_ranking_and_selection(
                 break
             if not isinstance(ev, Event) or ev.id in india_current_ids or ev.event_category != NewsCategory.INDIA:
                 continue
+            if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                continue
+
+            # 3-day history check
+            lookback_val = getattr(ctx.settings, "DEDUP_LOOKBACK_DAYS", 3) if hasattr(ctx, "settings") and ctx.settings else 3
+            eff_lookback_days = lookback_val if isinstance(lookback_val, int) else 3
+            if getattr(ctx, "history_store", None):
+                target_d = to_ist_date(ctx.run_reference_time) if ctx.run_reference_time else date.today()
+                cand_rep, _ = is_event_historical_repeat(
+                    event=ev,
+                    history_store=ctx.history_store,
+                    target_date=target_d,
+                    lookback_days=eff_lookback_days,
+                    headline=ev.canonical_title,
+                )
+                if cand_rep:
+                    if hasattr(ctx, "dedup_rejected_event_ids"):
+                        ctx.dedup_rejected_event_ids.add(ev.id)
+                    continue
+
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             from app.ranking.watchlist import get_portfolio_company_role
             is_pf, pf_comp, _, pf_elig = get_portfolio_company_role(
