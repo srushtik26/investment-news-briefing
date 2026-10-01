@@ -87,7 +87,30 @@ PROHIBITED_GENERIC_ENTITIES: Set[str] = {
     "both",
     "each",
     "every",
+    "ipo",
+    "ipos",
+    "ipo today",
+    "pre-ipo",
+    "fpo",
+    "ofs",
+    "qip",
+    "nfo",
+    "reit",
+    "invit",
+    "capex",
+    "gmp",
+    "cdr",
+    "adr",
+    "gdr",
+    "etf",
+    "etfs",
+    "mutual fund",
+    "mutual funds",
+    "bonds",
+    "bond",
+    "nclt",
 }
+
 
 
 def _clean_headline_text(raw_title: str) -> str:

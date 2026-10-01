@@ -24,6 +24,10 @@ def normalize_entity_name(name: Optional[str]) -> str:
         "unspecified", "unknown", "n/a", "na", "none", "unspecified_entity", "",
         "ai", "revenue", "bank", "group", "technology", "tech", "energy", "green",
         "jewellery", "jewellers", "properties", "property", "developer", "retail",
+        "ipo", "ipos", "ipo_today", "ipo today", "pre_ipo", "pre-ipo", "fpo", "ofs",
+        "qip", "nfo", "reit", "invit", "capex", "gmp", "cdr", "adr", "gdr", "etf",
+        "etfs", "mutual_fund", "mutual fund", "mutual_funds", "mutual funds",
+        "m&a", "pe", "vc", "bonds", "bond", "equity", "debt", "nclt",
     ):
         return "unspecified_entity"
     # Normalize hyphens and dashes to underscores or empty string
@@ -35,6 +39,10 @@ def normalize_entity_name(name: Optional[str]) -> str:
     if not cleaned or cleaned in (
         "unspecified_entity", "ai", "revenue", "bank", "group", "technology",
         "tech", "energy", "green", "jewellery", "jewellers", "retail",
+        "ipo", "ipos", "ipo_today", "pre_ipo", "fpo", "ofs", "qip", "nfo",
+        "reit", "invit", "capex", "gmp", "cdr", "adr", "gdr", "etf", "etfs",
+        "mutual_fund", "mutual_funds", "ma", "pe", "vc", "bonds", "bond",
+        "equity", "debt", "nclt",
     ):
         return "unspecified_entity"
 

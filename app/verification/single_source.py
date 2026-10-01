@@ -206,14 +206,16 @@ def is_valid_named_company_entity(comp: Optional[str]) -> bool:
     # Must contain at least one alphabetic character
     if not re.search(r"[a-zA-Z]", c):
         return False
-    # Generic stopwords / noise words
     noise_tokens = {
         "unspecified", "company", "companies", "india", "us", "u.s.", "usa", "global",
         "firm", "corp", "inc", "ltd", "block deals", "block deal", "bulk deals", "bulk deal", "block", "bulk",
         "quarterly results", "annual results", "financial results", "ai", "wall street",
         "lost", "today", "shares", "stock", "stocks", "markets", "market", "deal", "deals", "stake",
-        "report", "news"
+        "report", "news",
+        "ipo", "ipos", "ipo today", "pre-ipo", "fpo", "ofs", "qip", "nfo", "reit", "reits", "invit", "invits",
+        "capex", "gmp", "cdr", "adr", "gdr", "etf", "etfs", "mutual fund", "mutual funds", "bonds", "bond", "nclt"
     }
+
     if c_low in noise_tokens:
         return False
     # Reject pure numbers: "20", "31", "2026", "1.7", "75"

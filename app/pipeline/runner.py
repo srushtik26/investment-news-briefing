@@ -634,17 +634,72 @@ def run_pipeline(
         else:
             err = editorial_res.error_message if editorial_res else "Unknown editorial error"
             log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
+            from app.models.entity_sanitizer import sanitize_company_entities
+            from app.deduplication.fingerprint import normalize_entity_name
+
             india_stories_selected = []
-            for s in candidate_pool.india_candidates[:5]:
-                ev = s.event
+            seen_india_comps_fb: Set[str] = set()
+            used_india_ev_ids: Set[str] = set()
+
+            all_india_cands = (
+                [s.event for s in candidate_pool.india_candidates]
+                + (getattr(ctx, "india_reserve_pool", []) or [])
+                + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
+            )
+            for ev in all_india_cands:
+                if len(india_stories_selected) >= 5:
+                    break
+                if not isinstance(ev, Event) or ev.id in used_india_ev_ids:
+                    continue
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                raw_comps = getattr(ev, "companies_involved", []) or []
+                clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
+                is_dup = False
+                for c in clean_comps:
+                    n = normalize_entity_name(c)
+                    if n in seen_india_comps_fb and n != "unspecified_entity":
+                        is_dup = True
+                        break
+                if is_dup:
+                    continue
+                for c in clean_comps:
+                    n = normalize_entity_name(c)
+                    if n != "unspecified_entity":
+                        seen_india_comps_fb.add(n)
+                used_india_ev_ids.add(ev.id)
                 sc = build_story_context(ev, art, ctx=ctx)
                 india_stories_selected.append(prepare_final_story(sc, ctx=ctx))
 
             intl_stories_selected = []
-            for s in candidate_pool.international_candidates[:5]:
-                ev = s.event
+            seen_intl_comps_fb: Set[str] = set()
+            used_intl_ev_ids: Set[str] = set()
+
+            all_intl_cands = (
+                [s.event for s in candidate_pool.international_candidates]
+                + (getattr(ctx, "intl_reserve_pool", []) or [])
+                + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INTERNATIONAL]
+            )
+            for ev in all_intl_cands:
+                if len(intl_stories_selected) >= 5:
+                    break
+                if not isinstance(ev, Event) or ev.id in used_intl_ev_ids:
+                    continue
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                raw_comps = getattr(ev, "companies_involved", []) or []
+                clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
+                is_dup = False
+                for c in clean_comps:
+                    n = normalize_entity_name(c)
+                    if n in seen_intl_comps_fb and n != "unspecified_entity":
+                        is_dup = True
+                        break
+                if is_dup:
+                    continue
+                for c in clean_comps:
+                    n = normalize_entity_name(c)
+                    if n != "unspecified_entity":
+                        seen_intl_comps_fb.add(n)
+                used_intl_ev_ids.add(ev.id)
                 sc = build_story_context(ev, art, ctx=ctx)
                 intl_stories_selected.append(prepare_final_story(sc, ctx=ctx))
 
@@ -653,6 +708,7 @@ def run_pipeline(
                 india_stories=india_stories_selected,
                 international_stories=intl_stories_selected,
             )
+
 
         # Re-ensure event_by_id indexes every known event across all pools & candidates
         for ev in (
@@ -898,7 +954,125 @@ def run_pipeline(
                         )
                         break
 
+        # Stage 8.5b: Check 10 Self-Healing (intra-section duplicate company resolution for India and International)
+        from app.models.entity_sanitizer import sanitize_company_entities
+        from app.deduplication.fingerprint import normalize_entity_name
+
+        comp_sections_to_check = [
+            ("india", selection_payload.india_stories, NewsCategory.INDIA),
+            ("international", selection_payload.international_stories, NewsCategory.INTERNATIONAL),
+        ]
+        for sec_name, story_list, sec_cat in comp_sections_to_check:
+            if not story_list:
+                continue
+            seen_section_comps: Set[str] = set()
+            for idx, story in enumerate(story_list):
+                ev = event_by_id.get(story.event_id)
+                if not ev:
+                    continue
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                raw_comps = getattr(ev, "companies_involved", []) or []
+                clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
+                has_dup_comp = False
+                dup_comp_name = ""
+                for c in clean_comps:
+                    norm = normalize_entity_name(c)
+                    if norm in seen_section_comps and norm != "unspecified_entity":
+                        has_dup_comp = True
+                        dup_comp_name = c
+                        break
+                if not has_dup_comp:
+                    for c in clean_comps:
+                        norm = normalize_entity_name(c)
+                        if norm != "unspecified_entity":
+                            seen_section_comps.add(norm)
+                    continue
+
+                log_exec(
+                    f"[STAGE8_COMPANY_DEDUP_SELF_HEALING] Story in {sec_name} '{story.headline}' (event_id={ev.id}) "
+                    f"has duplicate company '{dup_comp_name}'. Seeking qualified reserve replacement..."
+                )
+                if sec_cat == NewsCategory.INDIA:
+                    raw_cands = (
+                        (getattr(ctx, "india_reserve_pool", []) or [])
+                        + [s.event for s in (getattr(candidate_pool, "india_candidates", []) or [])]
+                    )
+                else:
+                    raw_cands = (
+                        (getattr(ctx, "intl_reserve_pool", []) or [])
+                        + [s.event for s in (getattr(candidate_pool, "international_candidates", []) or [])]
+                    )
+                raw_cands = raw_cands + (ctx.verified_events or [])
+
+                for res_ev in raw_cands:
+                    if not isinstance(res_ev, Event) or res_ev.id in used_event_ids:
+                        continue
+                    if res_ev.event_category != sec_cat:
+                        continue
+                    if hasattr(ctx, "dedup_rejected_event_ids") and res_ev.id in ctx.dedup_rejected_event_ids:
+                        continue
+
+                    res_art = ctx.articles_lookup.get(res_ev.article_ids[0]) if res_ev.article_ids else None
+                    if not res_art:
+                        continue
+
+                    res_raw_comps = getattr(res_ev, "companies_involved", []) or []
+                    res_clean_comps = sanitize_company_entities(res_raw_comps, publisher=res_art.source_name if res_art else None)
+                    res_has_conflict = False
+                    for rc in res_clean_comps:
+                        rn = normalize_entity_name(rc)
+                        if rn in seen_section_comps and rn != "unspecified_entity":
+                            res_has_conflict = True
+                            break
+                    if res_has_conflict:
+                        continue
+
+                    if history_store:
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=res_ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=res_ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(res_ev.id)
+                            continue
+
+                    if sec_cat == NewsCategory.INDIA:
+                        is_nex, _ = verify_india_business_nexus(res_ev, res_art)
+                        if not is_nex:
+                            continue
+                        is_g_ok, _ = is_geopolitical_market_impact_eligible(res_ev.canonical_title, res_art)
+                        if not is_g_ok:
+                            continue
+
+                    tier = getattr(res_ev, "verification_tier", None)
+                    if tier not in (VerificationTier.TWO_SOURCE_VERIFIED, VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE):
+                        continue
+
+                    sc = build_story_context(res_ev, res_art, ctx=ctx)
+                    if not sc:
+                        continue
+
+                    replacement_story = prepare_final_story(sc, ctx=ctx)
+                    used_event_ids.discard(ev.id)
+                    used_event_ids.add(res_ev.id)
+                    event_by_id[res_ev.id] = res_ev
+                    story_list[idx] = replacement_story
+                    for rc in res_clean_comps:
+                        rn = normalize_entity_name(rc)
+                        if rn != "unspecified_entity":
+                            seen_section_comps.add(rn)
+                    log_exec(
+                        f"[STAGE8_COMPANY_DEDUP_SELF_HEALING] Successfully swapped duplicate company story '{story.headline}' "
+                        f"with qualified reserve '{replacement_story.headline}' (event_id={res_ev.id})"
+                    )
+                    break
+
         # Count PORTFOLIO_SELECTED from actual final India selections using canonical PortfolioMatch
+
         from app.ranking.watchlist import match_portfolio_company
         final_pf_selected = sum(
             1 for s in (selection_payload.india_stories or [])

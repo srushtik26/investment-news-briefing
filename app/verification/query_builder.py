@@ -38,6 +38,7 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "retail", "gold", "metals", "commodities", "crypto", "bitcoin", "etf", "etfs",
     "bonds", "fund", "funds", "capital", "ventures", "finance", "financial",
     "properties", "property", "developer", "developers",
+    "ipo", "ipos", "ipo today", "pre-ipo", "fpo", "ofs", "qip", "nfo", "reit", "reits", "invit", "invits", "capex", "gmp", "cdr", "adr", "gdr", "nclt",
     "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
     "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -46,6 +47,7 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
 
 # Prefix tokens to strip from proper noun matches (e.g. 'Wall Street Walmart' -> 'Walmart')
 PREFIXES_TO_STRIP: List[str] = [
+    "ipo today: ", "ipo today ", "ipo: ", "ipos: ", "pre-ipo: ",
     "block deals: ", "block deal: ", "bulk deals: ", "bulk deal: ", "block deals ", "block deal ", "bulk deals ", "bulk deal ",
     "promoter ", "promoters ", "promoter's ", "promoters' ",
     "wall street ", "stock market ", "market ", "shares of ", "shares in ",
@@ -54,6 +56,7 @@ PREFIXES_TO_STRIP: List[str] = [
     "completes acquisition of ", "acquires ", "buys ", "sale of ", "controlling stake in ",
     "strong ai chip demand powers ", "ai chip demand powers ",
 ]
+
 
 EVENT_ACTION_PATTERNS = [
     (r"\b(to buy|buys|acquires?|acquisition|takeover|merger|merges|buyout|stake purchase)\b", "acquisition"),

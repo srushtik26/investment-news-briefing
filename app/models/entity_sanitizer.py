@@ -32,7 +32,13 @@ GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
     "today", "deals", "deal", "lost", "stake",
     "spending", "capital spending", "expenditure", "expenditures", "demand", "supply",
     "inflation", "growth", "economy", "trade", "investment", "investments", "capital",
+    "ipo", "ipos", "ipo today", "pre-ipo", "pre-ipos", "fpo", "fpos", "ofs", "qip", "qips",
+    "nfo", "nfos", "reit", "reits", "invit", "invits", "capex", "gmp", "cdr", "adr", "adrs",
+    "gdr", "gdrs", "etf", "etfs", "mutual fund", "mutual funds", "m&a", "pe", "vc",
+    "bonds", "bond", "debenture", "debentures", "equity", "debt", "nclt",
+    "ipo market", "stock market", "share market",
 }
+
 
 
 def normalize_publisher_name(source_name: Optional[str]) -> str:
@@ -120,7 +126,9 @@ TRAILING_METRIC_SUFFIXES = [
     r"\s+net(?:\s+profit)?$",
     r"\s+q[1-4]$",
     r"\s+fy\s*\d{2,4}$",
+    r"\s+(?:ipo|ipos|fpo|qip|ofs|nfo)$",
 ]
+
 
 
 def clean_company_name(name: str) -> Optional[str]:
@@ -130,7 +138,7 @@ def clean_company_name(name: str) -> Optional[str]:
     c_clean = name.strip().strip("'\".,;:()[]{}")
     c_low = c_clean.lower()
     
-    if len(c_clean) < 2:
+    if len(c_clean) < 2 or c_low in GENERIC_STANDALONE_ENTITY_BLACKLIST:
         return None
 
     # Check date and metric rejection patterns
@@ -143,7 +151,7 @@ def clean_company_name(name: str) -> Optional[str]:
         c_clean = re.sub(suff, "", c_clean, flags=re.IGNORECASE).strip()
         c_low = c_clean.lower()
 
-    if len(c_clean) < 2:
+    if len(c_clean) < 2 or c_low in GENERIC_STANDALONE_ENTITY_BLACKLIST:
         return None
 
     # Re-check patterns after stripping
@@ -152,6 +160,7 @@ def clean_company_name(name: str) -> Optional[str]:
             return None
 
     return c_clean
+
 
 
 def sanitize_company_entities(companies: Optional[List[str]], publisher: Optional[str] = None) -> List[str]:
