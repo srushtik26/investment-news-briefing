@@ -575,7 +575,12 @@ def is_generic_headline(title: str) -> Tuple[bool, str]:
         "closing bell", "market live", "live market updates",
         "live updates", "daily brief", "business roundup",
         "announcements", "financial news", "world news",
+        "brief news", "quickreads", "news in shorts", "in shorts",
+        "news shorts",
     }
+
+    if any(phrase in t_lower for phrase in ["brief news and quickreads", "news in shorts", "in shorts by business standard"]):
+        return True, f"Headline '{title}' is an aggregator/roundup summary title"
 
     normalized = re.sub(r"[^\w\s]", "", t_lower).strip()
     if normalized in GENERIC_TITLES:
@@ -619,6 +624,14 @@ class StoryTypeFilterRule(BaseFilterRule):
 
     # NOISE REJECTION PATTERNS
     REJECT_NOISE_PATTERNS: List[Tuple[str, str]] = [
+        (
+            "roundup_and_shorts",
+            r"\b(brief news and quickreads|quickreads|news in shorts|in shorts by business standard|news briefs?|daily round-?up|in shorts)\b",
+        ),
+        (
+            "ipo_buzz_calendar",
+            r"\b(ipo buzz\s*:|ipo buzz|mainboard listings next week|sme issues? to open|listings next week|issues to open next week|ipos opening next week|upcoming ipos next week)\b",
+        ),
         (
             "personal_finance_and_advice",
             r"\b(what next\?|deciding what to do after|financial freedom|retirement planning|saving for retirement|do you own\??|what should investors do|how should you invest|money habits|wealth creation tips|smart money moves)\b",

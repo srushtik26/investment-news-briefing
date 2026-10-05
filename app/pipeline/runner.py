@@ -73,6 +73,7 @@ from app.pipeline.weekend_recovery import (
     save_partial_weekend_state,
     restore_partial_weekend_state,
     cleanup_partial_weekend_state,
+    get_initial_discovery_lookback_days,
 )
 from app.pipeline.enrichment import run_second_source_enrichment
 from app.pipeline.selection import (
@@ -272,8 +273,17 @@ def run_pipeline(
         domestic_raw = [a for a in ctx.all_extracted if a.category == NewsCategory.DOMESTIC]
         business_raw = [a for a in ctx.all_extracted if a.category != NewsCategory.DOMESTIC]
     
-        dom_accepted, dom_rejections = domestic_filter_engine.filter_candidates(domestic_raw)
-        biz_accepted, biz_rejections = business_filter_engine.filter_candidates(business_raw)
+        initial_filter_lookback_hours = float(get_initial_discovery_lookback_days(target_date) * 24.0)
+        dom_accepted, dom_rejections = domestic_filter_engine.filter_candidates(
+            domestic_raw,
+            now_utc=run_reference_time,
+            max_age_hours=initial_filter_lookback_hours,
+        )
+        biz_accepted, biz_rejections = business_filter_engine.filter_candidates(
+            business_raw,
+            now_utc=run_reference_time,
+            max_age_hours=initial_filter_lookback_hours,
+        )
     
         accepted_articles = dom_accepted + biz_accepted
         rejections = dom_rejections + biz_rejections

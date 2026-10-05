@@ -167,6 +167,11 @@ INDIA_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "power renewable energy solar project commissioning MW when:1d",
         "Cabinet approves infrastructure project investment crore when:1d",
     ],
+    "business_updates": [
+        "revenue jumps surges business update crore when:1d",
+        "retail store network expansion store count when:1d",
+        "wins road works corridor contract project award crore when:1d",
+    ],
 }
 
 

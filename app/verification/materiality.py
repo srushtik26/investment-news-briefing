@@ -46,6 +46,9 @@ LARGE_CAP_ENTITIES: Set[str] = {
     "ntpc", "ongc", "coal india", "power grid", "bhel", "ioc", "bpcl", "hpcl",
     "vedanta", "hindalco", "jsw", "jsw steel", "titan", "asian paints",
     "ultratech", "grasim", "zomato", "swiggy", "paytm",
+    "d-mart", "dmart", "avenue supermarts",
+    "ceigall", "ceigall india",
+    "deepak chem", "deepak nitrite", "dcm shriram",
     # Major Public Institutions & Agencies
     "union cabinet", "finance ministry", "reserve bank of india", "rbi",
     "supreme court", "isro", "national highway authority", "nhai",
@@ -97,26 +100,36 @@ def extract_monetary_magnitude(text: str) -> Tuple[Optional[float], Optional[str
         if val_m > max_usd_m:
             max_usd_m = val_m
 
-    # 2. INR patterns with explicit magnitude units (crore, cr, lakh)
+    # 2. INR patterns with explicit magnitude units (lakh crore, crore, cr, lakh)
     inr_matches = re.finditer(
-        r"(?:rs\.?|₹|inr\s*)\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(crore|cr|lakh)\b",
+        r"(?:rs\.?|₹|inr\s*)\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(lakh\s+(?:crore|cr)|crore|cr|lakh)\b",
         t,
     )
     for m in inr_matches:
         raw_num = float(m.group(1).replace(",", ""))
         unit = (m.group(2) or "").lower()
-        val_cr = raw_num if unit in ("crore", "cr") else (raw_num / 100.0)
+        if "lakh crore" in unit or "lakh cr" in unit:
+            val_cr = raw_num * 100000.0
+        elif unit in ("crore", "cr"):
+            val_cr = raw_num
+        else:
+            val_cr = raw_num / 100.0
         if val_cr > max_inr_cr:
             max_inr_cr = val_cr
 
     named_inr = re.finditer(
-        r"(\d+(?:,\d+)*(?:\.\d+)?)\s*(crore|cr)\b",
+        r"(\d+(?:,\d+)*(?:\.\d+)?)\s*(lakh\s+(?:crore|cr)|crore|cr)\b",
         t,
     )
     for m in named_inr:
         raw_num = float(m.group(1).replace(",", ""))
-        if raw_num > max_inr_cr:
-            max_inr_cr = raw_num
+        unit = (m.group(2) or "").lower()
+        if "lakh crore" in unit or "lakh cr" in unit:
+            val_cr = raw_num * 100000.0
+        else:
+            val_cr = raw_num
+        if val_cr > max_inr_cr:
+            max_inr_cr = val_cr
 
     if max_usd_m > 0 and (max_inr_cr == 0 or max_usd_m * 84.0 > max_inr_cr):
         return max_usd_m, "USD"
@@ -204,7 +217,12 @@ class InvestmentMaterialityEvaluator:
                 r"completes?\s+(?:.*?\s+)?(?:network|corridor|expressway|highway|rail line|railway|project)|"
                 r"launches?\s+(?:.*?\s+)?(?:operations|gigafactory|facility|production|plant)|"
                 r"profit\s+(?:jumps|surges|rises|soars|grows|doubles)|net\s+profit\s+(?:jumps|surges|rises|soars|grows|doubles)|"
+                r"revenue\s+(?:jumps|surges|rises|soars|grows|doubles)|net\s+revenue\s+(?:jumps|surges|rises|soars|grows|doubles)|"
                 r"(?:q[1-4]|quarterly)\s+(?:net\s+)?(?:profit|results|earnings)|earnings\s+(?:jump|surge|rise|grow)|"
+                r"(?:q[1-4]|quarterly)\s+(?:business\s+update|revenue|sales)|"
+                r"road\s+works?|corridor\s+build-?out|road\s+project|highway\s+project|expressway\s+project|"
+                r"interest\s+rate\s+(?:decision|hike|cut)|repo\s+rate|rbi\s+may\s+increase\s+rates|"
+                r"expands?\s+.*?footprint|new\s+(?:plant|facility|unit|chemical\s+complex)|"
                 r"raises?\s+(?:[\$€£₹]|rs\.?|usd\s*)?\d+(?:,\d+)*(?:\.\d+)?\s*(?:billion|b|crore|cr|million|m)?|"
                 r"funding round|series\s+[a-g]|growth round|venture funding|equity financing|capital raise|funds raised|"
                 r"secures?\s+(?:[\$€£₹]|rs\.?|usd\s*)?\d+(?:,\d+)*(?:\.\d+)?\s*(?:billion|b|crore|cr|million|m)?\s+funding|"
@@ -245,6 +263,7 @@ class InvestmentMaterialityEvaluator:
                 r"freight corridor network|freight corridor|freight network|national highway network|rail network expansion|"
                 r"power grid expansion|renewable energy capacity|solar park commissioning|green hydrogen|"
                 r"industrial corridor|national logistics policy|pm gati shakti|"
+                r"maharashtra|state government|state secures|state clears|state approves|"
                 r"central government approves|state government approves|cabinet committee on economic affairs|ccea approves)\b",
                 full_text,
             )
@@ -260,14 +279,14 @@ class InvestmentMaterialityEvaluator:
         if hasattr(event, "financial_figures") and event.financial_figures:
             for fig in event.financial_figures:
                 fig_clean = str(fig).lower()
-                if any(kw in fig_clean for kw in ["crore", "billion", "million", "trillion", "₹", "$"]):
+                if any(kw in fig_clean for kw in ["crore", "cr", "lakh crore", "billion", "million", "trillion", "₹", "$"]):
                     has_quantified_deal = True
                     break
 
         if not has_quantified_deal:
             quant_match = re.search(
-                r"(?:(?:rs\.?|₹|\$|€|£|us\$|usd\s*|inr\s*)\s*\d+(?:,\d+)*(?:\.\d+)?\s*(?:crore|cr|billion|million|trillion|b\b|m\b)\b|"
-                r"\b\d+(?:,\d+)*(?:\.\d+)?\s*(?:crore|cr|billion|million|trillion)\b|"
+                r"(?:(?:rs\.?|₹|\$|€|£|us\$|usd\s*|inr\s*)\s*\d+(?:,\d+)*(?:\.\d+)?\s*(?:lakh\s+(?:crore|cr)|crore|cr|billion|million|trillion|b\b|m\b)\b|"
+                r"\b\d+(?:,\d+)*(?:\.\d+)?\s*(?:lakh\s+(?:crore|cr)|crore|cr|billion|million|trillion)\b|"
                 r"\b(?:multi-crore|multi-billion|mega capex|mega project|billion-dollar project)\b|"
                 r"\b(?:bags order|wins contract|secures order|awards? (?:[\w-]+\s+)*contracts?|concession pact|order worth|invests? ₹?\$?\d+|funding round of ₹?\$?\d+)\b)",
                 full_text,
@@ -342,6 +361,7 @@ class InvestmentMaterialityEvaluator:
                 r"stake purchase|to combine with|combines with|combination with|demerger|amalgamation|"
                 r"satellite constellation|rocket engine|build rocket engine|"
                 r"dedicated freight corridor|freight corridor|corridor network|projects? unveiled|infrastructure unveiled|"
+                r"store\s+count|store\s+network|retail\s+stores?|standalone\s+stores?|"
                 r"commissions?(?: new)?|commissioning|solar plant|power plant|renewable plant|container terminal|concession agreement|ppa|power purchase agreement|retail expansion|network expansion)\b",
                 full_text,
             )
@@ -367,7 +387,7 @@ class InvestmentMaterialityEvaluator:
             positive_reasons.append("cross_border_global_significance(+10)")
 
         # 7. Major sector impact (+10)
-        # Strategically important sectors: AI, semiconductor, aerospace, banking, energy, telecom, infrastructure, space
+        # Strategically important sectors: AI, semiconductor, aerospace, banking, energy, telecom, infrastructure, space, chemicals
         is_sector_impact = bool(
             re.search(
                 r"\b(?:ai\b|artificial intelligence|generative ai|aerospace|aviation|space|spacetech|spacex|"
@@ -376,6 +396,7 @@ class InvestmentMaterialityEvaluator:
                 r"telecom|telecommunications|power|energy|oil & gas|renewable energy|clean energy|solar|wind|"
                 r"infrastructure|logistics|supply chain|auto|automotive|electric vehicle|evs?|battery|gigafactory|"
                 r"pharma|pharmaceutical|biotech|real estate|data cent(?:er|re)s?|cloud|cyber security|"
+                r"chemicals?|specialty chemicals?|"
                 r"deepwater|defense|defence|railway|expressway|ports?|shipping|mining|metals?|steel|"
                 r"freight|freight corridor|highways?|expressways?|rail network|power grid|renewable grid|multimodal|"
                 r"industry-wide|nationwide|across \d+ cities|rollout|bond|bonds|debt market|sovereign debt|treasury|g-sec)\b",
@@ -629,6 +650,30 @@ class InvestmentMaterialityEvaluator:
             score -= 30.0
             breakdown["local_disaster_crime_minor_protest"] = -30.0
             negative_reasons.append("local_disaster_crime_minor_protest(-30)")
+
+        # 11. Multi-event roundup / quickreads landing page (-40)
+        is_roundup_shorts = bool(
+            re.search(
+                r"\b(?:brief news and quickreads|quickreads|news in shorts|in shorts by business standard|news briefs?|daily round-?up|in shorts)\b",
+                headline_low,
+            )
+        )
+        if is_roundup_shorts:
+            score -= 40.0
+            breakdown["roundup_shorts"] = -40.0
+            negative_reasons.append("roundup_shorts_page(-40)")
+
+        # 12. IPO buzz / calendar listicle (-40)
+        is_ipo_buzz = bool(
+            re.search(
+                r"\b(?:ipo buzz\s*:|ipo buzz|mainboard listings next week|sme issues? to open|listings next week|issues to open next week|ipos opening next week|upcoming ipos next week)\b",
+                headline_low,
+            )
+        )
+        if is_ipo_buzz:
+            score -= 40.0
+            breakdown["ipo_buzz_calendar"] = -40.0
+            negative_reasons.append("ipo_buzz_calendar_listicle(-40)")
 
         # Bound score between 0.0 and 100.0
         final_score = max(0.0, min(100.0, score))

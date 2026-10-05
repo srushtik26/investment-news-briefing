@@ -710,3 +710,84 @@ def test_30_local_protest_without_economic_scale_fails():
     assert res.score < INVESTMENT_MATERIALITY_THRESHOLD
 
 
+# 31. PASS: D-Mart Q2 business update & store network expansion
+def test_31_dmart_revenue_growth_and_store_network_passes():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "D-Mart owner Avenue Supermarts standalone revenue surges 14% to Rs 14,050 crore in Q2, store count reaches 377"
+    body = "Avenue Supermarts reported standalone revenue of Rs 14,050 crore for the quarter ended September 30, up 14% from Rs 12,308 crore a year ago. The company added 6 new stores taking its total store count to 377."
+    art = _make_art("a_dmart", title, comp="Avenue Supermarts", cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_dmart", art, comp="Avenue Supermarts", figures=["Rs 14,050 crore"])
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is True
+    assert res.score >= INVESTMENT_MATERIALITY_THRESHOLD
+
+
+# 32. PASS: Ceigall India / L&T Dubai infrastructure project award
+def test_32_dubai_corridor_road_works_award_passes():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "Ceigall India wins international road works contract for Dubai-Hatta corridor project"
+    body = "Infrastructure firm Ceigall India secured a major contract to construct arterial road works and corridor build-out in the UAE worth over Rs 1,200 crore."
+    art = _make_art("a_ceigall", title, comp="Ceigall India", cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_ceigall", art, comp="Ceigall India", figures=["Rs 1,200 crore"])
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is True
+    assert res.score >= INVESTMENT_MATERIALITY_THRESHOLD
+
+
+# 33. PASS: Maharashtra ₹4.15 Lakh Crore mega-investment magnitude parsing
+def test_33_lakh_crore_tech_investment_magnitude_passes():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "Maharashtra secures Rs 4.15 lakh crore tech investments, cloud infrastructure, creating 22,000 jobs"
+    body = "The state government approved strategic investment agreements totaling Rs 4.15 lakh crore with global tech majors to build semiconductor, cloud data centers, and advanced technology complexes."
+    art = _make_art("a_maha_tech", title, comp="Maharashtra State", cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_maha_tech", art, comp="Maharashtra State", figures=["Rs 4.15 lakh crore"])
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is True
+    assert res.score >= INVESTMENT_MATERIALITY_THRESHOLD
+    # Verify magnitude bonus (+20) was correctly awarded
+    assert res.breakdown.get("magnitude_bonus") == 20.0
+
+
+# 34. PASS: RBI Monetary Policy repo rate expectations
+def test_34_rbi_monetary_policy_repo_rate_passes():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "RBI monetary policy: Reserve Bank of India repo rate decision and liquidity framework preview"
+    body = "The Reserve Bank of India monetary policy committee begins deliberations on the repo rate decision and banking sector liquidity management."
+    art = _make_art("a_rbi_mpc", title, comp="Reserve Bank of India", cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_rbi_mpc", art, comp="Reserve Bank of India")
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is True
+    assert res.score >= INVESTMENT_MATERIALITY_THRESHOLD
+
+
+# 35. FAIL: Brief News & Quickreads landing page
+def test_35_brief_news_quickreads_landing_page_fails():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "Brief News and Quickreads, News in Shorts by Business Standard"
+    body = "Check out the top quick news briefs and roundup across business sectors."
+    art = _make_art("a_quickreads", title, cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_quickreads", art)
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is False
+    assert res.score < INVESTMENT_MATERIALITY_THRESHOLD
+
+
+# 36. FAIL: IPO Buzz / upcoming calendar listicle
+def test_36_ipo_buzz_calendar_listicle_fails():
+    evaluator = InvestmentMaterialityEvaluator()
+    title = "IPO Buzz: Orient Cables To Shah Investor's — Six Mainboard Listings Next Week, One SME Issue To Open"
+    body = "Primary market action heats up next week with several upcoming IPOs and listing debuts."
+    art = _make_art("a_ipo_buzz", title, cat=NewsCategory.INDIA, body=body)
+    evt = _make_evt("e_ipo_buzz", art)
+
+    res = evaluator.evaluate(evt, art)
+    assert res.is_material is False
+    assert res.score < INVESTMENT_MATERIALITY_THRESHOLD
+
+
+
