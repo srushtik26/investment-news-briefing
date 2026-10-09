@@ -2322,6 +2322,16 @@ def run_ranking_and_selection(
         pf_reserves = [cand.event if hasattr(cand, "event") else cand for cand in getattr(ctx, "portfolio_reserve_pool", [])]
         all_mem_events_audit = pf_reserves + list(ctx.verified_events) + list(ctx.high_confidence_single_candidates)
         used_ids_audit = {s.event.id for s in audit_passed}
+        seen_comps_audit: Set[str] = set()
+        for s in audit_passed:
+            s_art = ctx.articles_lookup.get(s.event.article_ids[0]) if s.event.article_ids else None
+            r_c = getattr(s.event, "companies_involved", []) or []
+            cl_c = sanitize_company_entities(r_c, publisher=s_art.source_name if s_art else None)
+            for c in cl_c:
+                n = normalize_entity_name(c)
+                if n not in ("unspecified_entity", ""):
+                    seen_comps_audit.add(n)
+
         for ev in all_mem_events_audit:
             if len(audit_passed) >= target_india_count:
                 break
@@ -2329,6 +2339,11 @@ def run_ranking_and_selection(
                 continue
             cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
             if not cand_art:
+                continue
+            cand_raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean_comps = sanitize_company_entities(cand_raw_comps, publisher=cand_art.source_name if cand_art else None)
+            cand_norm_comps = {normalize_entity_name(c) for c in cand_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+            if cand_norm_comps and (cand_norm_comps & seen_comps_audit):
                 continue
             is_nexus, _ = _verify_nexus(ev, cand_art)
             if not is_nexus:
@@ -2348,6 +2363,7 @@ def run_ranking_and_selection(
             )
             audit_passed.append(scored)
             used_ids_audit.add(ev.id)
+            seen_comps_audit.update(cand_norm_comps)
             ctx.log_exec(f"[INDIA_FINAL_NEXUS_AUDIT] Replacement accepted: title=\"{ev.canonical_title}\"")
 
     india_final = audit_passed
@@ -2556,6 +2572,7 @@ def run_ranking_and_selection(
 
     def _intl_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         filtered = []
+        deferred = []
         intl_rejected_count = [0]
         reg_classifier = _get_reg_classifier()
         for scored in cands:
@@ -2682,13 +2699,28 @@ def run_ranking_and_selection(
                         )
                         continue
 
-            is_dup = False
+            cand_raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean_comps = sanitize_company_entities(cand_raw_comps, publisher=cand_art.source_name if cand_art else None)
+            cand_norm_comps = {normalize_entity_name(c) for c in cand_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+
+            is_dup_event = False
+            is_dup_comp = False
             for ex in (existing + filtered):
                 ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
                 if ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
-                    is_dup = True
+                    is_dup_event = True
                     break
-            if is_dup:
+                ex_raw_comps = getattr(ex.event, "companies_involved", []) or []
+                ex_clean_comps = sanitize_company_entities(ex_raw_comps, publisher=ex_art.source_name if ex_art else None)
+                ex_norm_comps = {normalize_entity_name(c) for c in ex_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+                if cand_norm_comps and ex_norm_comps and bool(cand_norm_comps & ex_norm_comps):
+                    is_dup_comp = True
+
+            if is_dup_event:
+                continue
+
+            if is_dup_comp:
+                deferred.append(scored)
                 continue
 
             if intl_rejected_count[0] > 0:
@@ -2705,6 +2737,21 @@ def run_ranking_and_selection(
                 )
                 intl_rejected_count[0] = 0
             filtered.append(scored)
+
+        if len(filtered) < target_count:
+            for scored in deferred:
+                if len(filtered) >= target_count:
+                    break
+                ev = scored.event
+                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                is_dup_ev = False
+                for ex in (existing + filtered):
+                    ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
+                    if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                        is_dup_ev = True
+                        break
+                if not is_dup_ev:
+                    filtered.append(scored)
 
         div = select_diverse_topic_candidates(
             candidates=filtered,
@@ -2815,9 +2862,19 @@ def run_ranking_and_selection(
                     return False
 
             # Dedup vs. existing selected
+            cand_raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean_comps = sanitize_company_entities(cand_raw_comps, publisher=cand_art.source_name if cand_art else None)
+            cand_norm_comps = {normalize_entity_name(c) for c in cand_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+
             for ex_s in intl_final:
                 ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
                 if ex_art and cand_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                    intl_recovery_rejected_ids.add(ev.id)
+                    return False
+                ex_raw_comps = getattr(ex_s.event, "companies_involved", []) or []
+                ex_clean_comps = sanitize_company_entities(ex_raw_comps, publisher=ex_art.source_name if ex_art else None)
+                ex_norm_comps = {normalize_entity_name(c) for c in ex_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+                if cand_norm_comps and ex_norm_comps and bool(cand_norm_comps & ex_norm_comps):
                     intl_recovery_rejected_ids.add(ev.id)
                     return False
 
@@ -3060,6 +3117,7 @@ def run_ranking_and_selection(
             ev for ev in (list(ctx.verified_events) + list(ctx.high_confidence_single_candidates))
             if isinstance(ev, Event) and ev.id not in exclude_ids and ev.event_category == NewsCategory.INTERNATIONAL
         ]
+        deferred_reserve: Optional[ScoredEvent] = None
         for item in intl_reserves:
             ev = item.event if hasattr(item, "event") else item
             if not isinstance(ev, Event) or ev.id in exclude_ids or ev.id in rejected_intl_event_ids:
@@ -3102,14 +3160,25 @@ def run_ranking_and_selection(
                 if is_noise:
                     continue
 
-            # Deduplication against already audited international stories
-            is_dup = False
+            # Deduplication against already audited international stories (both event-level and company-level)
+            cand_raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean_comps = sanitize_company_entities(cand_raw_comps, publisher=cand_art.source_name if cand_art else None)
+            cand_norm_comps = {normalize_entity_name(c) for c in cand_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+
+            is_dup_event = False
+            is_dup_comp = False
             for ex in intl_audited:
                 ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
                 if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
-                    is_dup = True
+                    is_dup_event = True
                     break
-            if is_dup:
+                ex_raw_comps = getattr(ex.event, "companies_involved", []) or []
+                ex_clean_comps = sanitize_company_entities(ex_raw_comps, publisher=ex_art.source_name if ex_art else None)
+                ex_norm_comps = {normalize_entity_name(c) for c in ex_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+                if cand_norm_comps and ex_norm_comps and bool(cand_norm_comps & ex_norm_comps):
+                    is_dup_comp = True
+
+            if is_dup_event:
                 continue
 
             scored = item if isinstance(item, ScoredEvent) else ScoredEvent(
@@ -3122,8 +3191,15 @@ def run_ranking_and_selection(
                 investment_score=70.0,
                 rank=len(intl_audited) + 1,
             )
+
+            if is_dup_comp:
+                if deferred_reserve is None:
+                    deferred_reserve = scored
+                continue
+
             return scored
-        return None
+
+        return deferred_reserve
 
     for s in (candidate_pool.international_candidates or []):
         ev = s.event
@@ -3209,6 +3285,7 @@ def run_ranking_and_selection(
             if isinstance(ev, Event) and ev.event_category == NewsCategory.INDIA
         ]
 
+        deferred_india_reserves: List[tuple] = []
         for ev in india_reserves:
             if len(india_audited) >= 5:
                 break
@@ -3266,13 +3343,24 @@ def run_ranking_and_selection(
             if m_score < 60.0:
                 continue
 
-            is_dup = False
+            cand_raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean_comps = sanitize_company_entities(cand_raw_comps, publisher=cand_art.source_name if cand_art else None)
+            cand_norm_comps = {normalize_entity_name(c) for c in cand_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+
+            is_dup_event = False
+            is_dup_comp = False
             for ex in india_audited:
                 ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
                 if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
-                    is_dup = True
+                    is_dup_event = True
                     break
-            if is_dup:
+                ex_raw_comps = getattr(ex.event, "companies_involved", []) or []
+                ex_clean_comps = sanitize_company_entities(ex_raw_comps, publisher=ex_art.source_name if ex_art else None)
+                ex_norm_comps = {normalize_entity_name(c) for c in ex_clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
+                if cand_norm_comps and ex_norm_comps and bool(cand_norm_comps & ex_norm_comps):
+                    is_dup_comp = True
+
+            if is_dup_event:
                 continue
 
             scored = ScoredEvent(
@@ -3285,13 +3373,36 @@ def run_ranking_and_selection(
                 investment_score=m_score,
                 rank=len(india_audited) + 1,
             )
+
+            if is_dup_comp:
+                deferred_india_reserves.append((scored, ev, is_pf, pf_elig, pf_comp))
+                continue
+
             india_audited.append(scored)
             india_current_ids.add(ev.id)
             if event_by_id is not None:
                 event_by_id[ev.id] = ev
+            if hasattr(ctx, "india_reserve_pool") and ctx.india_reserve_pool and ev in ctx.india_reserve_pool:
+                ctx.india_reserve_pool.remove(ev)
             if is_pf and pf_elig and pf_comp:
                 global_seen_portfolio_companies[pf_comp] = ev.canonical_title
             ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '{ev.canonical_title}'")
+            logger.info("[REGION_FINAL_AUDIT_REFILL] Added reserve candidate to INDIA: '%s'", ev.canonical_title)
+
+        if len(india_audited) < 5:
+            for scored, ev, is_pf, pf_elig, pf_comp in deferred_india_reserves:
+                if len(india_audited) >= 5:
+                    break
+                india_audited.append(scored)
+                india_current_ids.add(ev.id)
+                if event_by_id is not None:
+                    event_by_id[ev.id] = ev
+                if hasattr(ctx, "india_reserve_pool") and ctx.india_reserve_pool and ev in ctx.india_reserve_pool:
+                    ctx.india_reserve_pool.remove(ev)
+                if is_pf and pf_elig and pf_comp:
+                    global_seen_portfolio_companies[pf_comp] = ev.canonical_title
+                ctx.log_exec(f"[REGION_FINAL_AUDIT_REFILL] Added deferred reserve candidate to INDIA: '{ev.canonical_title}'")
+                logger.info("[REGION_FINAL_AUDIT_REFILL] Added deferred reserve candidate to INDIA: '%s'", ev.canonical_title)
 
     # Additional refill pass for International if still below 5 from reserve pool and in-memory events
     while len(intl_audited) < 5:

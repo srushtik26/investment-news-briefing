@@ -399,6 +399,7 @@ class InvestmentMaterialityEvaluator:
                 r"chemicals?|specialty chemicals?|"
                 r"deepwater|defense|defence|railway|expressway|ports?|shipping|mining|metals?|steel|"
                 r"freight|freight corridor|highways?|expressways?|rail network|power grid|renewable grid|multimodal|"
+                r"breweries|brewery|distilleries|distillery|beverages?|spirits|liquor|consumer goods|fmcg|"
                 r"industry-wide|nationwide|across \d+ cities|rollout|bond|bonds|debt market|sovereign debt|treasury|g-sec)\b",
                 full_text,
             )

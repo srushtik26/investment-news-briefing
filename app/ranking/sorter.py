@@ -100,9 +100,35 @@ class CandidatePoolRanker:
 
         # Select top candidates for each section
         top_domestic = domestic_sorted[:top_n]
-        top_india = india_sorted[:top_n]
-        # International: prioritize distinct companies in top pool
+
         from app.deduplication.fingerprint import normalize_entity_name
+        from app.models.entity_sanitizer import sanitize_company_entities
+
+        # India: prioritize distinct companies in top pool
+        top_india: List[ScoredEvent] = []
+        seen_india_comps: set = set()
+        deferred_india: List[ScoredEvent] = []
+
+        for scored in india_sorted:
+            ev = scored.event
+            raw_comps = getattr(ev, "companies_involved", []) or []
+            cand_clean = sanitize_company_entities(raw_comps)
+            norm_comps = {normalize_entity_name(c) for c in cand_clean if normalize_entity_name(c) not in ("unspecified_entity", "unspecified", "unknown", "none", "")}
+            if norm_comps and (norm_comps & seen_india_comps):
+                deferred_india.append(scored)
+            else:
+                seen_india_comps.update(norm_comps)
+                top_india.append(scored)
+                if len(top_india) >= top_n:
+                    break
+
+        if len(top_india) < top_n:
+            for s in deferred_india:
+                if len(top_india) >= top_n:
+                    break
+                top_india.append(s)
+
+        # International: prioritize distinct companies in top pool
         top_intl: List[ScoredEvent] = []
         seen_intl_comps: set = set()
         deferred_intl: List[ScoredEvent] = []
@@ -110,17 +136,12 @@ class CandidatePoolRanker:
         for scored in intl_sorted:
             ev = scored.event
             raw_comps = getattr(ev, "companies_involved", []) or []
-            comp_norm = ""
-            for c in raw_comps:
-                norm = normalize_entity_name(c)
-                if norm not in ("unspecified_entity", "unspecified", "unknown", "none", ""):
-                    comp_norm = norm
-                    break
-            if comp_norm and comp_norm in seen_intl_comps:
+            cand_clean = sanitize_company_entities(raw_comps)
+            norm_comps = {normalize_entity_name(c) for c in cand_clean if normalize_entity_name(c) not in ("unspecified_entity", "unspecified", "unknown", "none", "")}
+            if norm_comps and (norm_comps & seen_intl_comps):
                 deferred_intl.append(scored)
             else:
-                if comp_norm:
-                    seen_intl_comps.add(comp_norm)
+                seen_intl_comps.update(norm_comps)
                 top_intl.append(scored)
                 if len(top_intl) >= top_n:
                     break

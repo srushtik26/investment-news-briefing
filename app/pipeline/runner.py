@@ -639,8 +639,140 @@ def run_pipeline(
             selection_payload = editorial_res.selection
             if not getattr(selection_payload, "domestic_stories", None) or len(selection_payload.domestic_stories) < 5:
                 selection_payload.domestic_stories = dom_stories_selected
-            log_exec(f"Stage 8 Summary:")
-            log_exec(f"  Gemini selected: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
+
+            from app.models.entity_sanitizer import sanitize_company_entities
+            from app.deduplication.fingerprint import normalize_entity_name
+
+            # Backfill India stories if Gemini returned fewer than 5
+            if not getattr(selection_payload, "india_stories", None) or len(selection_payload.india_stories) < 5:
+                current_india = list(selection_payload.india_stories or [])
+                seen_india_comps = set()
+                used_india_ev_ids = set()
+                for st in current_india:
+                    used_india_ev_ids.add(st.event_id)
+                    ev_obj = event_by_id.get(st.event_id) if event_by_id else None
+                    raw_c = ev_obj.companies_involved if ev_obj and ev_obj.companies_involved else []
+                    clean_c = sanitize_company_entities(raw_c, publisher=st.source)
+                    for c in clean_c:
+                        n = normalize_entity_name(c)
+                        if n not in ("unspecified_entity", ""):
+                            seen_india_comps.add(n)
+
+                all_india_cands = (
+                    [s.event for s in candidate_pool.india_candidates]
+                    + (getattr(ctx, "india_reserve_pool", []) or [])
+                    + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
+                    + [e for e in (ctx.high_confidence_single_candidates or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
+                    + [c.event if hasattr(c, "event") else c for c in (getattr(ctx, "portfolio_discovered_candidates", []) or [])]
+                )
+                for ev in all_india_cands:
+                    if len(current_india) >= 5:
+                        break
+                    if not isinstance(ev, Event) or ev.id in used_india_ev_ids:
+                        continue
+                    if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                        continue
+                    if history_store:
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(ev.id)
+                            continue
+                    art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                    raw_comps = getattr(ev, "companies_involved", []) or []
+                    clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
+                    is_dup = False
+                    for c in clean_comps:
+                        n = normalize_entity_name(c)
+                        if n in seen_india_comps and n not in ("unspecified_entity", ""):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+                    for c in clean_comps:
+                        n = normalize_entity_name(c)
+                        if n not in ("unspecified_entity", ""):
+                            seen_india_comps.add(n)
+                    used_india_ev_ids.add(ev.id)
+                    sc = build_story_context(ev, art, ctx=ctx)
+                    current_india.append(prepare_final_story(sc, ctx=ctx))
+                    log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Backfilled India story to reach 5: '{ev.canonical_title}'")
+                selection_payload.india_stories = current_india
+
+            # Backfill International stories if Gemini returned fewer than 5
+            if not getattr(selection_payload, "international_stories", None) or len(selection_payload.international_stories) < 5:
+                current_intl = list(selection_payload.international_stories or [])
+                seen_intl_comps = set()
+                used_intl_ev_ids = set()
+                for st in current_intl:
+                    used_intl_ev_ids.add(st.event_id)
+                    ev_obj = event_by_id.get(st.event_id) if event_by_id else None
+                    raw_c = ev_obj.companies_involved if ev_obj and ev_obj.companies_involved else []
+                    clean_c = sanitize_company_entities(raw_c, publisher=st.source)
+                    for c in clean_c:
+                        n = normalize_entity_name(c)
+                        if n not in ("unspecified_entity", ""):
+                            seen_intl_comps.add(n)
+
+                all_intl_cands = (
+                    [s.event for s in candidate_pool.international_candidates]
+                    + (getattr(ctx, "intl_reserve_pool", []) or [])
+                    + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INTERNATIONAL]
+                    + [e for e in (ctx.high_confidence_single_candidates or []) if getattr(e, "event_category", None) == NewsCategory.INTERNATIONAL]
+                )
+                for ev in all_intl_cands:
+                    if len(current_intl) >= 5:
+                        break
+                    if not isinstance(ev, Event) or ev.id in used_intl_ev_ids:
+                        continue
+                    if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                        continue
+                    if history_store:
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(ev.id)
+                            continue
+                    art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                    raw_comps = getattr(ev, "companies_involved", []) or []
+                    clean_comps = sanitize_company_entities(raw_comps, publisher=art.source_name if art else None)
+                    is_dup = False
+                    for c in clean_comps:
+                        n = normalize_entity_name(c)
+                        if n in seen_intl_comps and n not in ("unspecified_entity", ""):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+                    for c in clean_comps:
+                        n = normalize_entity_name(c)
+                        if n not in ("unspecified_entity", ""):
+                            seen_intl_comps.add(n)
+                    used_intl_ev_ids.add(ev.id)
+                    sc = build_story_context(ev, art, ctx=ctx)
+                    current_intl.append(prepare_final_story(sc, ctx=ctx))
+                    log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Backfilled International story to reach 5: '{ev.canonical_title}'")
+                selection_payload.international_stories = current_intl
+
+            # Fallback if any section is still short of 5
+            if len(selection_payload.india_stories) < 5 or len(selection_payload.international_stories) < 5 or len(selection_payload.domestic_stories) < 5:
+                log_exec(f"Stage 8 Gemini payload incomplete after backfill (Dom={len(selection_payload.domestic_stories)}, India={len(selection_payload.india_stories)}, Intl={len(selection_payload.international_stories)}) — activating full deterministic fallback.")
+                selection_payload = None
+            else:
+                log_exec(f"Stage 8 Summary:")
+                log_exec(f"  Gemini selected/backfilled: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
         else:
             err = editorial_res.error_message if editorial_res else "Unknown editorial error"
             log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
@@ -656,6 +788,7 @@ def run_pipeline(
                 + (getattr(ctx, "india_reserve_pool", []) or [])
                 + [e for e in (ctx.verified_events or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
                 + [e for e in (ctx.high_confidence_single_candidates or []) if getattr(e, "event_category", None) == NewsCategory.INDIA]
+                + [c.event if hasattr(c, "event") else c for c in (getattr(ctx, "portfolio_discovered_candidates", []) or [])]
             )
             for ev in all_india_cands:
                 if len(india_stories_selected) >= 5:
