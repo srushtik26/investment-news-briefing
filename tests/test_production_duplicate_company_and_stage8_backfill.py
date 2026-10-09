@@ -278,3 +278,21 @@ def test_stage8_backfill_restores_4_stories_to_5_without_duplicate_company():
     selected_intl_ev_ids = [st.event_id for st in selection_payload.international_stories]
     assert "e_int_dup" not in selected_intl_ev_ids
     assert "e_int_oil" in selected_intl_ev_ids
+
+
+def test_summary_unspaced_joined_sentences_sanitized():
+    """Verify that unspaced joined sentence artifacts (Check 20) are automatically cleaned."""
+    raw_summary = (
+        "The potential stake sale comes as renewable energy companies are increasingly looking "
+        "to bring in strategic and financial investors to fund capacity expansion and strengthen "
+        "execution capabilities.For Thermax, the transaction could provide a partner for scaling "
+        "First Energy's renewable portfolio and addressing operational challenges, the executive cited above said."
+    )
+    art = _make_article("a_t", "Thermax stake sale", NewsCategory.INDIA, "Thermax")
+    ev = _make_event("e_t", art, NewsCategory.INDIA, "Thermax")
+    sc = build_story_context(ev, art)
+    story = prepare_final_story(sc, preferred_summary=raw_summary)
+
+    import re
+    assert not re.search(r"\b[a-z0-9]+\.[A-Z]", story.summary)
+    assert "capabilities. For Thermax" in story.summary

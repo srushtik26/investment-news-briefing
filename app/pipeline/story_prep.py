@@ -102,6 +102,11 @@ def prepare_final_story(
 
     if not summary:
         summary = f"{headline}. Strategic developments and institutional context."
+    else:
+        import re
+        summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", summary.strip())
+        if not summary.endswith((".", "!", "?", '"', "'")):
+            summary = summary + "."
 
     section_str = "india"
     if hasattr(context, "region"):

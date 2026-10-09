@@ -1278,6 +1278,18 @@ def run_pipeline(
         log_exec(f"PORTFOLIO_SELECTED={final_pf_selected}")
         logger.info("PORTFOLIO_SELECTED=%d", final_pf_selected)
 
+        # Sanitize formatting artifacts across all stories before saving and validating
+        import re
+        for st in (
+            (selection_payload.domestic_stories or [])
+            + (selection_payload.india_stories or [])
+            + (selection_payload.international_stories or [])
+        ):
+            if getattr(st, "summary", None):
+                st.summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", st.summary.strip())
+                if not st.summary.endswith((".", "!", "?", '"', "'")):
+                    st.summary = st.summary + "."
+
         save_json_artifact(data_dir / "final_15_stories.json", {
             "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
             "india":         [s.model_dump() for s in selection_payload.india_stories],

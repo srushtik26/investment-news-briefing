@@ -253,6 +253,11 @@ class GeminiEditorialEngine:
                                 sum_len,
                             )
                             story.summary = generate_deterministic_summary(art, ev, story.headline)
+                    if getattr(story, "summary", None):
+                        import re
+                        story.summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", story.summary.strip())
+                        if not story.summary.endswith((".", "!", "?", '"', "'")):
+                            story.summary = story.summary + "."
 
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)
