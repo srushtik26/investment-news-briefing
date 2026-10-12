@@ -2190,11 +2190,13 @@ def run_ranking_and_selection(
                 ]
                 INDIA_RSS_SOURCES = "(site:business-standard.com OR site:livemint.com OR site:moneycontrol.com OR site:economictimes.indiatimes.com)"
 
+                recovery_searches_run = 0
                 for qry in INDIA_RECOVERY_QUERIES:
-                    if needed <= 0 or get_corroboration_count() >= MAX_CORROBORATION_SEARCHES_PER_RUN:
+                    if needed <= 0 or recovery_searches_run >= rem_budget:
                         break
                     full_query = f"{qry} {INDIA_RSS_SOURCES}"
                     items = ctx.discovery_service.provider.discover(query=full_query, country="India", max_results=10)
+                    recovery_searches_run += 1
                     increment_corroboration_count(1)
                     ctx.corroboration_searches += 1
                     for it in items:
