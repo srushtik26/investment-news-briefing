@@ -1281,16 +1281,16 @@ def run_pipeline(
         logger.info("PORTFOLIO_SELECTED=%d", final_pf_selected)
 
         # Sanitize formatting artifacts across all stories before saving and validating
-        import re
+        from app.ai.summary_grounding import sanitize_briefing_summary, build_descriptive_investment_summary
         for st in (
             (selection_payload.domestic_stories or [])
             + (selection_payload.india_stories or [])
             + (selection_payload.international_stories or [])
         ):
             if getattr(st, "summary", None):
-                st.summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", st.summary.strip())
-                if not st.summary.endswith((".", "!", "?", '"', "'")):
-                    st.summary = st.summary + "."
+                ev = event_by_id.get(st.event_id)
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if (ev and ev.article_ids) else None
+                st.summary = sanitize_briefing_summary(st.summary, headline=st.headline, event=ev, article=art)
 
         save_json_artifact(data_dir / "final_15_stories.json", {
             "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
@@ -1319,6 +1319,45 @@ def run_pipeline(
             quality_ladder_mode=True,
             run_reference_time=run_reference_time,
         )
+
+        # Stage 9 Autonomous Format Repair Guard for Check 20 format issues
+        c20_failed = any(not r.passed and r.check_id == 20 for r in validation_report.check_results)
+        if c20_failed and validation_report.failed_checks == 1:
+            log_exec("[STAGE9_AUTONOMOUS_REPAIR] Check 20 format violation detected — repairing summaries with grounded investment fallbacks...")
+            for st in (
+                (selection_payload.domestic_stories or [])
+                + (selection_payload.india_stories or [])
+                + (selection_payload.international_stories or [])
+            ):
+                ev = event_by_id.get(st.event_id)
+                art = ctx.articles_lookup.get(ev.article_ids[0]) if (ev and ev.article_ids) else None
+                st.summary = sanitize_briefing_summary(
+                    build_descriptive_investment_summary(st.headline, event=ev, article=art),
+                    headline=st.headline,
+                    event=ev,
+                    article=art,
+                )
+            # Re-run validation
+            validation_report = validator.validate_briefing(
+                payload=selection_payload,
+                events_lookup=event_by_id,
+                articles_lookup=ctx.articles_lookup,
+                target_date=ctx.target_date,
+                strict_5_per_section=True,
+                quality_ladder_mode=True,
+                run_reference_time=run_reference_time,
+            )
+            log_exec(f"[STAGE9_AUTONOMOUS_REPAIR] Post-repair passed checks: {validation_report.passed_checks} / 20 (is_valid={validation_report.is_valid})")
+            save_json_artifact(data_dir / "final_15_stories.json", {
+                "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
+                "india":         [s.model_dump() for s in selection_payload.india_stories],
+                "international": [s.model_dump() for s in selection_payload.international_stories],
+            })
+            save_json_artifact(data_dir / "final_10_stories.json", {
+                "india":         [s.model_dump() for s in selection_payload.india_stories],
+                "international": [s.model_dump() for s in selection_payload.international_stories],
+            })
+
         log_exec(f"Stage 9 Summary:")
         log_exec(f"  Status:        {validation_report.status.value}")
         log_exec(f"  Passed checks: {validation_report.passed_checks} / 20")

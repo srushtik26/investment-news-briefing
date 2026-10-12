@@ -24,6 +24,7 @@ from app.ai.editor import generate_deterministic_summary
 from app.ai.summary_grounding import (
     validate_summary_grounding,
     is_summary_substantially_identical_to_headline,
+    sanitize_briefing_summary,
 )
 from app.validation.shared import (
     calculate_semantic_token_overlap,
@@ -85,28 +86,22 @@ def prepare_final_story(
         raw_t = ev.canonical_title if ev else (art.title if art else headline)
         headline = _clean_headline_text(raw_t)
 
-    # 2. Summary Generation & Grounding
     summary = preferred_summary
     if not summary:
         summary = generate_deterministic_summary(art, ev, headline)
     else:
         is_grounded, g_reason = validate_summary_grounding(summary, headline, event=ev, article=art)
         is_duplicate = is_summary_substantially_identical_to_headline(summary, headline)
+        has_url = "http://" in summary or "https://" in summary or "www." in summary
         sum_len = len(summary.split())
-        if not is_grounded or is_duplicate or sum_len > 65:
+        if not is_grounded or is_duplicate or has_url or sum_len > 65:
             logger.warning(
-                "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — using deterministic fallback",
-                headline, is_grounded, is_duplicate, sum_len,
+                "Summary validation failed for '%s' (grounded=%s, duplicate=%s, has_url=%s, len=%d) — using deterministic fallback",
+                headline, is_grounded, is_duplicate, has_url, sum_len,
             )
             summary = generate_deterministic_summary(art, ev, headline)
 
-    if not summary:
-        summary = f"{headline}. Strategic developments and institutional context."
-    else:
-        import re
-        summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", summary.strip())
-        if not summary.endswith((".", "!", "?", '"', "'")):
-            summary = summary + "."
+    summary = sanitize_briefing_summary(summary, headline=headline, event=ev, article=art)
 
     section_str = "india"
     if hasattr(context, "region"):

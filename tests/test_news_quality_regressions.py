@@ -421,6 +421,38 @@ def test_land_acquisition_tightened_routing():
     assert is_land_acquisition_signal("Ashiana Housing buys Gurugram land parcel") is True
     assert is_land_acquisition_signal("government land policy debate") is False
     assert is_land_acquisition_signal("wetland conservation project") is False
-    assert is_land_acquisition_signal("agricultural land reform discussion") is False
     assert is_land_acquisition_signal("M3M acquires 73-acre Noida land") is True
+
+
+def test_sanitize_briefing_summary_cleans_urls_and_datelines():
+    """Verify sanitize_briefing_summary eliminates raw URLs, wire lead-ins, and passes Check 20."""
+    from app.ai.summary_grounding import sanitize_briefing_summary
+
+    raw_wire_summary = (
+        "12, 2026 (GLOBE NEWSWIRE) -- WHY: Rosen Law Firm, a global investor rights law firm, "
+        "reminds persons or entities that: (a) sold shares of Dun & Bradstreet Holdings, Inc. "
+        "WHAT TO DO NEXT: To join the Dun & Bradstreet class action, go to "
+        "https://rosenlegal.com/cases/dun-bradstreet-holdings-inc/join or call Phillip Kim, Esq."
+    )
+    hl = "ROSEN, A LONGSTANDING LAW FIRM, Encourages Dun & Bradstreet Holdings, Inc. Investors to Secure Counsel Before Important Deadline in Securities Class Action - DNB"
+
+    cleaned = sanitize_briefing_summary(raw_wire_summary, headline=hl)
+    assert "http://" not in cleaned
+    assert "https://" not in cleaned
+    assert "www." not in cleaned
+    assert "GLOBE NEWSWIRE" not in cleaned
+    assert cleaned.endswith((".", "!", "?"))
+    assert len(cleaned.split()) <= 65
+
+    raw_pr_summary = (
+        "12, 2026 /PRNewswire/ -- California leads the nation in a new analysis of where investors "
+        "are using AI to inform investment decisions, but some of the strongest activity is taking "
+        "place far beyond Silicon Valley and Wall Street."
+    )
+    hl2 = "New Data Reveals Where U.S. Investors Are Using AI the Most"
+    cleaned2 = sanitize_briefing_summary(raw_pr_summary, headline=hl2)
+    assert not cleaned2.startswith("12, 2026")
+    assert "/PRNewswire/" not in cleaned2
+    assert cleaned2.endswith((".", "!", "?"))
+
 

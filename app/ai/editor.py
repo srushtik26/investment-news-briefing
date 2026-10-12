@@ -76,6 +76,7 @@ def generate_deterministic_summary(
         build_descriptive_investment_summary,
         is_summary_substantially_identical_to_headline,
         clamp_summary_length,
+        sanitize_briefing_summary,
     )
 
     raw_title = (headline or (article.title if article else "") or (getattr(event, "canonical_title", "") if event else "")).strip()
@@ -86,11 +87,11 @@ def generate_deterministic_summary(
         if grounded_sentence and not is_summary_substantially_identical_to_headline(grounded_sentence, clean_title):
             words = grounded_sentence.split()
             if 35 <= len(words) <= 65:
-                return BriefingFormatter.clean_text(clamp_summary_length(grounded_sentence, max_words=65))
+                return sanitize_briefing_summary(grounded_sentence, headline=clean_title, event=event, article=article)
 
     # Use deterministic descriptive investment committee summary
     fallback = build_descriptive_investment_summary(clean_title, event=event, article=article)
-    return BriefingFormatter.clean_text(clamp_summary_length(fallback, max_words=65))
+    return sanitize_briefing_summary(fallback, headline=clean_title, event=event, article=article)
 
 
 class GeminiEditorialEngine:
@@ -232,32 +233,35 @@ class GeminiEditorialEngine:
                     payload.domestic_stories = dom_stories
 
                 # Validate headline style and summary grounding for every story
-                from app.ai.summary_grounding import validate_summary_grounding, is_summary_substantially_identical_to_headline
+                from app.ai.summary_grounding import (
+                    validate_summary_grounding,
+                    is_summary_substantially_identical_to_headline,
+                    sanitize_briefing_summary,
+                )
                 for story in (payload.domestic_stories + payload.india_stories + payload.international_stories):
                     scored = valid_events_map.get(story.event_id)
                     ev = scored.event if scored else None
                     art = articles_map.get(ev.article_ids[0]) if ev and ev.article_ids else None
                     story.headline = generate_grounded_fallback_headline(event=ev, article=art, candidate_headline=story.headline)
+                    has_url = bool(story.summary and ("http://" in story.summary or "https://" in story.summary or "www." in story.summary))
                     if not getattr(story, "summary", None):
                         story.summary = generate_deterministic_summary(art, ev, story.headline)
                     else:
                         is_grounded, g_reason = validate_summary_grounding(story.summary, story.headline, event=ev, article=art)
                         is_duplicate = is_summary_substantially_identical_to_headline(story.summary, story.headline)
                         sum_len = len(story.summary.split())
-                        if not is_grounded or is_duplicate or sum_len > 65:
+                        if not is_grounded or is_duplicate or has_url or sum_len > 65:
                             logger.warning(
-                                "Summary validation failed for '%s' (grounded=%s, duplicate=%s, len=%d) — replacing with descriptive fallback",
+                                "Summary validation failed for '%s' (grounded=%s, duplicate=%s, has_url=%s, len=%d) — replacing with descriptive fallback",
                                 story.headline,
                                 is_grounded,
                                 is_duplicate,
+                                has_url,
                                 sum_len,
                             )
                             story.summary = generate_deterministic_summary(art, ev, story.headline)
                     if getattr(story, "summary", None):
-                        import re
-                        story.summary = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", story.summary.strip())
-                        if not story.summary.endswith((".", "!", "?", '"', "'")):
-                            story.summary = story.summary + "."
+                        story.summary = sanitize_briefing_summary(story.summary, headline=story.headline, event=ev, article=art)
 
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)

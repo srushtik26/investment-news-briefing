@@ -22,6 +22,11 @@ BOILERPLATE_PHRASES = (
     "live updates", "stay tuned", "download app", "also read", "copyright",
     "watch live", "newsletter", "terms of use", "privacy policy", "related stories",
     "recommended stories", "trending now", "editors pick", "must read",
+    "http://", "https://", "www.", ".com/", ".org/", ".html",
+    "globe newswire", "globenewswire", "prnewswire", "business wire", "pr newswire",
+    "what to do next", "why: rosen", "rosen law firm", "call phillip kim",
+    "lead plaintiff", "class action", "reminds investors", "reminds persons",
+    "secure counsel", "contact counsel", "join the class action",
 )
 
 INCOMPLETE_ENDINGS: Set[str] = {
@@ -93,6 +98,10 @@ def validate_summary_grounding(
     h_clean = headline.strip()
     s_low = s_clean.lower()
     h_low = h_clean.lower()
+
+    # Reject summaries containing raw URLs
+    if "http://" in s_low or "https://" in s_low or "www." in s_low:
+        return False, "Summary contains raw URL"
 
     # Significant content words (len >= 3, non-stopwords)
     stop_words = {
@@ -247,6 +256,9 @@ def select_grounded_summary_sentence(
         return None
 
     cleaned_body = re.sub(r"([a-z0-9])\.([A-Z])", r"\1. \2", raw_body)
+    # Protect common date and corporate abbreviations before sentence splitting
+    cleaned_body = re.sub(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.\s*(\d)", r"\1 \2", cleaned_body)
+    cleaned_body = re.sub(r"\b(U\.S\.|Inc\.|Corp\.|Co\.|Ltd\.|Dr\.|Mr\.|Ms\.|Govt\.|No\.)\s+", r"\1 ", cleaned_body)
 
     # Split into candidate sentences
     raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_body) if len(s.strip().split()) >= 4]
@@ -254,7 +266,12 @@ def select_grounded_summary_sentence(
     valid_candidates: List[str] = []
     for s in raw_sentences:
         s_low = s.lower()
-        if any(b in s_low for b in BOILERPLATE_PHRASES):
+        if (
+            "http://" in s_low
+            or "https://" in s_low
+            or "www." in s_low
+            or any(b in s_low for b in BOILERPLATE_PHRASES)
+        ):
             continue
         words = s.split()
         if len(words) < 6 or len(words) > 65:
@@ -270,11 +287,22 @@ def select_grounded_summary_sentence(
 
     scored_candidates: List[Tuple[float, str]] = []
 
+    wire_prefix_re = re.compile(
+        r"^(?:(?:\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\b\s*)?\d{1,2},\s*\d{4}\s*)?(?:\([A-Za-z\s\.,\'-]+\)|/[A-Za-z\s\.,\'-]+/)?\s*[-–—:]+\s*(?:WHY:\s*|WHAT TO DO NEXT:\s*)?",
+        re.IGNORECASE,
+    )
+    city_prefix_re = re.compile(
+        r"^(?:NEW DELHI|MUMBAI|BENGALURU|HYDERABAD|CHENNAI|KOLKATA|WASHINGTON|LONDON|BEIJING|TOKYO)\s*[-–—:]+\s*",
+        re.IGNORECASE,
+    )
+
     for idx, s in enumerate(valid_candidates[:12]):
+        cleaned_s = wire_prefix_re.sub("", s).strip()
+        cleaned_s = city_prefix_re.sub("", cleaned_s).strip()
         cleaned_s = re.sub(
-            r"^(?:According to reports|Reports indicate that|It is reported that|Sources said that|In a statement|On Thursday|On Friday|On Wednesday|On Tuesday|On Monday|NEW DELHI|MUMBAI|BENGALURU)[,\s:\-]+",
+            r"^(?:According to reports|Reports indicate that|It is reported that|Sources said that|In a statement|On Thursday|On Friday|On Wednesday|On Tuesday|On Monday)[,\s:\-]+",
             "",
-            s,
+            cleaned_s,
             flags=re.IGNORECASE,
         ).strip()
         if not cleaned_s.endswith((".", "!", "?")):
@@ -601,7 +629,12 @@ def build_descriptive_investment_summary(
     # =========================================================================
     # ARCHETYPE 4: Regulatory / Legal / Enforcement / Antitrust
     # =========================================================================
-    if re.search(r"\b(?:sebi|rbi|cci|dot|dgca|ftc|sec|doj|nclt|court|contempt|regulatory|antitrust|penalty|probe|notice|ban|bans|quash|stay)\b", clean_h, re.IGNORECASE):
+    if re.search(r"\b(?:sebi|rbi|cci|dot|dgca|ftc|sec|doj|nclt|court|contempt|regulatory|antitrust|penalty|probe|notice|ban|bans|quash|stay|class action|lawsuit|litigation|securities class action)\b", clean_h, re.IGNORECASE):
+        if re.search(r"\b(?:class action|lawsuit|litigation|investor rights)\b", clean_h, re.IGNORECASE):
+            s1 = f"Legal proceedings regarding securities class action litigation were initiated concerning {primary_comp}."
+            s2 = "The action outlines shareholder disclosures and reporting matters subject to formal legal review."
+            s3 = "The litigation provides market participants insight into corporate governance, compliance standards, and potential legal exposure."
+            return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
         s1 = f"The {authority} issued a formal regulatory order directing {primary_comp} regarding sector compliance requirements."
         if extracted_figures:
             s2 = f"The enforcement action mandates immediate operational adjustments alongside financial terms of {extracted_figures[0]}."
@@ -698,4 +731,76 @@ def build_structured_fallback_summary(
 ) -> str:
     """Backward-compatible alias for build_descriptive_investment_summary."""
     return build_descriptive_investment_summary(headline=headline, event=event, article=article)
+
+
+def sanitize_briefing_summary(
+    summary: str,
+    headline: str = "",
+    event: Optional[Event] = None,
+    article: Optional[Article] = None,
+) -> str:
+    """
+    Sanitize and validate a story summary to strictly satisfy Check #20.
+    1. Replaces summary if it contains raw URLs, contact solicitation, or advertisement boilerplate.
+    2. Strips leading wire datelines/service headers (e.g. '12, 2026 /PRNewswire/ -- ').
+    3. Cleans unspaced joined sentences (e.g. 'word.Word' -> 'word. Word').
+    4. Normalizes newlines and whitespace.
+    5. Ensures valid sentence punctuation and guards against incomplete endings.
+    6. Clamps to maximum 65 words.
+    """
+    text = (summary or "").strip()
+    text = text.replace("\n", " ")
+    text = re.sub(r"^[-•*]\s+", "", text)
+    low = text.lower()
+
+    ad_boilerplate = (
+        "click here", "subscribe", "all rights reserved", "read more", "advertisement", "download app",
+        "class action", "lead plaintiff", "what to do next", "call phillip kim", "rosen law firm",
+        "http://", "https://", "www.",
+    )
+    needs_regen = (
+        not text
+        or "http://" in low or "https://" in low or "www." in low
+        or any(b in low for b in ad_boilerplate)
+        or (bool(headline) and is_summary_substantially_identical_to_headline(text, headline))
+    )
+    if needs_regen and headline:
+        text = build_descriptive_investment_summary(headline, event=event, article=article)
+
+    # Strip any residual URLs
+    text = re.sub(r"https?://\S+|www\.\S+", "", text).strip()
+
+    # Strip wire and city dateline prefixes
+    wire_re = re.compile(
+        r"^(?:(?:\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\b\s*)?\d{1,2},\s*\d{4}\s*)?(?:\([A-Za-z\s\.,\'-]+\)|/[A-Za-z\s\.,\'-]+/)?\s*[-–—:]+\s*(?:WHY:\s*|WHAT TO DO NEXT:\s*)?",
+        re.IGNORECASE,
+    )
+    city_re = re.compile(
+        r"^(?:NEW DELHI|MUMBAI|BENGALURU|HYDERABAD|CHENNAI|KOLKATA|WASHINGTON|LONDON|BEIJING|TOKYO)\s*[-–—:]+\s*",
+        re.IGNORECASE,
+    )
+    text = wire_re.sub("", text).strip()
+    text = city_re.sub("", text).strip()
+
+    # Clean unspaced sentence junctions: word.Word -> word. Word
+    text = re.sub(r"([a-z0-9]+)\.([A-Z])", r"\1. \2", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text and headline:
+        text = build_descriptive_investment_summary(headline, event=event, article=article)
+
+    text = clamp_summary_length(text, max_words=65)
+
+    valid_punct = (".", "!", "?", '"', "'")
+    if not text.endswith(valid_punct):
+        text = text + "."
+
+    words = text.split()
+    while words and re.sub(r"[^\w]", "", words[-1]).lower() in INCOMPLETE_ENDINGS:
+        words.pop()
+        text = " ".join(words).rstrip(" ,;:-—–") + "."
+        words = text.split()
+
+    return text
+
 
