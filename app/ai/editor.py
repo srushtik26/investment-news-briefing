@@ -263,6 +263,11 @@ class GeminiEditorialEngine:
                     if getattr(story, "summary", None):
                         story.summary = sanitize_briefing_summary(story.summary, headline=story.headline, event=ev, article=art)
 
+                # Ensure executive_summary is populated
+                if not getattr(payload, "executive_summary", None):
+                    from app.ai.summary_grounding import build_executive_market_summary
+                    payload.executive_summary = build_executive_market_summary(payload)
+
                 # Programmatic Validation Checks
                 self._validate_editorial_payload(payload, valid_events_map, valid_urls_map)
 
@@ -707,7 +712,12 @@ class GeminiEditorialEngine:
                 selected_ids.add(e.id)
 
 
+        from app.ai.summary_grounding import build_executive_market_summary
+        all_selected = domestic_selected[:5] + india_selected[:5] + intl_selected[:5]
+        exec_summary = build_executive_market_summary(all_selected)
+
         return json.dumps({
+            "executive_summary": exec_summary,
             "domestic_stories": domestic_selected[:5],
             "india_stories": india_selected[:5],
             "international_stories": intl_selected[:5],

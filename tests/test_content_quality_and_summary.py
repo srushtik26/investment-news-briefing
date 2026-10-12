@@ -801,3 +801,142 @@ def test_speculative_deal_talks_vs_completed_hard_events():
     )
     res_nvidia = rule.evaluate(nvidia_art)
     assert res_nvidia.is_accepted
+
+
+# =========================================================================
+# PART 7: INSTITUTIONAL EQUITY RESEARCH SUMMARIES & EXECUTIVE MARKET OVERVIEW
+# =========================================================================
+
+def test_institutional_equity_research_summary_archetypes():
+    """Verify new institutional archetypes (macro, infrastructure, AI/tech, fiscal, energy)."""
+    from app.ai.summary_grounding import build_descriptive_investment_summary, clamp_summary_length
+
+    # 1. Macro / Monetary Policy
+    macro_hl = "RBI Holds Repo Rate at 6.50% Amid Inflation Caution; Central Bank Projects FY27 GDP Growth at 7.2%"
+    macro_sum = build_descriptive_investment_summary(macro_hl)
+    assert "monetary" in macro_sum.lower() or "liquidity" in macro_sum.lower() or "macroeconomic" in macro_sum.lower()
+    words = macro_sum.split()
+    assert 35 <= len(words) <= 65
+    assert not macro_sum.startswith("The development is expected to have meaningful implications")
+
+    # 2. Infrastructure / Public Works
+    infra_hl = "L&T Wins ₹4,500 Crore Mega Order for High-Speed Rail Corridor; Execution Slated Over 48 Months"
+    infra_sum = build_descriptive_investment_summary(infra_hl)
+    assert "₹4,500 crore" in infra_sum or "order" in infra_sum.lower() or "infrastructure" in infra_sum.lower()
+    words = infra_sum.split()
+    assert 35 <= len(words) <= 65
+
+    # 3. Technology / AI / Semiconductor
+    tech_hl = "Tata Electronics Signs Tech Transfer Pact with PSMC for ₹91,000 Crore Dholera Semiconductor Fab"
+    tech_sum = build_descriptive_investment_summary(tech_hl)
+    assert "semiconductor" in tech_sum.lower() or "technology" in tech_sum.lower() or "compute" in tech_sum.lower()
+    words = tech_sum.split()
+    assert 35 <= len(words) <= 65
+
+    # 4. Fiscal / PLI Policy
+    fiscal_hl = "Government Approves ₹10,000 Crore PLI Scheme Extension for Advanced Solar Modules and Cell Manufacturing"
+    fiscal_sum = build_descriptive_investment_summary(fiscal_hl)
+    assert "policy" in fiscal_sum.lower() or "incentives" in fiscal_sum.lower() or "manufacturing" in fiscal_sum.lower()
+    words = fiscal_sum.split()
+    assert 35 <= len(words) <= 65
+
+    # 5. Energy Transition
+    energy_hl = "Reliance Industries Commits ₹65,000 Crore for Green Hydrogen and Clean Fuel Ecosystem in Gujarat"
+    energy_sum = build_descriptive_investment_summary(energy_hl)
+    assert "energy" in energy_sum.lower() or "infrastructure" in energy_sum.lower() or "capital" in energy_sum.lower()
+    words = energy_sum.split()
+    assert 35 <= len(words) <= 65
+
+
+def test_select_grounded_summary_sentence_filters_retail_leads_and_boosts_metrics():
+    """Verify conversational retail phrases are rejected while financial metrics are prioritized."""
+    from app.ai.summary_grounding import select_grounded_summary_sentence
+
+    body = (
+        "In a conversation with reporters, the executive said things were looking good. "
+        "The company hit an unusual roadblock while pursuing earlier discussions. "
+        "JSW Energy reported consolidated net profit surged 32% YoY to ₹850 crore with EBITDA margins expanding 240 bps. "
+        "Analysts said this was positive."
+    )
+    art = Article(
+        url="https://example.com/jsw-results",
+        title="JSW Energy Q1 Net Profit Rises 32% to ₹850 Crore",
+        source_name="Business Standard",
+        content_text=body,
+    )
+    sentence = select_grounded_summary_sentence(art, art.title)
+    assert sentence is not None
+    assert "roadblock" not in sentence
+    assert "conversation with reporters" not in sentence
+    assert "₹850 crore" in sentence or "32%" in sentence
+
+
+def test_build_executive_market_summary_and_formatting():
+    """Verify deterministic build_executive_market_summary and formatter / email parsing."""
+    from app.ai.summary_grounding import build_executive_market_summary
+    from app.formatting.formatter import BriefingFormatter
+    from app.email.email_sender import parse_briefing_text, generate_briefing_html
+
+    dom_stories = [
+        EditorialStorySelection(
+            section="domestic",
+            event_id=f"dom-{i}",
+            headline=f"Domestic Infrastructure Project {i} Commits Capital Allocation; Execution on Track",
+            summary=f"The government agency and corporate contractor finalized execution milestones for project {i} across targeted transport corridors.",
+            source="Business Standard",
+            url=f"https://example.com/dom-{i}",
+        )
+        for i in range(1, 6)
+    ]
+    india_stories = [
+        EditorialStorySelection(
+            section="india",
+            event_id=f"ind-{i}",
+            headline=f"Company Ind {i} Reports ₹{i*1000} Crore Transaction; Board Approves Acquisition",
+            summary=f"Company Ind {i} agreed to acquire strategic industrial assets valued at ₹{i*1000} crore to expand operating manufacturing capacity.",
+            source="The Economic Times",
+            url=f"https://example.com/ind-{i}",
+        )
+        for i in range(1, 6)
+    ]
+    intl_stories = [
+        EditorialStorySelection(
+            section="international",
+            event_id=f"intl-{i}",
+            headline=f"Global Corporation {i} Posts Revenue of ${i*5} Billion; Operating Margin Resilient",
+            summary=f"Global Corporation {i} reported robust quarterly earnings of ${i*5} billion reflecting durable demand across international divisions.",
+            source="Reuters",
+            url=f"https://example.com/intl-{i}",
+        )
+        for i in range(1, 6)
+    ]
+
+    payload = BriefingEditorialPayload(
+        domestic_stories=dom_stories,
+        india_stories=india_stories,
+        international_stories=intl_stories,
+    )
+
+    exec_overview = build_executive_market_summary(payload)
+    assert exec_overview is not None
+    words = exec_overview.split()
+    assert 40 <= len(words) <= 90
+    assert "Institutional capital allocation" in exec_overview
+
+    payload.executive_summary = exec_overview
+
+    formatter = BriefingFormatter()
+    formatted = formatter.format(payload, briefing_date=date(2026, 10, 12))
+    assert "*EXECUTIVE MARKET OVERVIEW*" in formatted.text
+    assert exec_overview in formatted.text
+
+    parsed = parse_briefing_text(formatted.text)
+    assert parsed is not None
+    assert parsed.get("executive_summary") == exec_overview
+    assert len(parsed["sections"]) == 3
+
+    html_email = generate_briefing_html(parsed)
+    assert "Executive Market Overview" in html_email
+    import html as html_lib
+    assert html_lib.escape(exec_overview) in html_email
+

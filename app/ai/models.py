@@ -93,6 +93,10 @@ class BriefingEditorialPayload(BaseModel):
         extra="allow",
     )
 
+    executive_summary: Optional[str] = Field(
+        default=None,
+        description="Top-level executive market overview synthesizing macro catalysts, sector trends, and capital allocation across today's stories (60-90 words)",
+    )
     domestic_stories: List[EditorialStorySelection] = Field(
         default_factory=list,
         description="Final selected Domestic India macro/policy stories (target: 5)",

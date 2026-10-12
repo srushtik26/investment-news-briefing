@@ -103,6 +103,9 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
     current_secondary_source: Optional[str] = None
     current_secondary_url: Optional[str] = None
 
+    exec_summary_parts: List[str] = []
+    in_exec_summary: bool = False
+
     def flush_story() -> None:
         nonlocal current_headline, current_summary_parts, current_source, current_url, current_secondary_source, current_secondary_url
         if current_headline:
@@ -146,10 +149,20 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
         if not line or set(line) <= {"━", "-", "="}:
             continue
 
+        clean_upper = re.sub(r"^[\*\s_━\-#]+|[\*\s_━\-#]+$", "", line).strip().upper()
+        if "EXECUTIVE MARKET OVERVIEW" in clean_upper or "EXECUTIVE SUMMARY" in clean_upper:
+            in_exec_summary = True
+            continue
+
         sec_key = get_section_key(line)
         if sec_key:
+            in_exec_summary = False
             flush_section()
             current_sec_key = sec_key
+            continue
+
+        if in_exec_summary:
+            exec_summary_parts.append(line)
             continue
 
         if not current_sec_key:
@@ -199,11 +212,14 @@ def parse_briefing_text(text: str) -> Optional[Dict[str, Any]]:
     if not sections:
         return None
 
-    return {
+    res: Dict[str, Any] = {
         "title": title,
         "date": date_str,
         "sections": sections,
     }
+    if exec_summary_parts:
+        res["executive_summary"] = " ".join(exec_summary_parts).strip()
+    return res
 
 
 def generate_briefing_html(parsed: Dict[str, Any]) -> str:
@@ -291,6 +307,20 @@ def generate_briefing_html(parsed: Dict[str, Any]) -> str:
           {"".join(stories_html)}
         """)
 
+    exec_summary_html = ""
+    if parsed.get("executive_summary"):
+        clean_exec = html.escape(parsed["executive_summary"].strip())
+        exec_summary_html = f"""
+          <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #1e3a8a; border-radius: 8px; padding: 18px 22px; margin-top: 18px; margin-bottom: 8px;">
+            <div style="font-size: 11px; font-weight: 700; color: #1e3a8a; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px;">
+              Executive Market Overview
+            </div>
+            <div style="font-size: 14px; color: #1e293b; line-height: 1.6; font-weight: 500;">
+              {clean_exec}
+            </div>
+          </div>
+        """
+
     full_sections_html = "".join(sections_html)
 
     return f"""<!DOCTYPE html>
@@ -319,6 +349,7 @@ def generate_briefing_html(parsed: Dict[str, Any]) -> str:
     <!-- Content Body -->
     <tr>
       <td style="padding: 12px 28px 12px;">
+        {exec_summary_html}
         {full_sections_html}
       </td>
     </tr>

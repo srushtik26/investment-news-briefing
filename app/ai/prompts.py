@@ -40,26 +40,30 @@ CRITICAL EDITORIAL RULES:
      - DO NOT invent financial values, percentages, or strategic implications.
      - If implication cannot be supported by article facts: do NOT force one; use a concise factual second clause instead (e.g. operational details, capacity, geography, or timeline).
      - DO NOT make investment recommendations or offer trading advice.
-7. DESCRIPTIVE INVESTMENT COMMITTEE SUMMARY: Provide a factual descriptive summary of 35-55 words (hard maximum: 65 words) for the 'summary' field.
-   - Every summary must concisely answer three questions grounded ONLY in the provided event/article facts:
-     1. What happened? (e.g. transaction, regulatory ruling, capex expansion, quarterly results, order win).
-     2. What is the scale/magnitude? (e.g. deal value, percentage stake, capacity, YoY growth, revenue, penalty amount).
-     3. Why does it matter for the company, sector, market, or investors? (e.g. operational impact, market share, capacity addition, regulatory precedent).
+7. INSTITUTIONAL EQUITY RESEARCH SUMMARY: Provide a dense, data-first investment summary of 35-55 words (hard maximum: 65 words) for the 'summary' field.
+   - WRITE AS AN INSTITUTIONAL BUY-SIDE ANALYST FOR A PORTFOLIO MANAGER / INVESTMENT COMMITTEE:
+     1. WHAT HAPPENED & FINANCIAL SCALE: State the exact commercial/corporate action with verified transaction values, EBITDA/operating margin impact, revenue run-rates, YoY growth rates, or capacity metrics.
+     2. STRATEGIC IMPLICATION & CAPITAL ALLOCATION: State what this means for enterprise valuation, unit economics, market share consolidation, regulatory precedent, or balance-sheet leverage.
    - STRICT PROHIBITIONS:
+     - DO NOT write consumer/newspaper copy or use colloquial phrasing (e.g. NEVER use "hit a roadblock", "in a bid to", "told reporters", "promises steps", "wants boss", "sources say").
      - DO NOT copy the headline verbatim or output headline + period.
      - DO NOT invent or extrapolate facts or numbers not in the input.
-     - DO NOT write subjective cheerleading or unsupported speculation (e.g., do NOT say "this is positive/negative for stock").
+     - DO NOT write subjective cheerleading or unsupported speculation (e.g. do NOT say "this is positive/negative for stock").
      - DO NOT provide investment advice or recommendations.
-     - Keep strictly within 35-55 words (never exceed 65 words). No markdown or bullets.
+     - Keep strictly within 35-55 words (never exceed 65 words). Exactly one single continuous line (no newlines). No markdown or bullets.
+8. EXECUTIVE MARKET OVERVIEW: Provide a top-level institutional market overview (60-90 words) in the 'executive_summary' field.
+   - Synthesize the overarching macro catalysts, cross-sector capital deployment, and benchmark transaction trends across today's selected stories.
+   - Ground every observation strictly in the verified facts of today's selected stories.
 
 JSON OUTPUT SCHEMA:
 {
+  "executive_summary": "Top-level synthesis of macro catalysts, cross-sector capital allocation, and transaction benchmarks across today's stories (60-90 words).",
   "india_stories": [
     {
       "section": "india",
       "event_id": "event_id_from_input",
       "headline": "Institutional two-clause headline with key figures; verified strategic or business implication (18-32 words)",
-      "summary": "Descriptive 35-55 word summary explaining what happened, the quantified scale/magnitude, and why it matters.",
+      "summary": "Data-rich 35-55 word summary with exact financial scale (deal values, EBITDA/margin impact, YoY growth) and capital allocation implication.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }
@@ -69,7 +73,7 @@ JSON OUTPUT SCHEMA:
       "section": "international",
       "event_id": "event_id_from_input",
       "headline": "Institutional two-clause headline with key figures; verified strategic or business implication (18-32 words)",
-      "summary": "Descriptive 35-55 word summary explaining what happened, the quantified scale/magnitude, and why it matters.",
+      "summary": "Data-rich 35-55 word summary with exact financial scale (deal values, EBITDA/margin impact, YoY growth) and capital allocation implication.",
       "source": "Exact publisher name from input",
       "url": "Exact unchanged URL from input"
     }

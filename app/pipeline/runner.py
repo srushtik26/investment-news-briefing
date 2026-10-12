@@ -1281,7 +1281,11 @@ def run_pipeline(
         logger.info("PORTFOLIO_SELECTED=%d", final_pf_selected)
 
         # Sanitize formatting artifacts across all stories before saving and validating
-        from app.ai.summary_grounding import sanitize_briefing_summary, build_descriptive_investment_summary
+        from app.ai.summary_grounding import (
+            sanitize_briefing_summary,
+            build_descriptive_investment_summary,
+            build_executive_market_summary,
+        )
         for st in (
             (selection_payload.domestic_stories or [])
             + (selection_payload.india_stories or [])
@@ -1292,7 +1296,14 @@ def run_pipeline(
                 art = ctx.articles_lookup.get(ev.article_ids[0]) if (ev and ev.article_ids) else None
                 st.summary = sanitize_briefing_summary(st.summary, headline=st.headline, event=ev, article=art)
 
+        # Ensure top-level executive summary is populated
+        if not getattr(selection_payload, "executive_summary", None):
+            selection_payload.executive_summary = build_executive_market_summary(selection_payload)
+        else:
+            selection_payload.executive_summary = sanitize_briefing_summary(selection_payload.executive_summary)
+
         save_json_artifact(data_dir / "final_15_stories.json", {
+            "executive_summary": selection_payload.executive_summary,
             "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
             "india":         [s.model_dump() for s in selection_payload.india_stories],
             "international": [s.model_dump() for s in selection_payload.international_stories],
@@ -1349,6 +1360,7 @@ def run_pipeline(
             )
             log_exec(f"[STAGE9_AUTONOMOUS_REPAIR] Post-repair passed checks: {validation_report.passed_checks} / 20 (is_valid={validation_report.is_valid})")
             save_json_artifact(data_dir / "final_15_stories.json", {
+                "executive_summary": selection_payload.executive_summary,
                 "domestic":      [s.model_dump() for s in selection_payload.domestic_stories],
                 "india":         [s.model_dump() for s in selection_payload.india_stories],
                 "international": [s.model_dump() for s in selection_payload.international_stories],

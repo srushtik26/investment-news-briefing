@@ -296,6 +296,15 @@ def select_grounded_summary_sentence(
         re.IGNORECASE,
     )
 
+    retail_journalistic_re = re.compile(
+        r"\b(?:hit\s+an?\s+unusual\s+roadblock|hit\s+a\s+roadblock|spilled\s+the\s+beans|told\s+reporters|in\s+a\s+bid\s+to|promises\s+steps|wants\s+boss|taking\s+a\s+cue|talking\s+to|here\s+is\s+all\s+you\s+need|in\s+a\s+chat\s+with|spoke\s+to\s+media|sources\s+said|sources\s+told|people\s+familiar\s+with)\b",
+        re.IGNORECASE,
+    )
+    financial_metric_re = re.compile(
+        r"(?:[\$₹€£]|(?:Rs\.?|INR|USD)\s*[\d,]+|\b\d+(?:\.\d+)?\s*(?:crore|cr|lakh|billion|bn|million|trillion|percent|%|basis\s+points|bps)\b|\b(?:ebitda|operating\s+margin|net\s+profit|revenue|pat|pbt|order\s+book|capex|valuation|qip)\b)",
+        re.IGNORECASE,
+    )
+
     for idx, s in enumerate(valid_candidates[:12]):
         cleaned_s = wire_prefix_re.sub("", s).strip()
         cleaned_s = city_prefix_re.sub("", cleaned_s).strip()
@@ -307,6 +316,10 @@ def select_grounded_summary_sentence(
         ).strip()
         if not cleaned_s.endswith((".", "!", "?")):
             cleaned_s += "."
+
+        # Reject retail conversational / journalistic fluff
+        if retail_journalistic_re.search(cleaned_s):
+            continue
 
         words = cleaned_s.split()
         if len(words) > 65:
@@ -326,8 +339,16 @@ def select_grounded_summary_sentence(
         s_actions = _extract_action_concepts(cleaned_s)
         overlap_actions = len(s_actions & h_actions)
         has_num = bool(re.search(r"[\$₹\d%]", cleaned_s))
+        has_fin_metric = bool(financial_metric_re.search(cleaned_s))
 
-        score = (overlap_entities * 15.0) + (overlap_actions * 10.0) + (overlap_words * 4.0) + (5.0 if has_num else 0.0) - (idx * 1.5)
+        # Heavily reward institutional financial metrics and verified corporate facts
+        score = (
+            (overlap_entities * 15.0)
+            + (overlap_actions * 10.0)
+            + (overlap_words * 4.0)
+            + (25.0 if has_fin_metric else (5.0 if has_num else 0.0))
+            - (idx * 1.5)
+        )
         scored_candidates.append((score, cleaned_s))
 
     if not scored_candidates:
@@ -352,7 +373,7 @@ def select_grounded_summary_sentence(
                         return combined
 
         if len(best_words) >= 18:
-            context_sentence = "The strategic development provides institutional investors meaningful visibility into corporate execution, competitive dynamics, and sector expansion."
+            context_sentence = "The strategic development provides institutional investors actionable visibility into corporate capital allocation, unit economics, and competitive sector positioning."
             augmented = f"{best_candidate} {context_sentence}".strip()
             aug_words = augmented.split()
             if 35 <= len(aug_words) <= 65:
@@ -594,6 +615,58 @@ def build_descriptive_investment_summary(
         return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
 
     # =========================================================================
+    # ARCHETYPE: Fiscal Policy / Tariffs / Subsidies / PLI / Trade
+    # =========================================================================
+    if re.search(r"\b(?:pli|production-linked incentive|tariffs?|customs duty|subsid(?:y|ies)|budget|fiscal deficit|taxation|gst|free trade agreement|fta)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = "Fiscal and industrial policy authorities implemented structured regulatory adjustments to strengthen domestic manufacturing competitiveness."
+        if val:
+            s2 = f"The policy mechanism establishes financial incentives and budgetary allocations of {val} tied to verified production milestones."
+        else:
+            s2 = "The regulatory policy framework outlines targeted tariff adjustments, export incentives, and domestic value-addition criteria."
+        s3 = "The policy recalibration optimizes domestic cost structures, stimulates private capex commitments, and enhances import substitution across target industrial sectors."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
+    # ARCHETYPE: Technology / Semiconductor / AI / Cloud / Data Infrastructure
+    # =========================================================================
+    if re.search(r"\b(?:semiconductor|chips?|foundry|artificial intelligence|\bai\b|data center|cloud|gpu|computing|software-as-a-service|saas)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = f"{primary_comp} accelerated advanced technology deployment to expand high-performance compute and digital infrastructure."
+        if val:
+            s2 = f"The technology initiative mobilizes {val} in dedicated capital commitments to scale digital workloads and next-generation processing capacity."
+        else:
+            s2 = "The deployment integrates specialized architectural capabilities, high-density infrastructure, and scalable compute frameworks."
+        s3 = "The technological expansion solidifies enterprise competitive advantages, supports mission-critical workloads, and enhances long-term operational margin resilience."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
+    # ARCHETYPE: Energy / Power Generation / Oil & Gas / Decarbonization
+    # =========================================================================
+    if re.search(r"\b(?:crude oil|refiner(?:y|ies)|petrochemicals|opec|lng|natural gas|grid|transmission|power tariff|thermal|hydropower|green hydrogen|clean fuel)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = f"{primary_comp} initiated key capital commitments across energy transmission and generation infrastructure."
+        if val:
+            s2 = f"The operational program entails capital commitments of {val} to modernize supply infrastructure and secure feedstock supply lines."
+        else:
+            s2 = "The program upgrades grid stability, expands transmission capabilities, and optimizes commercial feedstock sourcing."
+        s3 = "The energy commitment protects baseload operational reliability, mitigates commodity price volatility, and supports enterprise sustainability targets."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
+    # ARCHETYPE: Infrastructure / Logistics / Railways / Defense / Ports
+    # =========================================================================
+    if re.search(r"\b(?:railways?|highways?|expressway|corridor|metro|ports?|airports?|aviation|defense|defence|drdo|procurement|logistics|freight|shipping)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = f"{primary_comp} advanced execution on critical national infrastructure and industrial logistics assets."
+        if val:
+            s2 = f"The capital deployment encompasses dedicated project outlays valued at {val} across strategic transportation and industrial corridors."
+        else:
+            s2 = "The project framework establishes turnkey development schedules and logistical capacity enhancements across vital operational routes."
+        s3 = "The infrastructure initiative strengthens national supply-chain throughput, mitigates operational bottlenecks, and accelerates long-term industrial asset development."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
     # ARCHETYPE 3: Capex / Manufacturing / Plant / Greenfield Expansion
     # =========================================================================
     if re.search(r"\b(?:capex|capital expenditure|invest|invests|investment|plant|facility|manufacturing|expand|expands|expansion|greenfield)\b", clean_h, re.IGNORECASE):
@@ -624,6 +697,19 @@ def build_descriptive_investment_summary(
             s2 = "The project dedicates strategic capital resources to establish modern infrastructure and expand output."
 
         s3 = "The expansion enables the company to fulfill robust industrial demand, optimize unit production economics, and strengthen long-term supply chain resilience."
+        return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
+
+    # =========================================================================
+    # ARCHETYPE: Macro / Monetary Policy / Bond Yields / FX / FPI Flows
+    # =========================================================================
+    if re.search(r"\b(?:repo rate|interest rates?|inflation|cpi|wpi|yields?|treasury|bonds?|rupee|dollar|fpi|fii|foreign investors?|outflows?|inflows?|trade deficit|current account|monetary policy)\b", clean_h, re.IGNORECASE):
+        val = extracted_figures[0] if extracted_figures else None
+        s1 = "Macroeconomic disclosures and sovereign market adjustments detail significant shifts across key monetary benchmarks."
+        if val:
+            s2 = f"Reported indicators quantify aggregate flows and benchmark adjustments of {val} affecting sovereign yields and institutional liquidity."
+        else:
+            s2 = "The monetary indicator print details capital flow adjustments, policy rate expectations, and liquidity conditions across primary asset classes."
+        s3 = "The macroeconomic trend provides portfolio managers critical visibility into sovereign yield curve shifts, currency valuation risk, and systemic liquidity positioning."
         return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
 
     # =========================================================================
@@ -669,9 +755,8 @@ def build_descriptive_investment_summary(
         s3 = "The contract win expands the company's executable order backlog, bolstering multi-year revenue predictability and solidifying competitive market standing."
         return clamp_summary_length(f"{s1} {s2} {s3}", max_words=65)
 
-
     # =========================================================================
-    # ARCHETYPE 6: Default — try article body first, then simple factual sentence
+    # ARCHETYPE: Default — try article body first, then structured institutional sentence
     # =========================================================================
     # Step 1: Try to pull 1-2 clean factual sentences from article body
     if article and article.content_text:
@@ -717,11 +802,79 @@ def build_descriptive_investment_summary(
         s1 = plain
 
     if extracted_figures:
-        s2 = f"The development involves {', '.join(extracted_figures[:2])} and carries significant implications for sector participants and institutional investors."
+        s2 = f"Reported financial metrics reflect {', '.join(extracted_figures[:2])}, providing institutional investors actionable visibility into execution durability and capital allocation."
     else:
-        s2 = "The development is expected to have meaningful implications for market participants and sector dynamics."
+        s2 = "The strategic disclosure provides institutional investors actionable visibility into operational scale, risk management, and competitive market positioning."
 
     return clamp_summary_length(f"{s1} {s2}", max_words=65)
+
+
+def build_executive_market_summary(
+    payload_or_stories: Any,
+) -> str:
+    """
+    Construct a deterministic top-level Executive Market Overview (60-90 words).
+    Synthesizes primary macro, sector, and capital deployment themes across the briefing stories.
+    """
+    stories: List[Any] = []
+    if hasattr(payload_or_stories, "domestic_stories"):
+        stories.extend(getattr(payload_or_stories, "domestic_stories", []) or [])
+        stories.extend(getattr(payload_or_stories, "india_stories", []) or [])
+        stories.extend(getattr(payload_or_stories, "international_stories", []) or [])
+    elif isinstance(payload_or_stories, (list, tuple)):
+        stories = list(payload_or_stories)
+
+    all_figures: List[str] = []
+    has_ma = False
+    has_capex = False
+    has_results = False
+    has_reg = False
+
+    for st in stories:
+        hl = getattr(st, "headline", "") or ""
+        sum_t = getattr(st, "summary", "") or ""
+        full = f"{hl} {sum_t}"
+        figs = re.findall(
+            r"(?:₹|rs\.?|\$|€|£)\s*[\d,]+(?:\.\d+)?\s*(?:crore|cr|lakh|billion|million|bn|m|trillion)?",
+            full,
+            re.IGNORECASE,
+        )
+        for f in figs:
+            f_clean = re.sub(r"\s+", " ", f.strip())
+            if f_clean not in all_figures and re.search(r"\d", f_clean):
+                all_figures.append(f_clean)
+        if re.search(r"\b(?:acquire|acquisition|merger|buyout|stake)\b", full, re.IGNORECASE):
+            has_ma = True
+        if re.search(r"\b(?:capex|plant|expand|order|contract|win)\b", full, re.IGNORECASE):
+            has_capex = True
+        if re.search(r"\b(?:profit|results|quarterly|ebitda|margin|revenue)\b", full, re.IGNORECASE):
+            has_results = True
+        if re.search(r"\b(?:sebi|rbi|cci|regulatory|court|penalty|order)\b", full, re.IGNORECASE):
+            has_reg = True
+
+    figs_sample = f" totaling over {all_figures[0]}" if all_figures else ""
+    themes: List[str] = []
+    if has_ma:
+        themes.append("strategic M&A consolidation")
+    if has_capex:
+        themes.append("manufacturing capex commitments")
+    if has_results:
+        themes.append("quarterly operating margin resilience")
+    if has_reg:
+        themes.append("rigorous regulatory compliance oversight")
+    if not themes:
+        themes = ["cross-sector capital deployment", "operational expansion"]
+
+    theme_str = ", ".join(themes[:3])
+
+    overview = (
+        f"Institutional capital allocation across Indian and global markets reflects {theme_str}. "
+        f"Key corporate transactions and industrial order awards{figs_sample} highlight disciplined balance-sheet deployment "
+        f"and supply-chain scaling across high-growth verticals. "
+        f"Cross-border allocations and policy adjustments remain anchored on operational execution and margin durability, "
+        f"providing portfolio managers strong visibility into enterprise earnings quality and sector positioning."
+    )
+    return clamp_summary_length(overview, max_words=85)
 
 
 def build_structured_fallback_summary(

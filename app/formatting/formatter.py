@@ -308,6 +308,15 @@ class BriefingFormatter:
         lines.append(f"*{self._format_date(briefing_date)}*")
         lines.append("")
 
+        # ── Executive Market Overview (if present) ───────────────────────────
+        if getattr(payload, "executive_summary", None):
+            clean_exec = self.clean_text(payload.executive_summary)
+            clean_exec = self._sanitize_inline(clean_exec)
+            if clean_exec:
+                lines.append("*EXECUTIVE MARKET OVERVIEW*")
+                lines.append(clean_exec)
+                lines.append("")
+
         # ── 1. India Business Section ────────────────────────────────────────
         lines.append("*TOP 5 INDIA BUSINESS HEADLINES*")
         lines.append("")
