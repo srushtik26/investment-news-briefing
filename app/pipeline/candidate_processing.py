@@ -68,6 +68,7 @@ def _extract_candidates(
     extractor: ArticleExtractor,
     seen_urls: Set[str],
     log_exec: Callable[[str], None],
+    max_age_hours: Optional[float] = None,
 ) -> Tuple[List[Article], List[Dict[str, Any]], int, int, int, int, int, int]:
     """
     Extract full text from a list of (DiscoveredArticle, country) candidates.
@@ -111,6 +112,8 @@ def _extract_candidates(
         return extracted, records, google_count, resolved_ok, fallback_ok, pre_url_rejects, duplicate_seen, source_policy_skips
 
     # Step 2: Extract concurrently with at most 5 threads
+    eff_max_age = max_age_hours if max_age_hours is not None else 96.0
+
     def _worker(item):
         idx, cand, country, canonical_source, rss_pub_at = item
         try:
@@ -120,7 +123,7 @@ def _extract_candidates(
                 candidate_title=cand.title,
                 candidate_category=country,
                 candidate_pub_date=rss_pub_at,
-                max_age_hours=72.0,
+                max_age_hours=eff_max_age,
             )
             return (idx, cand, country, canonical_source, rss_pub_at, res, None)
         except Exception as exc:
@@ -406,13 +409,19 @@ def process_candidate_item(
     if not filt_res.is_accepted:
         if filt_res.rule_failed == "DATE":
             ctx.date_deferred_articles.append(art)
+        if cand_section != "domestic":
+            _f_rsn = getattr(filt_res, "rejection_reason", None) or getattr(filt_res, "rule_failed", None) or ""
+            ctx.log_exec(f'  [CANDIDATE_FILTER_REJECT] section={cand_section} title="{art.title[:60]}" engine="{engine_name}" reason="{_f_rsn}"')
         return None
 
     class_res = ctx.classifier.classify(art)
     if not class_res.success or not class_res.classification:
+        if cand_section != "domestic":
+            ctx.log_exec(f'  [CANDIDATE_CLASSIFY_REJECT] section={cand_section} title="{art.title[:60]}" reason="classification_failed"')
         return None
 
     if cand_section != "domestic" and not class_res.classification.is_hard_business_event:
+        ctx.log_exec(f'  [CANDIDATE_CLASSIFY_REJECT] section={cand_section} title="{art.title[:60]}" reason="not_hard_business_event"')
         return None
 
     art_event_cat = NewsCategory.DOMESTIC if cand_section == "domestic" else (

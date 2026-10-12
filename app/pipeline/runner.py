@@ -226,11 +226,14 @@ def run_pipeline(
         pass1_candidates, initial_dom, initial_india, initial_intl = discover_initial_reserves(
             ctx, max_domestic, max_india, max_international
         )
+
+        is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (target_date is not None and target_date.weekday() == 0)
+        initial_filter_lookback_hours = 96.0 if is_weekend_or_mon else float(get_initial_discovery_lookback_days(target_date) * 24.0)
     
         metrics.start_timer("extraction_seconds")
         log_exec(f"[Pass 1] Processing {initial_dom} Domestic + {initial_india} India + {initial_intl} International candidates from reserve...")
         extract_res = _extract_candidates(
-            pass1_candidates, extractor, ctx.seen_urls, log_exec
+            pass1_candidates, extractor, ctx.seen_urls, log_exec, max_age_hours=initial_filter_lookback_hours
         )
         if extract_res is None:
             log_exec("[EXTRACTION_EMPTY_RESULT] Extraction returned None; treating it as an empty result set.")
@@ -273,7 +276,6 @@ def run_pipeline(
         domestic_raw = [a for a in ctx.all_extracted if a.category == NewsCategory.DOMESTIC]
         business_raw = [a for a in ctx.all_extracted if a.category != NewsCategory.DOMESTIC]
     
-        initial_filter_lookback_hours = float(get_initial_discovery_lookback_days(target_date) * 24.0)
         dom_accepted, dom_rejections = domestic_filter_engine.filter_candidates(
             domestic_raw,
             now_utc=run_reference_time,

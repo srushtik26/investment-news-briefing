@@ -618,3 +618,42 @@ class TestWeekendEndToEndSimulations:
         assert state_file is not None
         assert state_file.exists()
 
+    def test_monday_morning_allows_96h_horizon_and_lookback(self):
+        from app.pipeline.fallback_manager import run_expansion_and_fallbacks, get_quality_level
+
+        logged_messages = []
+        ctx = MagicMock()
+        ctx.is_weekend = False  # Monday morning
+        ctx.run_reference_time = datetime(2026, 10, 12, 6, 0, tzinfo=timezone.utc)
+        ctx.target_date = date(2026, 10, 12)  # Monday
+        ctx.log_exec = lambda msg: logged_messages.append(msg)
+        ctx.seen_urls = set()
+        ctx.articles_lookup = {}
+        ctx.verified_events = []
+        ctx.high_confidence_single_candidates = []
+        ctx.single_source_events = []
+        ctx.date_deferred_articles = []
+        ctx.domestic_reserve_pool = []
+        ctx.india_reserve_pool = []
+        ctx.intl_reserve_pool = []
+        ctx.reg_clf.classify_event.side_effect = lambda ev, arts: ev.event_category
+
+        dom_evs = [_create_test_event(f"dom_{i}", f"Dom Event {i}", f"a_dom_{i}", category=NewsCategory.DOMESTIC) for i in range(5)]
+        india_evs = [_create_test_event(f"ind_{i}", f"India Event {i}", f"a_ind_{i}", category=NewsCategory.INDIA) for i in range(4)]
+        intl_evs = [_create_test_event(f"int_{i}", f"Intl Event {i}", f"a_int_{i}", category=NewsCategory.INTERNATIONAL) for i in range(5)]
+        all_evs = dom_evs + india_evs + intl_evs
+
+        status = run_expansion_and_fallbacks(
+            ctx=ctx,
+            get_final_selectable_unique_events_fn=lambda cat=None: dom_evs,
+            is_domestic_diversity_satisfied_fn=lambda evs: True,
+            count_unique_section_events_fn=lambda cat: {"DOMESTIC": 5, "INDIA": 4, "INTERNATIONAL": 5}[cat.value.upper()],
+            get_unique_candidate_events_fn=lambda: all_evs,
+        )
+
+        assert status == "DATA_UNAVAILABLE"
+        # 96h IS reached on Monday because markets look back across the weekend
+        assert any("WEEKEND_RESCUE_96H" in m for m in logged_messages)
+        assert any("96h" in m for m in logged_messages)
+
+

@@ -237,7 +237,8 @@ class InvestmentMaterialityEvaluator:
                 r"industrial corridor|logistics park|freight terminal|multimodal logistics|"
                 r"high-speed rail|bullet train|national highway network|"
                 r"initial public offering|files? (?:for )?(?:drhp|ipo)|ipo listing|listing debut|exchange ipo|bourse ipo|landmark ipo|\b\w+\s+ipo\b|"
-                r"supreme court delivers judgment|landmark ruling|delivers judgment|policy reform)\b",
+                r"supreme court delivers judgment|landmark ruling|delivers judgment|policy reform|"
+                r"gst council (?:decisions?|meeting|recommendations?|clears?|approves?)|tax reforms?)\b",
                 full_text,
             )
         )

@@ -2172,7 +2172,7 @@ def run_ranking_and_selection(
 
         # 5. Bounded India-only recovery discovery
         if needed > 0 and ctx.discovery_service and getattr(ctx.discovery_service, "provider", None):
-            rem_budget = MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count()
+            rem_budget = max(5, MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count())
             if rem_budget > 0:
                 ctx.log_exec(f"[INDIA_RECOVERY] RSS discovery for {needed} missing stories (budget rem: {rem_budget})")
                 is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
@@ -3008,7 +3008,7 @@ def run_ranking_and_selection(
                     f"restructuring OR reorganization {when_param}",
                     f"'regulatory action' OR antitrust OR penalty {when_param}",
                 ]
-                INTL_RECOVERY_SOURCES = "(site:cnbc.com OR site:apnews.com OR site:bbc.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com)"
+                INTL_RECOVERY_SOURCES = "(site:cnbc.com OR site:finance.yahoo.com OR site:marketwatch.com OR site:bbc.com OR site:fortune.com OR site:globenewswire.com OR site:prnewswire.com)"
 
                 recovery_searches_run = 0
                 for qry in INTL_RECOVERY_QUERIES:
@@ -3462,9 +3462,10 @@ def run_ranking_and_selection(
     intl_two_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.TWO_SOURCE_VERIFIED])
     intl_sng_count  = len([s for s in intl_pool if s.event.verification_tier == VerificationTier.HIGH_CONFIDENCE_SINGLE_SOURCE])
 
-    dom_quality_level = get_quality_level(domestic_pool, dom_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
-    india_quality_level = get_quality_level(india_pool, india_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
-    intl_quality_level = get_quality_level(intl_pool, intl_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=ctx.is_weekend)
+    is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
+    dom_quality_level = get_quality_level(domestic_pool, dom_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=is_weekend_or_mon)
+    india_quality_level = get_quality_level(india_pool, india_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=is_weekend_or_mon)
+    intl_quality_level = get_quality_level(intl_pool, intl_two_count, ctx.articles_lookup, now_utc=ctx.run_reference_time, is_weekend=is_weekend_or_mon)
     quality_levels = [dom_quality_level, india_quality_level, intl_quality_level]
 
     _QUALITY_LEVEL_HORIZONS: Dict[str, float] = {

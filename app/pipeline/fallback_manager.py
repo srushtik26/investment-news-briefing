@@ -627,11 +627,12 @@ def run_expansion_and_fallbacks(
     india_frozen = (india_unique_count >= 5)
     intl_frozen = (intl_unique_count >= 5)
 
-    if ctx.is_weekend:
-        ctx.log_exec("WEEKEND_MODE=true")
+    is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
+    if is_weekend_or_mon:
+        ctx.log_exec("WEEKEND_MODE=true" if ctx.is_weekend else "WEEKEND_OR_MON_MODE=true")
         ctx.log_exec(f"WEEKEND_INITIAL_COUNTS DOMESTIC={dom_unique_count} INDIA={india_unique_count} INTERNATIONAL={intl_unique_count}")
 
-    FALLBACK_HORIZONS = [36.0, 48.0, 72.0, 96.0] if ctx.is_weekend else [36.0, 48.0, 72.0]
+    FALLBACK_HORIZONS = [36.0, 48.0, 72.0, 96.0] if is_weekend_or_mon else [36.0, 48.0, 72.0]
 
     for horizon in FALLBACK_HORIZONS:
         if dom_frozen and india_frozen and intl_frozen:
@@ -642,15 +643,15 @@ def run_expansion_and_fallbacks(
         elif horizon == 48.0:
             tag = "[FALLBACK_48H]"
         elif horizon == 72.0:
-            tag = "[WEEKEND_BACKFILL_72H]" if ctx.is_weekend else "[EMERGENCY_72H]"
+            tag = "[WEEKEND_BACKFILL_72H]" if is_weekend_or_mon else "[EMERGENCY_72H]"
         else:
             tag = "[WEEKEND_RESCUE_96H]"
 
         # 1. India Fallback
         if not india_frozen:
-            if ctx.is_weekend and horizon == 72.0:
+            if is_weekend_or_mon and horizon == 72.0:
                 ctx.log_exec("WEEKEND_BACKFILL_72H section=INDIA")
-            elif ctx.is_weekend and horizon == 96.0:
+            elif is_weekend_or_mon and horizon == 96.0:
                 ctx.log_exec("WEEKEND_RESCUE_96H section=INDIA")
             ctx.log_exec(f"{tag} India deficient ({india_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.INDIA, horizon, ctx)
@@ -766,9 +767,9 @@ def run_expansion_and_fallbacks(
 
         # 2. International Fallback
         if not intl_frozen:
-            if ctx.is_weekend and horizon == 72.0:
+            if is_weekend_or_mon and horizon == 72.0:
                 ctx.log_exec("WEEKEND_BACKFILL_72H section=INTERNATIONAL")
-            elif ctx.is_weekend and horizon == 96.0:
+            elif is_weekend_or_mon and horizon == 96.0:
                 ctx.log_exec("WEEKEND_RESCUE_96H section=INTERNATIONAL")
             ctx.log_exec(f"{tag} International deficient ({intl_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.INTERNATIONAL, horizon, ctx)
@@ -902,9 +903,9 @@ def run_expansion_and_fallbacks(
 
         # 3. Domestic Fallback (only if not frozen and < 5)
         if not dom_frozen and dom_unique_count < 5:
-            if ctx.is_weekend and horizon == 72.0:
+            if is_weekend_or_mon and horizon == 72.0:
                 ctx.log_exec("WEEKEND_BACKFILL_72H section=DOMESTIC")
-            elif ctx.is_weekend and horizon == 96.0:
+            elif is_weekend_or_mon and horizon == 96.0:
                 ctx.log_exec("WEEKEND_RESCUE_96H section=DOMESTIC")
             ctx.log_exec(f"{tag} Domestic deficient ({dom_unique_count}/5) — expanding horizon to {int(horizon)}h")
             reconsider_date_deferred_candidates(NewsCategory.DOMESTIC, horizon, ctx)
@@ -960,7 +961,7 @@ def run_expansion_and_fallbacks(
             intl_frozen = True
 
     # Check terminal exhaustion
-    limit_h = 96 if ctx.is_weekend else 72
+    limit_h = 96 if is_weekend_or_mon else 72
     if india_unique_count < 5:
         ctx.log_exec(f"[EXHAUSTED] India remained {india_unique_count}/5 after {limit_h}h -> DATA_UNAVAILABLE")
     if intl_unique_count < 5:
@@ -982,7 +983,7 @@ def run_expansion_and_fallbacks(
     else:
         pipeline_status = "DATA_UNAVAILABLE"
 
-    if ctx.is_weekend:
+    if is_weekend_or_mon:
         ctx.log_exec(f"WEEKEND_FINAL_COUNTS DOMESTIC={dom_unique_count} INDIA={india_unique_count} INTERNATIONAL={intl_unique_count}")
 
     return pipeline_status
