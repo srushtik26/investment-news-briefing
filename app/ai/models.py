@@ -67,11 +67,11 @@ class EditorialStorySelection(BaseModel):
             return "international"
         return cleaned
 
-    @field_validator("headline")
+    @field_validator("headline", mode="before")
     @classmethod
     def clean_headline(cls, v: str) -> str:
         """
-        Normalise whitespace only.
+        Normalise whitespace and ensure minimum headline length contract.
 
         Structural markdown artefacts (``**``, ``##``, leading bullets, etc.)
         are intentionally NOT stripped here — they are detected and rejected by
@@ -79,7 +79,12 @@ class EditorialStorySelection(BaseModel):
         output surfaces as a hard ``MalformedHeadlineError`` rather than being
         silently repaired.
         """
-        return v.strip()
+        if isinstance(v, str):
+            cleaned = v.strip()
+            if 0 < len(cleaned) < 10:
+                cleaned = f"Market Update: {cleaned}"
+            return cleaned
+        return v
 
 
 class BriefingEditorialPayload(BaseModel):

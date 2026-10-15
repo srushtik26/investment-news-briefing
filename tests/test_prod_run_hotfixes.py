@@ -58,7 +58,10 @@ def test_us_fed_rate_hike_not_reclassified_to_india():
 
 def test_bare_form_codes_rejected_as_generic_headlines():
     """Verify bare SEC/regulatory filing form codes are rejected as generic headlines."""
-    bare_forms = ["N-2/A", "10-K", "8-K", "Form 10-Q", "SC 13D/A", "424B2", "Form 4", "DEF 14A"]
+    bare_forms = [
+        "N-2/A", "10-K", "8-K", "Form 10-Q", "SC 13D/A", "424B2", "Form 4", "DEF 14A",
+        "EX-99.1", "ex-99.1", "Exhibit 99.1", "EX 99.1", "EX-10.1",
+    ]
     for form in bare_forms:
         is_gen, reason = is_generic_headline(form)
         assert is_gen, f"Form code '{form}' should have been rejected as generic headline, got reason: {reason}"
@@ -68,10 +71,57 @@ def test_bare_form_codes_rejected_as_generic_headlines():
         "Tesla files 10-K report showing 15% revenue expansion",
         "Berkshire Hathaway submits Form 4 detailing Apple share sale",
         "Blackstone amends N-2/A filing for $2 billion credit fund",
+        "Company files EX-99.1 detailing quarterly earnings results",
     ]
     for valid_t in valid_titles:
         is_gen, reason = is_generic_headline(valid_t)
         assert not is_gen, f"Valid headline '{valid_t}' was incorrectly rejected: {reason}"
+
+
+def test_short_headline_graceful_handling_and_fallback():
+    """Verify short headlines (< 10 chars) are gracefully padded and never crash EditorialStorySelection."""
+    from app.ai.models import EditorialStorySelection
+    from app.ai.headline_synthesis import generate_grounded_fallback_headline
+    from app.pipeline.story_prep import prepare_final_story, StoryContext
+    from app.models.event import Event
+    from app.models.article import Article
+    from app.models import NewsCategory
+
+    # 1. Direct EditorialStorySelection instantiation with short headline
+    story = EditorialStorySelection(
+        section="international",
+        event_id="test_ev_short",
+        headline="EX-99.1",
+        source="SEC",
+        url="https://www.sec.gov/ex991",
+    )
+    assert len(story.headline) >= 10
+    assert "EX-99.1" in story.headline
+
+    # 2. generate_grounded_fallback_headline with short title article
+    art = Article(
+        title="EX-99.1",
+        url="https://www.sec.gov/ex991",
+        source_name="SEC",
+        published_at=datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc),
+        content_text="Sample corporate filing exhibit without long title.",
+    )
+    ev = Event(
+        canonical_title="EX-99.1",
+        description="Sample SEC exhibit disclosure event.",
+        event_category=NewsCategory.INTERNATIONAL,
+        article_ids=[art.id],
+    )
+    hl = generate_grounded_fallback_headline(event=ev, article=art)
+    assert len(hl) >= 10
+
+    # 3. prepare_final_story with short headline
+    from app.pipeline.story_prep import build_story_context
+    sc = build_story_context(ev, art)
+    final_story = prepare_final_story(sc)
+    assert isinstance(final_story, EditorialStorySelection)
+    assert len(final_story.headline) >= 10
+
 
 
 def test_domestic_multi_horizon_recovery():

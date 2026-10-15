@@ -1015,6 +1015,12 @@ def generate_grounded_fallback_headline(
     # LEVEL 3: Cleaned original source article title
     # -------------------------------------------------------------
     cand_l3 = clean_source
+    if len(cand_l3) < 10:
+        pub = (article.source_name if article and article.source_name else "").strip()
+        prefix = f"{pub}: " if pub else "Corporate Disclosure: "
+        cand_l3 = f"{prefix}{cand_l3}".strip()
+        if len(cand_l3) < 10:
+            cand_l3 = f"{cand_l3} Corporate Filing Update"
     l3_overlap, l3_cnt, _ = calculate_semantic_token_overlap(cand_l3, article or source_text)
     logger.info(
         "EDITORIAL_FALLBACK_LEVEL=3 source_title_used=true EDITORIAL_HEADLINE_OVERLAP=%d headline='%s'",

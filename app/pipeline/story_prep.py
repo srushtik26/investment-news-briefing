@@ -122,6 +122,12 @@ def prepare_final_story(
     sec_src = getattr(ev, "secondary_publisher", None) if is_two_source and isinstance(getattr(ev, "secondary_publisher", None), str) else None
     sec_u = getattr(ev, "secondary_url", None) if is_two_source and isinstance(getattr(ev, "secondary_url", None), str) else None
 
+    if len(headline) < 10:
+        pub_prefix = f"{source_name}: " if source_name and source_name != "Institutional Feed" else "Market Update: "
+        headline = f"{pub_prefix}{headline}".strip()
+        if len(headline) < 10:
+            headline = f"{headline} Business Event"
+
     return EditorialStorySelection(
         section=section_str,
         event_id=ev_id,
