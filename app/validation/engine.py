@@ -170,8 +170,9 @@ class FinalValidationEngine:
         # -------------------------------------------------------------
         total_count = domestic_count + india_count + intl_count
         if strict_5_per_section and total_count != 15:
+            def_check_id = 1 if domestic_count != 5 else (2 if india_count != 5 else 3)
             res = ValidationCheckResult(
-                check_id=4,
+                check_id=def_check_id,
                 check_name="Total 15 stories across 3 sections",
                 passed=False,
                 failure_reason=f"Expected exactly 15 stories across 3 sections, found {total_count} (Dom={domestic_count}, India={india_count}, Intl={intl_count})",
@@ -253,14 +254,21 @@ class FinalValidationEngine:
             # -------------------------------------------------------------
             # Do not search for the raw substring "404" anywhere in the URL:
             # valid article IDs can legitimately contain those digits.
+            # Similarly, do not match the bare word "broken" as a substring:
+            # legitimate news slugs frequently contain words like "broken"
+            # (e.g., "...why-libya-is-still-broken...", "...broken-records...").
+            # Only match explicit synthetic/mock dead-link markers.
             url_lower = (story.url or "").lower()
             url_path = urlparse(url_lower).path.rstrip("/")
             has_explicit_dead_link_marker = (
-                "broken" in url_lower
-                or "dead-link" in url_lower
-                or url_path == "/404"
-                or url_path.endswith("/404")
-                or url_path.endswith("/404.html")
+                "dead-link" in url_lower
+                or "deadlink" in url_lower
+                or "broken-link" in url_lower
+                or "broken_link" in url_lower
+                or "broken-url" in url_lower
+                or "broken_url" in url_lower
+                or url_path in ("/404", "/404.html", "/not-found", "/page-not-found", "/error-404")
+                or url_path.endswith(("/404", "/404.html", "/not-found", "/page-not-found", "/error-404"))
             )
             if has_explicit_dead_link_marker:
                 check_results.append(ValidationCheckResult(

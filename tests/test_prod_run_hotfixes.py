@@ -654,3 +654,134 @@ def test_get_final_selectable_unique_events_international_backfill():
     assert len(selectable) == 2
     assert {e.id for e in selectable} == {ev1.id, ev2.id}
 
+
+def test_2026_10_23_production_failure_url_with_word_broken_not_rejected():
+    """
+    Regression test for 2026-10-23 production failure (Check #4 / FINAL_VALIDATION).
+
+    The production run on 2026-10-23 failed with:
+    PIPELINE_FAILED stage=FINAL_VALIDATION check_id=4 reason=URL is inaccessible or dead:
+    'https://timesofindia.indiatimes.com/world/rest-of-world/rival-factions-civil-war-shadow-of-terror-why-libya-is-still-broken-15-years-after-gaddafis-bloody-end/articleshow/135116605.cms'
+
+    The substring 'broken' in the URL slug triggered a false-positive dead link marker.
+    Check 4 must only reject explicit dead link markers (e.g. 'dead-link', 'broken-link', '/404.html'),
+    and allow legitimate news slugs that contain the word 'broken'.
+    """
+    from app.ai.models import BriefingEditorialPayload, EditorialStorySelection
+    from app.validation.engine import FinalValidationEngine, ValidationStatus
+
+    target_url = "https://timesofindia.indiatimes.com/world/rest-of-world/rival-factions-civil-war-shadow-of-terror-why-libya-is-still-broken-15-years-after-gaddafis-bloody-end/articleshow/135116605.cms"
+    ref_time = datetime(2026, 10, 23, 5, 0, 0, tzinfo=timezone.utc)
+
+    # Build 5 domestic, 5 India, 5 International stories
+    articles_lookup = {}
+    events_lookup = {}
+    dom_stories = []
+    ind_stories = []
+    intl_stories = []
+
+    for i in range(1, 6):
+        # Domestic
+        d_art = Article(
+            id=f"dom_{i}",
+            title=f"National Infrastructure Project {i} Commences Commercial Operations",
+            url=f"https://thehindu.com/news/national/project-{i}",
+            source_name="The Hindu",
+            published_at=ref_time - timedelta(hours=2),
+            content_text=f"National Infrastructure Project {i} commences commercial operations across India.",
+            category=NewsCategory.DOMESTIC,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        d_ev = Event(
+            id=f"ev_dom_{i}",
+            canonical_title=d_art.title,
+            description=d_art.content_text,
+            event_category=NewsCategory.DOMESTIC,
+            article_ids=[d_art.id],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        articles_lookup[d_art.id] = d_art
+        events_lookup[d_ev.id] = d_ev
+        dom_stories.append(EditorialStorySelection(section="domestic", event_id=d_ev.id, headline=d_art.title, source=d_art.source_name, url=d_art.url))
+
+        # India
+        in_art = Article(
+            id=f"in_{i}",
+            title=f"Tata Motors Q2 Net Profit Climbs {10+i}% to Rs {1000*i} Crore",
+            url=f"https://business-standard.com/companies/tata-motors-q2-{i}",
+            source_name="Business Standard",
+            published_at=ref_time - timedelta(hours=3),
+            content_text=f"Tata Motors Q2 net profit climbed {10+i}% to Rs {1000*i} crore with record sales.",
+            category=NewsCategory.INDIA,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        in_ev = Event(
+            id=f"ev_in_{i}",
+            canonical_title=in_art.title,
+            description=in_art.content_text,
+            companies_involved=[f"Tata Motors Company {i}"],
+            financial_figures=[f"Rs {1000*i} crore", f"{10+i}%"],
+            event_category=NewsCategory.INDIA,
+            article_ids=[in_art.id],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        articles_lookup[in_art.id] = in_art
+        events_lookup[in_ev.id] = in_ev
+        ind_stories.append(EditorialStorySelection(section="india", event_id=in_ev.id, headline=in_art.title, source=in_art.source_name, url=in_art.url))
+
+        # International
+        intl_url = target_url if i == 1 else f"https://reuters.com/business/global-corp-{i}-secures-order"
+        intl_title = (
+            "Rival factions, civil war, shadow of terror: Why Libya is still broken 15 years after Gaddafi's bloody end"
+            if i == 1
+            else f"Global Corp {i} Secures $10 Billion Infrastructure Order"
+        )
+        int_art = Article(
+            id=f"intl_{i}",
+            title=intl_title,
+            url=intl_url,
+            source_name="Times of India" if i == 1 else "Reuters",
+            published_at=ref_time - timedelta(hours=4),
+            content_text=f"International report on global development {i} with key market details.",
+            category=NewsCategory.INTERNATIONAL,
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        int_ev = Event(
+            id=f"ev_intl_{i}",
+            canonical_title=int_art.title,
+            description=int_art.content_text,
+            companies_involved=[f"Global Firm {i}"],
+            financial_figures=["$10 billion"] if i != 1 else [],
+            event_category=NewsCategory.INTERNATIONAL,
+            article_ids=[int_art.id],
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        articles_lookup[int_art.id] = int_art
+        events_lookup[int_ev.id] = int_ev
+        intl_stories.append(EditorialStorySelection(section="international", event_id=int_ev.id, headline=int_art.title, source=int_art.source_name, url=int_art.url))
+
+    payload = BriefingEditorialPayload(
+        domestic_stories=dom_stories,
+        india_stories=ind_stories,
+        international_stories=intl_stories,
+    )
+
+    validator = FinalValidationEngine()
+    report = validator.validate_briefing(
+        payload=payload,
+        events_lookup=events_lookup,
+        articles_lookup=articles_lookup,
+        run_reference_time=ref_time,
+    )
+
+    # Check 4 MUST pass
+    c4 = next(r for r in report.check_results if r.check_id == 4)
+    assert c4.passed is True, f"Check 4 failed unexpectedly: {c4.failure_reason}"
+
+

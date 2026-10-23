@@ -502,3 +502,51 @@ class TestFinalValidationEngine:
         assert report.status == ValidationStatus.FAILED
         assert report.failed_check_id == 19
         assert "lacks quantified market impact figures" in (report.failure_reason or "")
+
+    def test_check_4_does_not_fail_on_legitimate_url_with_word_broken(self, valid_briefing_fixtures):
+        """Regression test: Check 4 must not reject legitimate article URLs containing the word 'broken' in slug."""
+        payload, events_map, articles_map, cand_urls = valid_briefing_fixtures
+        prod_url = "https://timesofindia.indiatimes.com/world/rest-of-world/rival-factions-civil-war-shadow-of-terror-why-libya-is-still-broken-15-years-after-gaddafis-bloody-end/articleshow/135116605.cms"
+        payload.international_stories[0].url = prod_url
+        cand_urls.add(prod_url)
+        art_id = events_map[payload.international_stories[0].event_id].article_ids[0]
+        articles_map[art_id].url = prod_url
+
+        engine = FinalValidationEngine()
+        report = engine.validate_briefing(
+            payload=payload,
+            events_lookup=events_map,
+            articles_lookup=articles_map,
+            candidate_urls=cand_urls,
+        )
+
+        assert report.status == ValidationStatus.PASSED, f"Expected PASSED, got {report.failure_reason}"
+        assert report.passed_checks == 20
+        c4 = next(r for r in report.check_results if r.check_id == 4)
+        assert c4.passed is True
+
+    def test_check_4_fails_on_explicit_dead_link_markers(self, valid_briefing_fixtures):
+        """Check 4 must catch explicit dead/broken link markers."""
+        engine = FinalValidationEngine()
+        for marker_url in [
+            "https://example.com/broken-link",
+            "https://example.com/broken_url",
+            "https://example.com/deadlink",
+            "https://example.com/article/page-not-found",
+            "https://example.com/article/error-404",
+        ]:
+            payload, events_map, articles_map, cand_urls = valid_briefing_fixtures
+            payload.india_stories[0].url = marker_url
+            cand_urls.add(marker_url)
+
+            report = engine.validate_briefing(
+                payload=payload,
+                events_lookup=events_map,
+                articles_lookup=articles_map,
+                candidate_urls=cand_urls,
+            )
+
+            assert report.status == ValidationStatus.FAILED
+            assert report.failed_check_id == 4
+            assert "URL is inaccessible or dead" in (report.failure_reason or "")
+
