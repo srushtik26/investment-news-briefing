@@ -5,6 +5,7 @@ Provides centralized, type-safe settings management using Pydantic Settings
 and loads configuration values from environment variables or .env files.
 """
 
+import os
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -138,7 +139,8 @@ def get_settings() -> Settings:
     Ensures storage directories exist on initial load.
     """
     settings = Settings()
-    settings.ensure_directories()
+    if os.getenv("VERCEL") != "1":
+        settings.ensure_directories()
     return settings
 
 

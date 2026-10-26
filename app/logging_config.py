@@ -6,6 +6,7 @@ for all components across the application.
 """
 
 import logging
+import os
 import logging.handlers
 import sys
 from pathlib import Path
@@ -58,6 +59,10 @@ def setup_logging(
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+
+    if os.getenv("VERCEL") == "1":
+        _LOGGER_INITIALIZED = True
+        return root_logger
 
     # 2. Rotating File Handler
     target_log_file = log_file or (settings.LOGS_PATH / "app.log")
