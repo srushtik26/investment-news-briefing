@@ -247,7 +247,9 @@ class SourceFilterRule(BaseFilterRule):
         "bank of england",
         "business wire",
         "globenewswire",
-        "pr newswire",
+        "prnewswire",
+        "yahoo finance",
+        "yahoo! finance",
     }
 
     ALLOWED_DOMAINS: Set[str] = {
@@ -277,6 +279,7 @@ class SourceFilterRule(BaseFilterRule):
         "businesswire.com",
         "globenewswire.com",
         "prnewswire.com",
+        "finance.yahoo.com",
         "bseindia.com",
         "nseindia.com",
         "sebi.gov.in",

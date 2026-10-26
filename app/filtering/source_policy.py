@@ -63,6 +63,7 @@ _TIER1_PRIMARY_DOMAINS: frozenset[str] = frozenset({
     "investing.com",
     "barrons.com",
     "morningstar.com",
+    "finance.yahoo.com",
 })
 
 # ---------------------------------------------------------------------------
@@ -220,6 +221,10 @@ def get_tier(url: str, source_name: str = "") -> str:
             for o in ("bse", "nse", "sebi", "rbi", "sec", "pib"):
                 if o in norm_src:
                     return "OFFICIAL"
+        return "PRIMARY"
+
+    # Whitelisted primary financial portals (e.g. finance.yahoo.com) take precedence over generic parent domain blocks (e.g. yahoo.com)
+    if _domain_in_set(netloc, frozenset({"finance.yahoo.com"})):
         return "PRIMARY"
 
     # Check blocked domains first

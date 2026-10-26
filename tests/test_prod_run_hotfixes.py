@@ -529,9 +529,12 @@ def test_india_recovery_passes_dynamic_horizon_and_processes_unseen_urls():
         except Exception:
             pass
 
-        assert mock_proc.called, "process_candidate_item was not called during India recovery"
-        # Check active_horizon passed was 72.0 on Monday
-        kwargs = mock_proc.call_args[1]
+        # Check active_horizon passed was 72.0 on Monday for India recovery
+        india_call = next(
+            (c for c in mock_proc.call_args_list if len(c[0]) > 1 and c[0][1] == "india"),
+            mock_proc.call_args,
+        )
+        kwargs = india_call[1]
         assert kwargs.get("active_horizon") == 72.0, (
             f"Expected active_horizon=72.0 on Monday run, got {kwargs.get('active_horizon')}"
         )
@@ -783,5 +786,48 @@ def test_2026_10_23_production_failure_url_with_word_broken_not_rejected():
     # Check 4 MUST pass
     c4 = next(r for r in report.check_results if r.check_id == 4)
     assert c4.passed is True, f"Check 4 failed unexpectedly: {c4.failure_reason}"
+
+
+def test_finance_yahoo_whitelisted_and_source_policy():
+    """Verify finance.yahoo.com and 'Yahoo Finance' pass SourceFilterRule and SourcePolicy."""
+    from app.filtering.rules import SourceFilterRule
+    from app.filtering.source_policy import SourcePolicy, get_tier, is_extraction_worthy
+
+    # 1. SourceFilterRule check
+    rule = SourceFilterRule()
+    art_yf = Article(
+        id="art_yf_1",
+        title="Meta and SpaceX Announce Strategic Satellite Partnership",
+        url="https://finance.yahoo.com/news/meta-spacex-strategic-partnership-12345.html",
+        source_name="Yahoo Finance",
+        published_at=datetime.now(timezone.utc),
+        content_text="SpaceX and Meta signed a major satellite data transmission contract.",
+    )
+    res_yf = rule.evaluate(art_yf)
+    assert res_yf.is_accepted, f"SourceFilterRule unexpectedly rejected Yahoo Finance article: {res_yf.rejection_reason}"
+
+    art_yf_bang = Article(
+        id="art_yf_2",
+        title="Berkshire Hathaway Acquires Occidental Shares",
+        url="https://finance.yahoo.com/news/berkshire-hathaway-acquires-shares-67890.html",
+        source_name="Yahoo! Finance",
+        published_at=datetime.now(timezone.utc),
+        content_text="Warren Buffett's conglomerate purchased additional shares.",
+    )
+    res_bang = rule.evaluate(art_yf_bang)
+    assert res_bang.is_accepted, f"SourceFilterRule unexpectedly rejected Yahoo! Finance article: {res_bang.rejection_reason}"
+
+    # 2. SourcePolicy check: finance.yahoo.com must be PRIMARY and extraction worthy
+    tier_yf = get_tier("https://finance.yahoo.com/news/market-update-123.html")
+    assert tier_yf == "PRIMARY", f"Expected PRIMARY for finance.yahoo.com, got {tier_yf}"
+    assert is_extraction_worthy("https://finance.yahoo.com/news/market-update-123.html") is True
+
+    tier_regional = get_tier("https://uk.finance.yahoo.com/news/uk-budget-impact-456.html")
+    assert tier_regional == "PRIMARY", f"Expected PRIMARY for uk.finance.yahoo.com, got {tier_regional}"
+
+    # 3. Generic yahoo.com non-finance should still be BLOCKED
+    tier_generic = get_tier("https://yahoo.com/entertainment/celeb-news-789.html")
+    assert tier_generic == "BLOCKED", f"Expected BLOCKED for generic yahoo.com, got {tier_generic}"
+
 
 

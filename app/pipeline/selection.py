@@ -2976,9 +2976,11 @@ def run_ranking_and_selection(
             if ev.event_category == NewsCategory.INTERNATIONAL and ev.id not in intl_recovery_selected_ids:
                 _try_add_intl_recovery_candidate(ev, "single_source_events")
 
-        # 4. Broader International discovery (deferred horizons: 36h -> 48h -> 72h)
+        # 4. Broader International discovery (deferred horizons: 36h -> 48h -> 72h -> 96h)
         if needed > 0 or len(ctx.intl_reserve_pool) < 3:
-            for horizon in [36.0, 48.0, 72.0]:
+            is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
+            intl_horizons = [36.0, 48.0, 72.0, 96.0] if is_weekend_or_mon else [36.0, 48.0, 72.0]
+            for horizon in intl_horizons:
                 if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
                     break
                 reconsider_date_deferred_candidates(NewsCategory.INTERNATIONAL, horizon, ctx)
@@ -2996,9 +2998,9 @@ def run_ranking_and_selection(
             rem_budget = max(5, MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count())
             if rem_budget > 0:
                 ctx.log_exec(f"[INTERNATIONAL_RECOVERY] Search discovery for {needed} missing stories (budget rem: {rem_budget})")
-                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
-                when_param = "when:3d" if is_weekend_or_mon else "when:2d"
-                rec_horizon = 72.0 if is_weekend_or_mon else 48.0
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
+                when_param = "when:4d" if is_weekend_or_mon else "when:2d"
+                rec_horizon = 96.0 if is_weekend_or_mon else 48.0
                 INTL_RECOVERY_QUERIES = [
                     f"acquisition OR acquired OR buyout {when_param}",
                     f"merger OR merged {when_param}",
