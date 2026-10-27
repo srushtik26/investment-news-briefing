@@ -478,7 +478,11 @@ class TwoSourceVerifier:
         has_period_match = bool(q1 and q2 and q1 == q2 and ("EARNINGS" in cats1 and "EARNINGS" in cats2))
 
         all_cluster_words = set().union(*COMPANY_CLUSTERS)
-        action_overlap = {w for w in overlap if w not in all_cluster_words and w not in stopwords and w not in GENERIC_ENTITY_BLACKLIST}
+        action_preserve_words = {"ipo", "ipos", "drhp", "fpo", "qip", "ofs", "capex", "acquisition", "merger", "buyback", "dividend"}
+        action_overlap = {
+            w for w in overlap
+            if w not in all_cluster_words and w not in stopwords and (w not in GENERIC_ENTITY_BLACKLIST or w in action_preserve_words)
+        }
         has_strong_title_overlap = len(action_overlap) >= 2 or (title_similarity >= 0.35 and len(action_overlap) >= 1)
 
         has_metric_match = bool(shared_metrics) and bool(
@@ -520,6 +524,15 @@ class TwoSourceVerifier:
                 if not is_distinct_action:
                     score = max(title_similarity, 0.85)
                     return True, score, f"Corroborated: Shared company ({list(shared_entities or shared_major)}) and quarterly earnings context"
+
+        # Same-company IPO / DRHP / prospectus release match
+        has_ipo_context = bool(
+            re.search(r"\b(ipo|initial public offering|drhp|prospectus)\b", t1)
+            and re.search(r"\b(ipo|initial public offering|drhp|prospectus)\b", t2)
+        )
+        if is_same_company and has_ipo_context:
+            score = max(title_similarity, 0.85)
+            return True, score, f"Corroborated: Shared company ({list(shared_entities or shared_major)}) and IPO context"
 
         if has_compatible_action and (
             has_metric_match

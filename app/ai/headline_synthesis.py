@@ -124,6 +124,8 @@ def _clean_headline_text(raw_title: str) -> str:
     # Normalize punctuation and mojibake quotes/dashes
     cleaned = cleaned.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
     cleaned = cleaned.replace("—", " - ").replace("–", " - ")
+    # Strip emojis and pictographs (e.g. leading 🤖 in newsletter titles)
+    cleaned = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf]+", "", cleaned)
     # Strip known publication suffix patterns like ' - Business Standard'
     cleaned = TITLE_SUFFIX_PATTERN.sub("", cleaned).strip()
     # Normalize extra spaces and tabs
@@ -198,7 +200,7 @@ def validate_headline_coherence(
                     return False, f"Malformed headline: brokerage/analyst '{broker}' falsely treated as acquisition target"
 
     # 2. Malformed currency/number fragments like 'for rs,' or 'for ₹' without digits
-    if re.search(r"\b(?:for|worth|of)\s+(?:rs\.?|₹|\$|€|£)\s*[,.;]?(?!\d)", headline, re.IGNORECASE):
+    if re.search(r"\b(?:for|worth|of)\s+(?:rs\.?|₹|\$|€|£)(?!\s*\d)\s*[,.;]?(?!\s*\d)", headline, re.IGNORECASE):
         return False, "Malformed headline: currency symbol without numeric digits"
 
     # Standalone ungrounded ambiguous 'b' figures like "100b"

@@ -1024,5 +1024,292 @@ def test_2026_10_27_production_failure_none_payload_deterministic_fallback():
     assert len(selection_payload.india_stories) == 5
     assert len(selection_payload.international_stories) == 5
 
+    # 3. Verify Stage 9 Check #10 passes in quality_ladder_mode when pool has < 5 distinct companies
+    from app.validation.engine import FinalValidationEngine
+    validator = FinalValidationEngine()
+    val_report = validator.validate_briefing(
+        payload=selection_payload,
+        events_lookup=event_by_id,
+        articles_lookup=articles_map,
+        target_date=ctx.target_date,
+        strict_5_per_section=True,
+        quality_ladder_mode=True,
+        run_reference_time=ctx.run_reference_time,
+    )
+    c10 = next(r for r in val_report.check_results if r.check_id == 10)
+    assert c10.passed is True, f"Check 10 failed unexpectedly in quality_ladder_mode: {c10.failure_reason}"
+
+
+def test_2026_10_27_intl_select_triggers_recovery_instead_of_stuffing_duplicates():
+    """Verify _intl_select does not prematurely fill slots with duplicate-company candidates
+    when distinct companies EXIST in the recovery pool."""
+    from unittest.mock import MagicMock
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.selection import run_ranking_and_selection
+    from app.ranking.models import RankedCandidatePool, ScoredEvent, ScoreBreakdown
+    from app.verification.domestic_trending import DomesticTrendingEvaluator
+
+    now = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
+    ctx = PipelineContext(run_reference_time=now, target_date=now.date())
+    ctx.domestic_evaluator = DomesticTrendingEvaluator()
+    ctx.verifier = MagicMock()
+    ctx.verifier.is_same_underlying_event.return_value = (False, 0.0, "different")
+
+    all_arts = {}
+    all_evs = {}
+    dom_s = []
+    ind_s = []
+    intl_s = []
+
+    for i in range(5):
+        d_art = Article(
+            id=f"d_{i}",
+            title=f"Prime Minister inaugurates railway corridor phase {i} in Gujarat",
+            url=f"https://www.thehindu.com/news/national/rail-{i}",
+            content_text=f"Cabinet clears Rs {2000 + i * 100} crore national railway infrastructure expansion.",
+            published_at=now - timedelta(hours=2),
+            source_name="The Hindu",
+            category=NewsCategory.DOMESTIC,
+        )
+        d_ev = Event(
+            id=f"ev_d_{i}",
+            canonical_title=d_art.title,
+            article_ids=[d_art.id],
+            description=d_art.content_text,
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        all_arts[d_art.id] = d_art
+        all_evs[d_ev.id] = d_ev
+        dom_s.append(ScoredEvent(
+            event=d_ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=80, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=80.0, rationale="ok"
+            ),
+            investment_score=80.0, rank=i + 1,
+        ))
+
+    india_comps = ["Nazara Technologies", "Paytm", "Brigade Hotel", "ITC Hotels", "Dhanlaxmi Bank"]
+    for i, comp in enumerate(india_comps):
+        in_art = Article(
+            id=f"in_{i}",
+            title=f"{comp} Q2 net profit jumps {25 + i}% to Rs {600 + i * 100} crore",
+            url=f"https://www.business-standard.com/companies/in-{i}",
+            content_text=f"{comp} reported Q2 net profit of Rs {600 + i * 100} crore on strong revenue growth.",
+            published_at=now - timedelta(hours=2),
+            source_name="Business Standard",
+            category=NewsCategory.INDIA,
+        )
+        in_ev = Event(
+            id=f"ev_in_{i}",
+            canonical_title=in_art.title,
+            article_ids=[in_art.id],
+            description=in_art.content_text,
+            companies_involved=[comp],
+            event_category=NewsCategory.INDIA,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+        )
+        all_arts[in_art.id] = in_art
+        all_evs[in_ev.id] = in_ev
+        ind_s.append(ScoredEvent(
+            event=in_ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=85, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=85.0, rationale="ok"
+            ),
+            investment_score=85.0, rank=i + 1,
+        ))
+
+    # International ranked candidates: 3 Anthropic + 1 Microsoft + 1 Apple (only 3 distinct companies in ranked top 5)
+    intl_ranked_specs = [
+        ("Anthropic", "Anthropic files for $16 billion initial public offering on Nasdaq"),
+        ("Microsoft", "Microsoft acquires cybersecurity firm for $1.5 billion in cash"),
+        ("Apple", "Apple commits $2 billion to expand semiconductor packaging facility"),
+        ("Anthropic", "Anthropic cofounders hold $14 billion stake ahead of public listing"),
+        ("Anthropic", "Anthropic reports $16.3 billion annualized revenue in IPO prospectus"),
+    ]
+    for i, (comp, title) in enumerate(intl_ranked_specs):
+        int_art = Article(
+            id=f"int_{i}",
+            title=title,
+            url=f"https://www.cnbc.com/2026/10/26/intl-{i}.html",
+            content_text=f"{title} according to regulatory filings and corporate disclosures.",
+            published_at=now - timedelta(hours=3),
+            source_name="CNBC",
+            category=NewsCategory.INTERNATIONAL,
+        )
+        int_ev = Event(
+            id=f"ev_int_{i}",
+            canonical_title=title,
+            article_ids=[int_art.id],
+            description=int_art.content_text,
+            companies_involved=[comp],
+            event_category=NewsCategory.INTERNATIONAL,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            verification_confidence=95.0,
+        )
+        all_arts[int_art.id] = int_art
+        all_evs[int_ev.id] = int_ev
+        intl_s.append(ScoredEvent(
+            event=int_ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=90, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=90.0, rationale="ok"
+            ),
+            investment_score=90.0, rank=i + 1,
+        ))
+
+    # Add 2 distinct-company International reserves in ctx.intl_reserve_pool (Broadcom, TSMC)
+    reserves = []
+    for j, (rcomp, rtitle) in enumerate([
+        ("Broadcom", "Broadcom signs $4 billion custom AI accelerator supply contract"),
+        ("TSMC", "TSMC approves $10 billion capital expenditure for advanced wafer fab"),
+    ]):
+        r_art = Article(
+            id=f"int_res_{j}",
+            title=rtitle,
+            url=f"https://www.reuters.com/technology/intl-res-{j}",
+            content_text=f"{rtitle} in a major semiconductor expansion.",
+            published_at=now - timedelta(hours=4),
+            source_name="Reuters",
+            category=NewsCategory.INTERNATIONAL,
+        )
+        r_ev = Event(
+            id=f"ev_int_res_{j}",
+            canonical_title=rtitle,
+            article_ids=[r_art.id],
+            description=r_art.content_text,
+            companies_involved=[rcomp],
+            event_category=NewsCategory.INTERNATIONAL,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            verification_confidence=92.0,
+        )
+        all_arts[r_art.id] = r_art
+        all_evs[r_ev.id] = r_ev
+        reserves.append(r_ev)
+
+    ctx.articles_lookup = all_arts
+    ctx.intl_reserve_pool = reserves
+    ctx.verified_events = list(all_evs.values())
+    mock_ranker = MagicMock()
+    mock_ranker.rank_events.return_value = RankedCandidatePool(
+        domestic_candidates=dom_s,
+        india_candidates=ind_s,
+        international_candidates=intl_s,
+    )
+    ctx.ranker = mock_ranker
+    accepted = [{"event_id": k} for k in all_evs]
+
+    _, _, _, intl_res, sufficient, _ = run_ranking_and_selection(ctx, accepted, all_evs)
+    assert sufficient is True
+    assert len(intl_res) == 5
+    selected_intl_comps = [s.event.companies_involved[0] for s in intl_res]
+    assert len(set(selected_intl_comps)) == 5, (
+        f"Expected 5 distinct International companies via recovery pass, got {selected_intl_comps}"
+    )
+    assert "Broadcom" in selected_intl_comps
+    assert "TSMC" in selected_intl_comps
+
+
+def test_2026_10_27_coherence_and_corroboration_and_noise_fixes():
+    """Verify fixes for:
+    1. validate_headline_coherence false positive on 'of Rs 200 crore'.
+    2. _clean_headline_text stripping emojis (e.g. '🤖').
+    3. Bare SEC form code '424B5 FORWARD ProSupp' rejected as generic headline and company name.
+    4. '/timestopten/' newsletter URL and 'Stocks making the biggest moves premarket' rejected.
+    5. Dhanlaxmi Bank Q2 results not corroborated by Aegis Logistics Q2 results, while Anthropic IPO articles match.
+    """
+    from app.ai.headline_synthesis import validate_headline_coherence, _clean_headline_text
+    from app.filtering.rules import is_generic_headline, URLFilterRule, StoryTypeFilterRule
+    from app.models.entity_sanitizer import clean_company_name
+    from app.verification.verifier import TwoSourceVerifier
+
+    # 1. Currency coherence check with space before digits ('of Rs 200 crore')
+    hl = (
+        "Nazara Technologies Discloses Quarterly Results with Key Metric of Rs 200 crore; "
+        "Corporate Filing Outlines Operating Execution and Margin Trajectory"
+    )
+    is_coh, err = validate_headline_coherence(hl)
+    assert is_coh is True, f"Valid 'of Rs 200 crore' headline was falsely rejected: {err}"
+
+    # Malformed currency without digits must still be rejected
+    bad_hl = "Nazara Technologies Agrees to Acquire Target Corp for Rs, Outlines Execution"
+    is_coh_bad, _ = validate_headline_coherence(bad_hl)
+    assert is_coh_bad is False
+
+    # 2. Emoji stripping
+    cleaned_emoji = _clean_headline_text("🤖 Anthropic’s Mega IPO: Huge Losses, No Dividends")
+    assert "🤖" not in cleaned_emoji
+    assert cleaned_emoji.startswith("Anthropic's Mega IPO")
+
+    # 3. '424B5 FORWARD ProSupp' rejected as generic headline and entity
+    is_gen, _ = is_generic_headline("424B5 FORWARD ProSupp")
+    assert is_gen is True
+    assert clean_company_name("424B5 FORWARD ProSupp") is None
+
+    # 4. '/timestopten/' URL and 'Stocks making the biggest moves premarket' noise filter
+    is_valid_u, _ = URLFilterRule.is_valid_url(
+        "https://timesofindia.indiatimes.com/india/timestopten/msid-135221778.cms"
+    )
+    assert is_valid_u is False
+
+    premarket_art = Article(
+        id="art_pm",
+        title="Stocks making the biggest moves premarket: Verizon, Tesla, Moderna & more",
+        url="https://www.cnbc.com/2026/10/26/stocks-making-the-biggest-moves-premarket-vz-tsla-mrna-more.html",
+        source_name="CNBC",
+        content_text="Check out the companies making headlines before the bell: Verizon, Tesla, Moderna.",
+        published_at=datetime.now(timezone.utc),
+    )
+    st_res = StoryTypeFilterRule().evaluate(premarket_art)
+    assert st_res.is_accepted is False
+
+    # 5. Corroboration entity isolation ('Net profit' must not link Dhanlaxmi Bank & Aegis Logistics)
+    now = datetime.now(timezone.utc)
+    verifier = TwoSourceVerifier()
+    art_dhanlaxmi = Article(
+        id="art_db",
+        title="Dhanlaxmi Bank Q2 results: Net profit more than doubles to ₹48.55 crore",
+        url="https://www.business-standard.com/companies/quarterly-results/dhanlaxmi-bank-q2-results-126102600661_1.html",
+        source_name="Business Standard",
+        content_text="Dhanlaxmi Bank reported Q2 net profit of Rs 48.55 crore.",
+        published_at=now,
+    )
+    art_aegis = Article(
+        id="art_al",
+        title="Aegis Logistics Q2 results: Net profit rises 45% to Rs 261 crore despite revenue decline",
+        url="https://www.cnbctv18.com/market/earnings/aegis-logistics-q2-results-20019713.htm",
+        source_name="CNBCTV18",
+        content_text="Aegis Logistics reported Q2 net profit of Rs 261 crore.",
+        published_at=now,
+    )
+    same_ev, _, reason = verifier.is_same_underlying_event(art_dhanlaxmi, art_aegis, now_utc=now)
+    assert same_ev is False, f"Unrelated companies Dhanlaxmi Bank and Aegis Logistics falsely matched: {reason}"
+
+    # Same-company IPO articles (Anthropic) must match as the same underlying event
+    art_anth_1 = Article(
+        id="art_an1",
+        title="Anthropic's Mega IPO: Huge Losses, No Dividends And A Warning On AI Risks",
+        url="https://www.fortune.com/2026/10/26/anthropic-mega-ipo-risks.html",
+        source_name="Fortune",
+        content_text="Anthropic is preparing for a mega IPO amid surging AI revenue.",
+        published_at=now,
+    )
+    art_anth_2 = Article(
+        id="art_an2",
+        title="Anthropic's IPO prospectus shows $16.3 billion in revenue",
+        url="https://www.cnbc.com/2026/10/26/anthropic-ipo-prospectus-revenue.html",
+        source_name="CNBC",
+        content_text="Anthropic's IPO prospectus revealed $16.3 billion in annualized revenue.",
+        published_at=now,
+    )
+    same_anth, _, anth_reason = verifier.is_same_underlying_event(art_anth_1, art_anth_2, now_utc=now)
+    assert same_anth is True, f"Expected Anthropic IPO articles to match as same event, got False ({anth_reason})"
+
+
 
 

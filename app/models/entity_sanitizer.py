@@ -39,6 +39,8 @@ GENERIC_STANDALONE_ENTITY_BLACKLIST: Set[str] = {
     "ipo market", "stock market", "share market",
     "attacks", "attack", "opposition", "march", "elections", "election", "voters",
     "scientists", "weather", "army", "navy", "air force", "police", "judiciary",
+    "net", "loss", "net loss", "income", "net income", "ebitda", "margin", "margins", "pat", "pbt",
+    "prosupp", "forward prosupp", "prospectus", "premarket",
 }
 
 
@@ -121,8 +123,9 @@ DATE_AND_METRIC_PATTERNS = [
     # Tenors, maturities, yield basis points: '25-yr', '10-year', '30-year', '5-year', '100 bps'
     r"^\d+(?:\.\d+)?\s*-(?:yr|year|years|month|months|day|days|week|weeks|hour|hours|bps)$",
     r"^\d+(?:\.\d+)?\s*(?:yr|year|years|month|months|day|days|week|weeks|bps|basis points)$",
-    # Standalone financial words
+    # Standalone financial words & SEC form codes
     r"^(?:net profit|revenue|quarterly profit|standalone profit|profit|net loss|ebitda|operating income|sales|pat|pbt)$",
+    r"^(?:form\s+)?(?:424b\d?|s-[1348](?:/a)?|f-[1346](?:/a)?|10-[kqt](?:/a)?|8-k(?:/a)?|6-k(?:/a)?|20-f(?:/a)?|def\s*14a|sc\s*13[dg](?:/a)?|n-2(?:/a)?|ex-\d+(?:\.\d+)?)(?:\s+(?:forward|prosupp|prospectus|supplement|filing|report|amendment|pos\s+am|fwp))*$",
 ]
 
 TRAILING_METRIC_SUFFIXES = [

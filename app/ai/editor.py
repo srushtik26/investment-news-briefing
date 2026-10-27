@@ -424,6 +424,7 @@ class GeminiEditorialEngine:
 
         # 2. Validate India Same-Company Restriction
         from app.models.entity_sanitizer import sanitize_company_entities
+        from app.models.enums import NewsCategory
         seen_india_companies: Set[str] = set()
         for story in payload.india_stories:
             scored = valid_events.get(story.event_id)
@@ -434,7 +435,15 @@ class GeminiEditorialEngine:
             for comp in companies:
                 norm = normalize_entity_name(comp)
                 if norm in seen_india_companies and norm != "unspecified_entity":
-                    raise ValueError(f"India section selected duplicate company: '{comp}'")
+                    avail_india = set()
+                    for s in valid_events.values():
+                        if getattr(s.event, "event_category", None) == NewsCategory.INDIA:
+                            for rc in sanitize_company_entities(getattr(s.event, "companies_involved", []) or []):
+                                n = normalize_entity_name(rc)
+                                if n not in ("unspecified_entity", ""):
+                                    avail_india.add(n)
+                    if len(avail_india) >= 5 or len(payload.india_stories) < 5:
+                        raise ValueError(f"India section selected duplicate company: '{comp}'")
                 seen_india_companies.add(norm)
 
         # 3. Validate International Same-Company Restriction
@@ -449,15 +458,14 @@ class GeminiEditorialEngine:
                 norm = normalize_entity_name(comp)
                 if norm in seen_intl_companies and norm != "unspecified_entity":
                     # Only reject if there were enough distinct companies available in candidate pool
-                    from app.models.enums import NewsCategory
                     avail_intl = set()
                     for s in valid_events.values():
                         if getattr(s.event, "event_category", None) == NewsCategory.INTERNATIONAL:
-                            for rc in (getattr(s.event, "companies_involved", []) or []):
+                            for rc in sanitize_company_entities(getattr(s.event, "companies_involved", []) or []):
                                 n = normalize_entity_name(rc)
                                 if n not in ("unspecified_entity", ""):
                                     avail_intl.add(n)
-                    if len(avail_intl) >= 5:
+                    if len(avail_intl) >= 5 or len(payload.international_stories) < 5:
                         raise ValueError(f"International section selected duplicate company: '{comp}'")
                 seen_intl_companies.add(norm)
 

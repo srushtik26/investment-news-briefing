@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '0 21 * * *'   # 2:30 AM IST every day (primary run)
     - cron: '45 21 * * *'  # 3:15 AM IST every day (automatic recovery run)
+    - cron: '30 0 * * *'   # 6:00 AM IST every day (morning safety-net recovery run)
 
   workflow_dispatch:
 

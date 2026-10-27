@@ -306,6 +306,8 @@ def test_existing_hard_event_rules_still_apply():
 @pytest.fixture
 def workflow_content():
     workflow_path = Path(".github/workflows/daily_briefing.yml")
+    if not workflow_path.exists():
+        workflow_path = Path(__file__).resolve().parent.parent / ".github/workflows/daily_briefing.yml"
     assert workflow_path.exists(), "daily_briefing.yml workflow does not exist"
     return workflow_path.read_text(encoding="utf-8")
 

@@ -451,7 +451,7 @@ class URLFilterRule(BaseFilterRule):
         r"/(category|categories|section|sections|all-news)/",                 # Category landing pages
         r"/(agency|agencies|author|authors|profile)/",                        # Agency/author feeds
         r"/(page|pages|p)/\d+/?$",                                            # Standalone pagination pages
-        r"/(newsletters?|bulletins?|daily-brief|unsubscribe|opt-out|email-preferences?)/", # Newsletter / opt-out
+        r"/(newsletters?|bulletins?|daily-brief|timestopten|unsubscribe|opt-out|email-preferences?)/", # Newsletter / opt-out
         r"/(live-blog|liveblog|live-updates|live-coverage)/",                 # Live commentary feeds
         r"/(search|find|query)/",                                             # Search result directories
         r"/(investing/stock/|stockpricequote/|share-price/|quotes?/|ticker/|company-profile/)", # Stock quotes and market data
@@ -594,10 +594,11 @@ def is_generic_headline(title: str) -> Tuple[bool, str]:
             if len(normalized.split()) <= len(g.split()) + 1:
                 return True, f"Headline '{title}' is a generic index title"
 
-    # Bare regulatory filing / form code (e.g. 'N-2/A', '10-K', '8-K', 'Form 4', 'SC 13D/A', '424B2', 'DEF 14A', 'EX-99.1')
+    # Bare regulatory filing / form code (e.g. 'N-2/A', '10-K', '8-K', 'Form 4', 'SC 13D/A', '424B2', '424B5 FORWARD ProSupp', 'DEF 14A', 'EX-99.1')
     bare_form_pattern = (
         r"^(?:form\s+|schedule\s+|sc\s+|def\s+|defa\s+|pre\s+|prea\s+|ex(?:hibit)?\s*[-/.\s]*)?[a-z0-9]{1,6}(?:[-/.][a-z0-9]{1,5})+$"
         r"|^(?:form\s+|schedule\s+|sc\s+|def\s+|defa\s+|pre\s+|prea\s+|ex(?:hibit)?\s*[-/.\s]*)[a-z0-9\-.]+$"
+        r"|^(?:form\s+)?(?:424b\d?|s-[1348](?:/a)?|f-[1346](?:/a)?|10-[kqt](?:/a)?|8-k(?:/a)?|6-k(?:/a)?|20-f(?:/a)?|def\s*14a|sc\s*13[dg](?:/a)?|n-2(?:/a)?|ex-\d+(?:\.\d+)?)(?:\s+(?:forward|prosupp|prospectus|supplement|filing|report|amendment|pos\s+am|fwp))+$"
     )
     if re.match(bare_form_pattern, t_lower):
         return True, f"Headline '{title}' is a bare regulatory form/filing code lacking subject and event details"
@@ -669,7 +670,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "market_summary",
-            r"\b(stock market today|closing bell|opening bell|markets wrap|sensex ends|nifty today|sensex today|market live|morning bell|top gainers and losers|stocks to watch today|mid-day market update|wall street opens higher|european markets close)\b",
+            r"\b(stock market today|closing bell|opening bell|markets wrap|sensex ends|nifty today|sensex today|market live|morning bell|top gainers and losers|stocks to watch today|mid-day market update|wall street opens higher|european markets close|stocks making the biggest moves|biggest moves (?:premarket|midday|after hours)|premarket movers|after-hours movers)\b",
         ),
         (
             "results_calendar",

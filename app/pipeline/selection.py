@@ -1610,6 +1610,9 @@ def run_ranking_and_selection(
     # INDIA TODAY-FIRST SELECTION (PORTFOLIO-FIRST, NOT PORTFOLIO-ONLY)
     # -------------------------------------------------------------
     global_seen_portfolio_companies: Dict[str, str] = {}
+    india_deferred_dup_comps: List[ScoredEvent] = []
+    india_rejected_count = [0]
+    rejected_india_event_ids: Set[str] = set()
 
     def _india_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         from app.ranking.watchlist import get_portfolio_company_role, format_portfolio_role_log
@@ -1631,8 +1634,6 @@ def run_ranking_and_selection(
         # Separate candidates into portfolio watchlist candidates and general India candidates, preserving ranking order
         portfolio_cands: List[Tuple[ScoredEvent, str]] = []
         general_cands: List[ScoredEvent] = []
-        india_rejected_count = [0]
-        rejected_india_event_ids: Set[str] = set()
         reg_classifier = _get_reg_classifier()
 
         def _log_stage7_reject(ev: Event, reason: str, reg_result: str = "FAIL"):
@@ -1852,9 +1853,9 @@ def run_ranking_and_selection(
             )
             norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
             if norm_comps and norm_comps.intersection(seen_comps):
-                if len(portfolio_cands) + len(general_cands) > target_count:
-                    _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_comps)})", "PASS")
-                    continue
+                india_deferred_dup_comps.append(scored)
+                _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_comps)})", "PASS")
+                continue
 
             if india_rejected_count[0] > 0:
                 ctx.log_exec(
@@ -1896,6 +1897,7 @@ def run_ranking_and_selection(
         if len(selected) < target_count:
             needed_slots = target_count - len(selected)
             filtered_general: List[ScoredEvent] = []
+            seen_general_comps: Set[str] = set(seen_comps)
             for scored in general_cands:
                 ev = scored.event
                 if ev.id in rejected_india_event_ids:
@@ -1921,12 +1923,13 @@ def run_ranking_and_selection(
                     publisher=cand_art.source_name if cand_art else None,
                 )
                 norm_comps = {normalize_entity_name(c) for c in clean_comps if normalize_entity_name(c) not in ("unspecified_entity", "")}
-                if norm_comps and norm_comps.intersection(seen_comps):
-                    if len(filtered_general) + (len(general_cands) - general_cands.index(scored) - 1) >= needed_slots:
-                        _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_comps)})", "PASS")
-                        continue
+                if norm_comps and norm_comps.intersection(seen_general_comps):
+                    india_deferred_dup_comps.append(scored)
+                    _log_stage7_reject(ev, f"COMPANY_DIVERSITY_SKIP (overlap: {norm_comps.intersection(seen_general_comps)})", "PASS")
+                    continue
 
                 filtered_general.append(scored)
+                seen_general_comps.update(norm_comps)
 
             div_general = select_diverse_topic_candidates(
                 candidates=filtered_general,
@@ -2175,7 +2178,7 @@ def run_ranking_and_selection(
             rem_budget = max(5, MAX_CORROBORATION_SEARCHES_PER_RUN - get_corroboration_count())
             if rem_budget > 0:
                 ctx.log_exec(f"[INDIA_RECOVERY] RSS discovery for {needed} missing stories (budget rem: {rem_budget})")
-                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
                 when_param = "when:3d" if is_weekend_or_mon else "when:2d"
                 rec_horizon = 72.0 if is_weekend_or_mon else 48.0
                 INDIA_RECOVERY_QUERIES = [
@@ -2227,7 +2230,7 @@ def run_ranking_and_selection(
             serp_key = getattr(ctx.settings, "SERPAPI_API_KEY", None) or os.environ.get("SERPAPI_API_KEY")
             if serp_key and serp_key.strip():
                 serp_corrob = SerpAPICorroborator(extractor=ctx.extractor, api_key=serp_key)
-                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or ctx.target_date.weekday() == 0
+                is_weekend_or_mon = getattr(ctx, "is_weekend", False) or (getattr(ctx, "target_date", None) is not None and ctx.target_date.weekday() == 0)
                 when_param = "when:3d" if is_weekend_or_mon else "when:2d"
                 rec_horizon = 72.0 if is_weekend_or_mon else 48.0
                 INDIA_SERP_RECOVERY_QUERIES = [
@@ -2277,6 +2280,28 @@ def run_ranking_and_selection(
                         )
                     except Exception as e:
                         ctx.log_exec(f"[SERPAPI_INDIA_RECOVERY_ERROR] {e}")
+
+        if needed > 0 and india_deferred_dup_comps:
+            for def_scored in india_deferred_dup_comps:
+                if needed <= 0:
+                    break
+                def_ev = def_scored.event
+                if def_ev.id in india_recovery_selected_ids or def_ev.id in rejected_india_event_ids:
+                    continue
+                if hasattr(ctx, "dedup_rejected_event_ids") and def_ev.id in ctx.dedup_rejected_event_ids:
+                    continue
+                def_art = ctx.articles_lookup.get(def_ev.article_ids[0]) if def_ev.article_ids else None
+                is_dup_ev = False
+                for ex_s in india_final:
+                    ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
+                    if def_art and ex_art and ctx.verifier.is_same_underlying_event(def_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                        is_dup_ev = True
+                        break
+                if not is_dup_ev:
+                    india_final.append(def_scored)
+                    india_recovery_selected_ids.add(def_ev.id)
+                    needed -= 1
+                    ctx.log_exec(f"INDIA_RECOVERY_ACCEPTED (deferred_dup_company): title=\"{def_ev.canonical_title}\"")
 
         if needed > 0:
             ctx.log_exec(f"INDIA_RECOVERY_EXHAUSTED: still need {needed} stories after all recovery steps")
@@ -2571,10 +2596,10 @@ def run_ranking_and_selection(
     from app.verification.international import is_geopolitical_market_impact_eligible
 
     rejected_intl_event_ids: Set[str] = set()
+    intl_deferred_dup_comps: List[ScoredEvent] = []
 
     def _intl_select(cands: List[ScoredEvent], existing: List[ScoredEvent], target_count: int) -> List[ScoredEvent]:
         filtered = []
-        deferred = []
         intl_rejected_count = [0]
         reg_classifier = _get_reg_classifier()
         for scored in cands:
@@ -2722,7 +2747,7 @@ def run_ranking_and_selection(
                 continue
 
             if is_dup_comp:
-                deferred.append(scored)
+                intl_deferred_dup_comps.append(scored)
                 continue
 
             if intl_rejected_count[0] > 0:
@@ -2739,21 +2764,6 @@ def run_ranking_and_selection(
                 )
                 intl_rejected_count[0] = 0
             filtered.append(scored)
-
-        if len(filtered) < target_count:
-            for scored in deferred:
-                if len(filtered) >= target_count:
-                    break
-                ev = scored.event
-                cand_art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
-                is_dup_ev = False
-                for ex in (existing + filtered):
-                    ex_art = ctx.articles_lookup.get(ex.event.article_ids[0]) if ex.event.article_ids else None
-                    if cand_art and ex_art and ctx.verifier.is_same_underlying_event(cand_art, ex_art, now_utc=ctx.run_reference_time)[0]:
-                        is_dup_ev = True
-                        break
-                if not is_dup_ev:
-                    filtered.append(scored)
 
         div = select_diverse_topic_candidates(
             candidates=filtered,
@@ -3041,6 +3051,28 @@ def run_ranking_and_selection(
                                     break
                         if needed <= 0 and len(ctx.intl_reserve_pool) >= 3:
                             break
+
+        if needed > 0 and intl_deferred_dup_comps:
+            for def_scored in intl_deferred_dup_comps:
+                if needed <= 0:
+                    break
+                def_ev = def_scored.event
+                if def_ev.id in intl_recovery_selected_ids or def_ev.id in rejected_intl_event_ids:
+                    continue
+                if hasattr(ctx, "dedup_rejected_event_ids") and def_ev.id in ctx.dedup_rejected_event_ids:
+                    continue
+                def_art = ctx.articles_lookup.get(def_ev.article_ids[0]) if def_ev.article_ids else None
+                is_dup_ev = False
+                for ex_s in intl_final:
+                    ex_art = ctx.articles_lookup.get(ex_s.event.article_ids[0]) if ex_s.event.article_ids else None
+                    if def_art and ex_art and ctx.verifier.is_same_underlying_event(def_art, ex_art, now_utc=ctx.run_reference_time)[0]:
+                        is_dup_ev = True
+                        break
+                if not is_dup_ev:
+                    intl_final.append(def_scored)
+                    intl_recovery_selected_ids.add(def_ev.id)
+                    needed -= 1
+                    ctx.log_exec(f"INTERNATIONAL_RECOVERY_ACCEPTED (deferred_dup_company): title=\"{def_ev.canonical_title}\"")
 
         if needed > 0:
             ctx.log_exec(f"INTERNATIONAL_RECOVERY_EXHAUSTED: still need {needed} stories after all recovery steps")

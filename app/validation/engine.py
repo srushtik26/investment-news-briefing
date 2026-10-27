@@ -588,6 +588,23 @@ class FinalValidationEngine:
         # CHECK 10: No company appears twice in India or International sections
         # -------------------------------------------------------------
         from app.models.entity_sanitizer import sanitize_company_entities
+        avail_india_distinct: Set[str] = set()
+        avail_intl_distinct: Set[str] = set()
+        if quality_ladder_mode:
+            for ev_obj in events_lookup.values():
+                if not ev_obj:
+                    continue
+                ev_cat = getattr(ev_obj, "event_category", None)
+                ev_art = articles_lookup.get(ev_obj.article_ids[0]) if getattr(ev_obj, "article_ids", None) else None
+                ev_pub = ev_art.source_name if ev_art else None
+                for rc in sanitize_company_entities(getattr(ev_obj, "companies_involved", []) or [], publisher=ev_pub):
+                    rn = normalize_entity_name(rc)
+                    if rn not in ("unspecified_entity", ""):
+                        if ev_cat == NewsCategory.INDIA:
+                            avail_india_distinct.add(rn)
+                        elif ev_cat == NewsCategory.INTERNATIONAL:
+                            avail_intl_distinct.add(rn)
+
         seen_india_comps: Set[str] = set()
         for story in payload.india_stories:
             event = events_lookup.get(story.event_id)
@@ -596,13 +613,14 @@ class FinalValidationEngine:
             for comp in companies:
                 norm = normalize_entity_name(comp)
                 if norm in seen_india_comps and norm != "unspecified_entity":
-                    check_results.append(ValidationCheckResult(
-                        check_id=10,
-                        check_name="No India company appears twice",
-                        passed=False,
-                        failure_reason=f"Duplicate company '{comp}' selected twice in India section",
-                        failed_story_id=story.event_id,
-                    ))
+                    if not quality_ladder_mode or len(avail_india_distinct) >= 5:
+                        check_results.append(ValidationCheckResult(
+                            check_id=10,
+                            check_name="No India company appears twice",
+                            passed=False,
+                            failure_reason=f"Duplicate company '{comp}' selected twice in India section",
+                            failed_story_id=story.event_id,
+                        ))
                 seen_india_comps.add(norm)
 
         seen_intl_comps: Set[str] = set()
@@ -613,13 +631,14 @@ class FinalValidationEngine:
             for comp in companies:
                 norm = normalize_entity_name(comp)
                 if norm in seen_intl_comps and norm != "unspecified_entity":
-                    check_results.append(ValidationCheckResult(
-                        check_id=10,
-                        check_name="No International company appears twice",
-                        passed=False,
-                        failure_reason=f"Duplicate company '{comp}' selected twice in International section",
-                        failed_story_id=story.event_id,
-                    ))
+                    if not quality_ladder_mode or len(avail_intl_distinct) >= 5:
+                        check_results.append(ValidationCheckResult(
+                            check_id=10,
+                            check_name="No International company appears twice",
+                            passed=False,
+                            failure_reason=f"Duplicate company '{comp}' selected twice in International section",
+                            failed_story_id=story.event_id,
+                        ))
                 seen_intl_comps.add(norm)
 
         # -------------------------------------------------------------

@@ -43,6 +43,11 @@ GENERIC_ENTITY_BLACKLIST: Set[str] = {
     "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+    "net", "profit", "net profit", "loss", "net loss", "income", "net income",
+    "ebitda", "margin", "margins", "pat", "pbt", "eps", "yoy", "qoq", "arr", "revpar",
+    "dividend", "dividends", "no dividends", "losses", "huge", "huge losses", "warning", "risks", "ai risks",
+    "mega", "mega ipo", "cofounders", "founders", "prospectus", "filing", "form", "prosupp", "forward", "forward prosupp",
+    "premarket", "stocks making", "biggest moves",
 }
 
 # Prefix tokens to strip from proper noun matches (e.g. 'Wall Street Walmart' -> 'Walmart')
@@ -132,6 +137,13 @@ class EventQueryBuilder:
 
         # Check if entity contains generic results / reporting phrases
         if re.search(r"\b(quarterly results|annual results|financial results|q[1-4] results|fy\d{2} results|board meeting|share price)\b", tok_low):
+            return None
+
+        # Reject SEC form codes (e.g. '424B5 FORWARD ProSupp', '10-K', '8-K', 'S-1')
+        if re.match(
+            r"^(?:form\s+)?(?:424b\d?|s-[1348](?:/a)?|f-[1346](?:/a)?|10-[kqt](?:/a)?|8-k(?:/a)?|6-k(?:/a)?|20-f(?:/a)?|def\s*14a|sc\s*13[dg](?:/a)?|n-2(?:/a)?|ex-\d+(?:\.\d+)?)\b",
+            tok_low,
+        ):
             return None
 
         # Check blacklist
