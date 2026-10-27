@@ -707,6 +707,34 @@ def run_pipeline(
                     log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Backfilled India story to reach 5: '{ev.canonical_title}'")
                 selection_payload.india_stories = current_india
 
+                # Secondary pass: fill remaining slots if distinct companies were insufficient to reach 5
+                if len(current_india) < 5:
+                    for ev in all_india_cands:
+                        if len(current_india) >= 5:
+                            break
+                        if not isinstance(ev, Event) or ev.id in used_india_ev_ids:
+                            continue
+                        if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                            continue
+                        if history_store:
+                            cand_rep, _ = is_event_historical_repeat(
+                                event=ev,
+                                history_store=history_store,
+                                target_date=target_briefing_date,
+                                lookback_days=3,
+                                headline=ev.canonical_title,
+                            )
+                            if cand_rep:
+                                if hasattr(ctx, "dedup_rejected_event_ids"):
+                                    ctx.dedup_rejected_event_ids.add(ev.id)
+                                continue
+                        art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                        used_india_ev_ids.add(ev.id)
+                        sc = build_story_context(ev, art, ctx=ctx)
+                        current_india.append(prepare_final_story(sc, ctx=ctx))
+                        log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Secondary backfilled India story to reach 5: '{ev.canonical_title}'")
+                    selection_payload.india_stories = current_india
+
             # Backfill International stories if Gemini returned fewer than 5
             if not getattr(selection_payload, "international_stories", None) or len(selection_payload.international_stories) < 5:
                 current_intl = list(selection_payload.international_stories or [])
@@ -766,6 +794,33 @@ def run_pipeline(
                     sc = build_story_context(ev, art, ctx=ctx)
                     current_intl.append(prepare_final_story(sc, ctx=ctx))
                     log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Backfilled International story to reach 5: '{ev.canonical_title}'")
+
+                # Secondary pass: fill remaining slots if distinct companies were insufficient to reach 5
+                if len(current_intl) < 5:
+                    for ev in all_intl_cands:
+                        if len(current_intl) >= 5:
+                            break
+                        if not isinstance(ev, Event) or ev.id in used_intl_ev_ids:
+                            continue
+                        if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                            continue
+                        if history_store:
+                            cand_rep, _ = is_event_historical_repeat(
+                                event=ev,
+                                history_store=history_store,
+                                target_date=target_briefing_date,
+                                lookback_days=3,
+                                headline=ev.canonical_title,
+                            )
+                            if cand_rep:
+                                if hasattr(ctx, "dedup_rejected_event_ids"):
+                                    ctx.dedup_rejected_event_ids.add(ev.id)
+                                continue
+                        art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                        used_intl_ev_ids.add(ev.id)
+                        sc = build_story_context(ev, art, ctx=ctx)
+                        current_intl.append(prepare_final_story(sc, ctx=ctx))
+                        log_exec(f"[STAGE8_EDITORIAL_BACKFILL] Secondary backfilled International story to reach 5: '{ev.canonical_title}'")
                 selection_payload.international_stories = current_intl
 
             # Fallback if any section is still short of 5
@@ -775,9 +830,10 @@ def run_pipeline(
             else:
                 log_exec(f"Stage 8 Summary:")
                 log_exec(f"  Gemini selected/backfilled: {len(selection_payload.domestic_stories)} Domestic + {len(selection_payload.india_stories)} India + {len(selection_payload.international_stories)} International")
-        else:
-            err = editorial_res.error_message if editorial_res else "Unknown editorial error"
-            log_exec(f"Stage 8 Gemini unavailable/rate-limited ({err}) — using deterministic editorial fallback.")
+
+        if selection_payload is None:
+            err = editorial_res.error_message if editorial_res else "Incomplete payload after Stage 8 editorial backfill"
+            log_exec(f"Stage 8 Gemini unavailable/rate-limited/incomplete ({err}) — using deterministic editorial fallback.")
             from app.models.entity_sanitizer import sanitize_company_entities
             from app.deduplication.fingerprint import normalize_entity_name
 
@@ -830,6 +886,32 @@ def run_pipeline(
                 sc = build_story_context(ev, art, ctx=ctx)
                 india_stories_selected.append(prepare_final_story(sc, ctx=ctx))
 
+            # Secondary pass if distinct companies were insufficient to reach 5
+            if len(india_stories_selected) < 5:
+                for ev in all_india_cands:
+                    if len(india_stories_selected) >= 5:
+                        break
+                    if not isinstance(ev, Event) or ev.id in used_india_ev_ids:
+                        continue
+                    if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                        continue
+                    if history_store:
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(ev.id)
+                            continue
+                    art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                    used_india_ev_ids.add(ev.id)
+                    sc = build_story_context(ev, art, ctx=ctx)
+                    india_stories_selected.append(prepare_final_story(sc, ctx=ctx))
+
             intl_stories_selected = []
             seen_intl_comps_fb: Set[str] = set()
             used_intl_ev_ids: Set[str] = set()
@@ -877,6 +959,32 @@ def run_pipeline(
                 used_intl_ev_ids.add(ev.id)
                 sc = build_story_context(ev, art, ctx=ctx)
                 intl_stories_selected.append(prepare_final_story(sc, ctx=ctx))
+
+            # Secondary pass if distinct companies were insufficient to reach 5
+            if len(intl_stories_selected) < 5:
+                for ev in all_intl_cands:
+                    if len(intl_stories_selected) >= 5:
+                        break
+                    if not isinstance(ev, Event) or ev.id in used_intl_ev_ids:
+                        continue
+                    if hasattr(ctx, "dedup_rejected_event_ids") and ev.id in ctx.dedup_rejected_event_ids:
+                        continue
+                    if history_store:
+                        cand_rep, _ = is_event_historical_repeat(
+                            event=ev,
+                            history_store=history_store,
+                            target_date=target_briefing_date,
+                            lookback_days=3,
+                            headline=ev.canonical_title,
+                        )
+                        if cand_rep:
+                            if hasattr(ctx, "dedup_rejected_event_ids"):
+                                ctx.dedup_rejected_event_ids.add(ev.id)
+                            continue
+                    art = ctx.articles_lookup.get(ev.article_ids[0]) if ev.article_ids else None
+                    used_intl_ev_ids.add(ev.id)
+                    sc = build_story_context(ev, art, ctx=ctx)
+                    intl_stories_selected.append(prepare_final_story(sc, ctx=ctx))
 
             selection_payload = BriefingEditorialPayload(
                 domestic_stories=dom_stories_selected,

@@ -601,22 +601,6 @@ class GeminiEditorialEngine:
                 art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                 source_name = art.source_name if art else "Business Standard"
 
-                raw_comps = e.companies_involved or []
-                companies = sanitize_company_entities(raw_comps, publisher=source_name)
-                duplicate = False
-                for comp in companies:
-                    norm = normalize_entity_name(comp)
-                    if norm in seen_india_comps and norm != "unspecified_entity":
-                        duplicate = True
-                        break
-                if duplicate:
-                    continue
-
-                for comp in companies:
-                    norm = normalize_entity_name(comp)
-                    if norm != "unspecified_entity":
-                        seen_india_comps.add(norm)
-
                 url = art.url if art else f"https://example.com/india-{e.id}"
                 inst_headline = generate_grounded_fallback_headline(event=e, article=art)
                 sum_text = generate_deterministic_summary(art, e, inst_headline)
@@ -681,22 +665,6 @@ class GeminiEditorialEngine:
                     continue
                 art = articles_map.get(e.article_ids[0]) if e.article_ids else None
                 source_name = art.source_name if art else "Reuters"
-
-                raw_comps = e.companies_involved or []
-                companies = sanitize_company_entities(raw_comps, publisher=source_name)
-                duplicate = False
-                for comp in companies:
-                    norm = normalize_entity_name(comp)
-                    if norm in seen_intl_comps and norm != "unspecified_entity":
-                        duplicate = True
-                        break
-                if duplicate:
-                    continue
-
-                for comp in companies:
-                    norm = normalize_entity_name(comp)
-                    if norm != "unspecified_entity":
-                        seen_intl_comps.add(norm)
 
                 url = art.url if art else f"https://example.com/intl-{e.id}"
                 inst_headline = generate_grounded_fallback_headline(event=e, article=art)

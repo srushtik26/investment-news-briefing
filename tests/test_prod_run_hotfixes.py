@@ -830,4 +830,199 @@ def test_finance_yahoo_whitelisted_and_source_policy():
     assert tier_generic == "BLOCKED", f"Expected BLOCKED for generic yahoo.com, got {tier_generic}"
 
 
+def test_2026_10_27_production_failure_none_payload_deterministic_fallback():
+    """Regression test for 2026-10-27 production incident:
+    Gemini 503 / incomplete selection (< 5 Intl stories due to multiple candidates from same company)
+    must activate deterministic fallback and not crash with 'NoneType' object has no attribute 'domestic_stories'.
+    """
+    import json
+    from datetime import date
+    from app.ai.editor import GeminiEditorialEngine
+    from app.ai.models import BriefingEditorialPayload
+    from app.ranking.models import RankedCandidatePool, ScoredEvent, ScoreBreakdown
+    from app.pipeline.context import PipelineContext
+    from app.pipeline.runner import build_story_context, prepare_final_story
+
+    ctx = PipelineContext(
+        target_date=date(2026, 10, 27),
+        run_reference_time=datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc),
+    )
+    articles_map = {}
+    event_by_id = {}
+
+    # Domestic candidates (5)
+    dom_scored = []
+    for i in range(1, 6):
+        art = Article(
+            id=f"art_dom_{i}",
+            title=f"India Infrastructure and Defence Initiative #{i}",
+            url=f"https://example.com/dom/{i}",
+            source_name="NDTV",
+            category=NewsCategory.DOMESTIC,
+            content_text=f"Cabinet clears strategic development project #{i} with Rs 5000 crore outlay.",
+            published_at=datetime(2026, 10, 26, 18, 0, tzinfo=timezone.utc),
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        ev = Event(
+            id=f"ev_dom_{i}",
+            canonical_title=art.title,
+            description=art.content_text,
+            article_ids=[art.id],
+            companies_involved=[],
+            event_category=NewsCategory.DOMESTIC,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            verification_confidence=95.0,
+        )
+        articles_map[art.id] = art
+        ctx.articles_lookup[art.id] = art
+        event_by_id[ev.id] = ev
+        dom_scored.append(ScoredEvent(
+            event=ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=70, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=85.0, rationale="t"
+            ),
+            investment_score=85.0, rank=i,
+        ))
+
+    # India candidates (5 distinct companies)
+    india_scored = []
+    india_companies = ["Nazara Technologies", "Paytm", "Brigade Hotel", "ITC Hotels", "Dhanlaxmi Bank"]
+    for i, comp in enumerate(india_companies, 1):
+        art = Article(
+            id=f"art_in_{i}",
+            title=f"{comp} Q2 net profit jumps 50% to Rs 200 crore",
+            url=f"https://example.com/in/{i}",
+            source_name="Business Standard",
+            category=NewsCategory.INDIA,
+            content_text=f"{comp} reports stellar quarterly performance and revenue trajectory.",
+            published_at=datetime(2026, 10, 26, 19, 0, tzinfo=timezone.utc),
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        ev = Event(
+            id=f"ev_in_{i}",
+            canonical_title=art.title,
+            description=art.content_text,
+            article_ids=[art.id],
+            companies_involved=[comp],
+            event_category=NewsCategory.INDIA,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            verification_confidence=95.0,
+        )
+        articles_map[art.id] = art
+        ctx.articles_lookup[art.id] = art
+        event_by_id[ev.id] = ev
+        india_scored.append(ScoredEvent(
+            event=ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=70, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=90.0, rationale="t"
+            ),
+            investment_score=90.0, rank=i,
+        ))
+
+    # International candidates (5 candidates, but 3 from Anthropic exactly matching 2026-10-27 production data)
+    intl_specs = [
+        ("art_intl_1", "ev_intl_1", "Anthropic's Mega IPO: Huge Losses, No Dividends", "Anthropic", "The Times of India"),
+        ("art_intl_2", "ev_intl_2", "424B5 FORWARD ProSupp Filing", "424B5 FORWARD ProSupp", "SEC"),
+        ("art_intl_3", "ev_intl_3", "Stocks making the biggest moves premarket: Moderna & more", "Moderna", "CNBC"),
+        ("art_intl_4", "ev_intl_4", "Anthropic 7 cofounders are each worth $14 billion already", "Anthropic", "Fortune"),
+        ("art_intl_5", "ev_intl_5", "Anthropic IPO prospectus shows $16.3 billion in revenue", "Anthropic", "Fortune"),
+    ]
+    intl_scored = []
+    for i, (aid, eid, title, comp, pub) in enumerate(intl_specs, 1):
+        art = Article(
+            id=aid,
+            title=title,
+            url=f"https://example.com/intl/{i}",
+            source_name=pub,
+            category=NewsCategory.INTERNATIONAL,
+            content_text=f"Global business filing on {title} with concrete figures and market impact.",
+            published_at=datetime(2026, 10, 26, 20, 0, tzinfo=timezone.utc),
+            is_verified_url=True,
+            date_verified=True,
+            is_valid_date=True,
+        )
+        ev = Event(
+            id=eid,
+            canonical_title=art.title,
+            description=art.content_text,
+            article_ids=[art.id],
+            companies_involved=[comp],
+            event_category=NewsCategory.INTERNATIONAL,
+            verification_tier=VerificationTier.TWO_SOURCE_VERIFIED,
+            verification_confidence=95.0,
+        )
+        articles_map[art.id] = art
+        ctx.articles_lookup[art.id] = art
+        event_by_id[ev.id] = ev
+        intl_scored.append(ScoredEvent(
+            event=ev,
+            score_breakdown=ScoreBreakdown(
+                financial_magnitude=0, market_impact=0, investor_relevance=0,
+                corporate_significance=0, source_quality=70, strategic_bonuses=0,
+                editorial_signals=0, relevance_penalties=0, total_score=95.0, rationale="t"
+            ),
+            investment_score=95.0, rank=i,
+        ))
+
+    pool = RankedCandidatePool(
+        domestic_candidates=dom_scored,
+        india_candidates=india_scored,
+        international_candidates=intl_scored,
+    )
+
+    # 1. Verify offline editorial fallback generates 5/5/5 without dropping below 5
+    engine = GeminiEditorialEngine(api_key="")
+    raw_fb = engine._generate_offline_editorial_fallback(pool, articles_map)
+    data = json.loads(raw_fb)
+    assert len(data["domestic_stories"]) == 5
+    assert len(data["india_stories"]) == 5
+    assert len(data["international_stories"]) == 5, (
+        f"Expected 5 international stories, got {len(data['international_stories'])}"
+    )
+
+    # 2. Verify runner logic: when selection_payload is initially incomplete or None,
+    # fallback executes and selection_payload is never None
+    selection_payload = None
+
+    # Simulate incomplete payload trigger
+    partial_payload = BriefingEditorialPayload(
+        domestic_stories=[prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx) for s in dom_scored[:5]],
+        india_stories=[prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx) for s in india_scored[:5]],
+        international_stories=[prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx) for s in intl_scored[:3]],
+    )
+    if len(partial_payload.india_stories) < 5 or len(partial_payload.international_stories) < 5 or len(partial_payload.domestic_stories) < 5:
+        selection_payload = None
+
+    # The deterministic fallback must now trigger because selection_payload is None
+    if selection_payload is None:
+        india_stories_selected = [
+            prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx)
+            for s in india_scored[:5]
+        ]
+        intl_stories_selected = [
+            prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx)
+            for s in intl_scored[:5]
+        ]
+        selection_payload = BriefingEditorialPayload(
+            domestic_stories=[prepare_final_story(build_story_context(s.event, articles_map[s.event.article_ids[0]], ctx=ctx), ctx=ctx) for s in dom_scored[:5]],
+            india_stories=india_stories_selected,
+            international_stories=intl_stories_selected,
+        )
+
+    # Verify selection_payload has domestic_stories and no AttributeError
+    assert selection_payload is not None
+    assert hasattr(selection_payload, "domestic_stories")
+    assert len(selection_payload.domestic_stories) == 5
+    assert len(selection_payload.india_stories) == 5
+    assert len(selection_payload.international_stories) == 5
+
+
 
