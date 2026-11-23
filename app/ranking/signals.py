@@ -129,10 +129,10 @@ PATTERN_INTL_TRADE_RESTRICTIONS = re.compile(
 
 PATTERN_INTL_ENERGY_COMMODITY = re.compile(
     r"\b(?:petroleum reserves?|strategic petroleum reserve|spr\b|opec|opec\+|crude output|"
-    r"brent crude|wti crude|crude oil|natural gas pipeline|lng shipment|lng price|commodity reserves?|uranium reserve|"
-    r"critical mineral supply|rare earth export|gold (?:price|prices|surges?|plunges?|hits? record)|"
-    r"silver (?:price|prices|surges?|plunges?|hits? record)|copper (?:price|prices|surges?|plunges?|hits? record)|"
-    r"iron ore|lithium (?:price|supply)|commodity (?:surge|rally|plunge|shock))\b",
+    r"brent crude|wti crude|crude oil|natural gas pipeline|lng shipment|commodity reserves?|uranium reserve|"
+    r"critical mineral supply|rare earth export|gold (?:prices? )?(?:surges?|plunges?|hits? record|record high|all-time high)|"
+    r"silver (?:prices? )?(?:surges?|plunges?|hits? record|record high)|copper (?:prices? )?(?:surges?|plunges?|hits? record|record high)|"
+    r"iron ore (?:surges?|plunges?|supply)|lithium (?:supply|reserve)|commodity (?:surge|rally|plunge|shock))\b",
     re.IGNORECASE,
 )
 

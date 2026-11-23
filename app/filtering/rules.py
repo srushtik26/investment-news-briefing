@@ -775,7 +775,7 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "commodity_big_news",
-            r"\b(gold (?:price|prices|surges?|plunges?|hits? record|rallies|drops?)|silver (?:price|prices|surges?|plunges?|hits? record)|brent crude|wti crude|crude oil (?:surges?|plunges?|jumps?|drops?|rallies|falls?)|opec\+?\s+(?:cuts?|hikes?|output|production)|copper (?:price|prices|surges?|plunges?|hits? record)|iron ore|lithium (?:price|supply)|natural gas (?:surges?|plunges?|price)|lng (?:price|supply|shipment))\b",
+            r"\b(gold (?:prices? )?(?:surges?|plunges?|hits? record|record high|all-time high|rallies|drops?|jumps?|tumbles?)|silver (?:prices? )?(?:surges?|plunges?|hits? record|record high|all-time high|rallies|drops?)|brent crude|wti crude|crude oil (?:surges?|plunges?|jumps?|drops?|rallies|falls?)|opec\+?\s+(?:cuts?|hikes?|output|production)|copper (?:prices? )?(?:surges?|plunges?|hits? record|record high)|iron ore (?:surges?|plunges?|hits? record|supply)|lithium (?:surges?|plunges?|supply|reserve)|natural gas (?:surges?|plunges?|hits? record)|lng (?:supply|shipment|deal|contract))\b",
         ),
         (
             "guidance_corporate",
