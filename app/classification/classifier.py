@@ -193,13 +193,21 @@ class AIArticleClassifier:
                 is_inv_rel = True
 
         # Clear Monetary Policy & Central Bank Decisions
-        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|rbi holds rates|rbi cuts rate|rbi hikes rate|liquidity framework|crr|slr)\b", combined_lower):
+        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|rbi holds rates|rbi cuts rate|rbi hikes rate|federal reserve|fomc|fed rate|rate cut|rate hike|central bank|ecb|bank of england|pboc|people's bank of china|liquidity framework|crr|slr)\b", combined_lower):
             event_type = ArticleEventType.MONETARY_POLICY
             is_hard_event = True
             is_inv_rel = True
 
-        # Clear Macro Data
-        elif re.search(r"\b(gdp growth|gdp expands|gdp data|cpi inflation|retail inflation|wpi inflation|inflation rate|iip data|industrial production|factory output|trade deficit)\b", combined_lower):
+        # Clear Macro Data (India, US, China & Big Commodities)
+        elif re.search(
+            r"\b(gdp growth|gdp expands|gdp data|u\.?s\.?\s+gdp|china\s+gdp|cpi inflation|pce inflation|retail inflation|wpi inflation|inflation rate|"
+            r"iip data|industrial production|industrial output|factory output|trade deficit|trade surplus|trade balance|"
+            r"nonfarm payrolls|jobless claims|unemployment rate|ism pmi|china pmi|retail sales|treasury yields?|china stimulus|economic stimulus|"
+            r"brent crude|wti crude|crude oil (?:surges?|plunges?|jumps?|drops?|rallies|falls?)|opec\+?\s+(?:cuts?|hikes?|output|production)|"
+            r"gold (?:prices? )?(?:surges?|plunges?|hits? record|record high|all-time high)|copper (?:prices? )?(?:surges?|plunges?|hits? record)|"
+            r"natural gas (?:surges?|plunges?)|lng (?:supply|shipment|deal|contract))\b",
+            combined_lower,
+        ):
             event_type = ArticleEventType.MACRO_DATA
             is_hard_event = True
             is_inv_rel = True
@@ -210,8 +218,8 @@ class AIArticleClassifier:
             is_hard_event = True
             is_inv_rel = True
 
-        # Clear Tax & Fiscal Policy / GST
-        elif re.search(r"\b(gst council|gst rate|gst collection|tax slab|tax reform|customs duty|import duty|export duty|tariff policy)\b", combined_lower):
+        # Clear Tax & Fiscal Policy / GST / Tariffs
+        elif re.search(r"\b(gst council|gst rate|gst collection|tax slab|tax reform|customs duty|import duty|export duty|tariff policy|tariffs?|trade war|sanctions?)\b", combined_lower):
             event_type = ArticleEventType.TAX_POLICY
             is_hard_event = True
             is_inv_rel = True
@@ -540,11 +548,11 @@ class AIArticleClassifier:
             event_type = "FUNDRAISING"
         elif re.search(r"\b(net profit|quarterly profit|revenue|q[1-4] profit|q[1-4] revenue|ebitda|profit rises|profit falls|net income|earnings|quarterly results|annual results)\b", combined):
             event_type = "EARNINGS"
-        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|liquidity framework)\b", combined):
+        elif re.search(r"\b(monetary policy|repo rate|reverse repo|mpc|interest rate decision|policy rate|federal reserve|fomc|fed rate|rate cut|rate hike|central bank|ecb|pboc|liquidity framework)\b", combined):
             event_type = "MONETARY_POLICY"
-        elif re.search(r"\b(inflation|gdp|cpi|wpi|iip|industrial production|trade deficit)\b", combined):
+        elif re.search(r"\b(inflation|gdp|cpi|pce|wpi|iip|industrial production|industrial output|trade deficit|trade surplus|trade balance|nonfarm payrolls|jobless claims|unemployment rate|pmi|retail sales|treasury yields?|china stimulus|brent crude|wti crude|opec|crude oil (?:surges?|plunges?|jumps?|drops?)|gold (?:prices? )?(?:surges?|plunges?|hits? record|record high))\b", combined):
             event_type = "MACRO_DATA"
-        elif re.search(r"\b(gst council|gst rate|customs duty|import duty|export duty|tariff policy)\b", combined):
+        elif re.search(r"\b(gst council|gst rate|customs duty|import duty|export duty|tariff policy|tariffs?|trade war|sanctions?)\b", combined):
             event_type = "TAX_POLICY"
         elif re.search(r"\b(union cabinet approves?|cabinet clears?|pli scheme|semiconductor incentive|infrastructure)\b", combined):
             event_type = "GOVERNMENT_INVESTMENT"
