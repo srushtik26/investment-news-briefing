@@ -701,6 +701,14 @@ class StoryTypeFilterRule(BaseFilterRule):
             r"|grey market premium.*ipo|ipo.*grey market premium"
             r"|ipo.*gmp today|gmp today.*ipo)\b|\b(?:should you subscribe|should you bid)\b)",
         ),
+        (
+            "small_cap_sme_ipo",
+            r"\b(sme ipo|nse emerge|bse sme|small-?cap ipo|micro-?cap ipo|sme listing|sme public issue|sme issue opens|sme issue closes)\b",
+        ),
+        (
+            "small_micro_cap_news",
+            r"\b(small-?cap stock|small-?cap company|small-?cap firm|micro-?cap|nano-?cap|penny stock|sme stock|sme board)\b",
+        ),
     ]
 
     # HARD BUSINESS EVENT ACCEPTANCE PATTERNS
@@ -755,15 +763,19 @@ class StoryTypeFilterRule(BaseFilterRule):
         ),
         (
             "macroeconomic_data",
-            r"\b(gdp growth|cpi inflation|retail inflation|iip data|trade deficit|industrial output)\b",
+            r"\b(gdp growth|u\.?s\.?\s+gdp|china\s+gdp|cpi inflation|pce inflation|retail inflation|iip data|trade deficit|trade surplus|trade balance|industrial output|nonfarm payrolls|jobless claims|unemployment rate|ism pmi|china pmi|retail sales|pboc|china stimulus|economic stimulus)\b",
         ),
         (
             "central_bank_macro",
-            r"\b(federal reserve|fed rate|interest rate|rate cut|rate hike|central bank|ecb|bank of england|growth forecast|inflation forecast|rate decision|monetary policy)\b",
+            r"\b(federal reserve|fed rate|interest rate|rate cut|rate hike|central bank|ecb|bank of england|pboc|people's bank of china|growth forecast|inflation forecast|rate decision|monetary policy)\b",
         ),
         (
             "geopolitical_quantified",
             r"\b(oil price surge|supply disruption|shipping transit|sanctions impact|barrel)\b",
+        ),
+        (
+            "commodity_big_news",
+            r"\b(gold (?:price|prices|surges?|plunges?|hits? record|rallies|drops?)|silver (?:price|prices|surges?|plunges?|hits? record)|brent crude|wti crude|crude oil (?:surges?|plunges?|jumps?|drops?|rallies|falls?)|opec\+?\s+(?:cuts?|hikes?|output|production)|copper (?:price|prices|surges?|plunges?|hits? record)|iron ore|lithium (?:price|supply)|natural gas (?:surges?|plunges?|price)|lng (?:price|supply|shipment))\b",
         ),
         (
             "guidance_corporate",

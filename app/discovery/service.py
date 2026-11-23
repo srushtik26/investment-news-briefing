@@ -258,15 +258,23 @@ class NewsDiscoveryService:
             else all_categories
         )
 
-        discovered: List[DiscoveredArticle] = []
+        discovered_by_category: Dict[str, List[DiscoveredArticle]] = {}
         sources = SearchQueryBuilder.get_accessible_sources_for_country("International")
         site_clause = " (" + " OR ".join([f"site:{s.domain}" for s in sources]) + ")"
 
+        # Query round-robin across categories (1 phrase per category per pass) so later
+        # categories (macro, US/China economy, commodities, trade, tech) are never starved
+        # by early-stop on acquisitions/earnings.
+        max_phrases = max((len(p) for p in target_cats.values()), default=0)
+        total_collected: List[DiscoveredArticle] = []
         _early_stop = False
-        for cat_name, phrase_list in target_cats.items():
+        for phrase_idx in range(max_phrases):
             if _early_stop:
                 break
-            for phrase in phrase_list:
+            for cat_name, phrase_list in target_cats.items():
+                if phrase_idx >= len(phrase_list):
+                    continue
+                phrase = phrase_list[phrase_idx]
                 query = self._apply_search_window(f"{phrase}{site_clause}")
                 try:
                     results = self.provider.discover(
@@ -278,13 +286,23 @@ class NewsDiscoveryService:
                 except Exception as exc:
                     logger.warning("Skipping failed International discovery query category=%s query=%r: %s", cat_name, query, exc)
                     continue
-                discovered.extend(results)
+                discovered_by_category.setdefault(cat_name, []).extend(results)
+                total_collected.extend(results)
 
-                if len(self._deduplicate_candidates(discovered)) >= max_candidates * 2:
+                if len(self._deduplicate_candidates(total_collected)) >= max_candidates * 2:
                     _early_stop = True
                     break
 
-        unique_results = self._deduplicate_candidates(discovered)[:max_candidates]
+        # Interleave round-robin across categories so every category is represented in the reserve
+        interleaved: List[DiscoveredArticle] = []
+        cat_lists = [self._deduplicate_candidates(v) for v in discovered_by_category.values() if v]
+        max_len = max((len(lst) for lst in cat_lists), default=0)
+        for idx in range(max_len):
+            for lst in cat_lists:
+                if idx < len(lst):
+                    interleaved.append(lst[idx])
+
+        unique_results = self._deduplicate_candidates(interleaved)[:max_candidates]
         logger.info("Discovered %d unique candidate articles for International", len(unique_results))
         return unique_results
 

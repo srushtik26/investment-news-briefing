@@ -21,6 +21,8 @@ CRITICAL EDITORIAL RULES:
 3. DO NOT INVENT OR MODIFY URLs. Every 'url' field MUST be copied EXACTLY as provided in the candidate list.
 4. DO NOT SELECT THE SAME COMPANY TWICE IN EITHER THE INDIA OR INTERNATIONAL SECTION. Each story within a section must cover a distinct company.
 5. PREFER HARD BUSINESS EVENTS with quantified figures (earnings with numbers, M&A deal values, QIPs, major regulatory decisions).
+   - MID-CAP AND LARGE-CAP ONLY: Select only mid-cap and large-cap companies. Strictly exclude small-cap, micro-cap, penny stock, and small-cap/SME IPO stories (especially in the India section).
+   - INTERNATIONAL PRIORITIES: Prioritize major US economic news, China economic news, and big global commodity news (crude oil, gold, silver, copper, metals, LNG) alongside major corporate/policy events.
 6. INSTITUTIONAL HEADLINE SYNTHESIS: Generate an investment-committee grade headline for each selected event.
    - HEADLINE STRUCTURE:
      [Entity/Event + key quantified action]; [verified strategic/business implication]

@@ -129,8 +129,22 @@ PATTERN_INTL_TRADE_RESTRICTIONS = re.compile(
 
 PATTERN_INTL_ENERGY_COMMODITY = re.compile(
     r"\b(?:petroleum reserves?|strategic petroleum reserve|spr\b|opec|opec\+|crude output|"
-    r"brent crude|natural gas pipeline|lng shipment|commodity reserves?|uranium reserve|"
-    r"critical mineral supply|rare earth export)\b",
+    r"brent crude|wti crude|crude oil|natural gas pipeline|lng shipment|lng price|commodity reserves?|uranium reserve|"
+    r"critical mineral supply|rare earth export|gold (?:price|prices|surges?|plunges?|hits? record)|"
+    r"silver (?:price|prices|surges?|plunges?|hits? record)|copper (?:price|prices|surges?|plunges?|hits? record)|"
+    r"iron ore|lithium (?:price|supply)|commodity (?:surge|rally|plunge|shock))\b",
+    re.IGNORECASE,
+)
+
+PATTERN_INTL_US_ECONOMY = re.compile(
+    r"\b(?:u\.?s\.?\s+(?:economy|gdp|cpi|pce|inflation|jobs|nonfarm payrolls|unemployment|retail sales|treasury yields?|pmi|trade deficit)|"
+    r"nonfarm payrolls|pce inflation|ism manufacturing|ism services|jobless claims|federal reserve|fomc)\b",
+    re.IGNORECASE,
+)
+
+PATTERN_INTL_CHINA_ECONOMY = re.compile(
+    r"\b(?:china(?:'s)?\s+(?:economy|economic|gdp|cpi|ppi|pmi|exports?|imports?|trade balance|industrial output|retail sales|deflation|stimulus)|"
+    r"pboc|people's bank of china|beijing stimulus|chinese economy)\b",
     re.IGNORECASE,
 )
 
@@ -298,7 +312,17 @@ def evaluate_editorial_signals(
     if PATTERN_INTL_ENERGY_COMMODITY.search(full_text):
         pos_score += 20.0
         positive_signals.append("approved_intl_energy_commodity(+20)")
-        matched_patterns.append("strategic petroleum/energy shifts")
+        matched_patterns.append("strategic petroleum/energy/commodity shifts")
+
+    if PATTERN_INTL_US_ECONOMY.search(full_text):
+        pos_score += 20.0
+        positive_signals.append("approved_intl_us_economy(+20)")
+        matched_patterns.append("US economic news")
+
+    if PATTERN_INTL_CHINA_ECONOMY.search(full_text):
+        pos_score += 20.0
+        positive_signals.append("approved_intl_china_economy(+20)")
+        matched_patterns.append("China economic news")
 
     if PATTERN_INTL_REGULATORY_CONFLICT.search(full_text):
         pos_score += 20.0

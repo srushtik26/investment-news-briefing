@@ -51,7 +51,7 @@ DOMESTIC_SOURCES: List[TargetSource] = [
 ]
 
 # PRIMARY discovery sources — freely accessible for extraction.
-# Paywalled sources (bloomberg, ft, wsj, reuters) moved to SECONDARY_SIGNALLING_SOURCES;
+# Paywalled/401-blocked sources (bloomberg, ft, wsj, reuters, marketwatch) moved to SECONDARY_SIGNALLING_SOURCES;
 # they are NOT used in site:-constrained RSS queries that feed into extraction.
 INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="CNBC", domain="cnbc.com", country="International"),
@@ -60,7 +60,6 @@ INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="BusinessWire", domain="businesswire.com", country="International"),
     TargetSource(name="GlobeNewswire", domain="globenewswire.com", country="International"),
     TargetSource(name="PRNewswire", domain="prnewswire.com", country="International"),
-    TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
     TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Fortune", domain="fortune.com", country="International"),
 ]
@@ -138,9 +137,9 @@ INDIA_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "secures EPC order contract crore when:1d",
     ],
     "ipos": [
-        "IPO debut listing day shares gain NSE BSE when:1d",
-        "files DRHP draft IPO papers SEBI crore when:1d",
-        "IPO subscription issue opens closes price band when:1d",
+        "mainboard IPO debut listing day shares gain NSE BSE -SME -\"small cap\" -\"small-cap\" when:1d",
+        "files DRHP draft IPO papers SEBI crore -SME -\"small cap\" -\"small-cap\" when:1d",
+        "mainboard IPO subscription issue opens closes price band -SME -\"small cap\" -\"small-cap\" when:1d",
     ],
     "fundraising": [
         "raises funds equity capital funding round crore when:1d",
@@ -226,9 +225,9 @@ INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "board approves mega merger antitrust review billion when:1d",
     ],
     "earnings": [
-        "quarterly earnings net income revenue beats guidance billion when:1d",
-        "reports Q1 Q2 Q3 Q4 results profit revenue billion when:1d",
-        "earnings beats estimates revenue full year guidance when:1d",
+        "quarterly earnings net income revenue beats guidance billion -\"Earnings Call Transcript\" when:1d",
+        "reports Q1 Q2 Q3 Q4 results profit revenue billion -\"Earnings Call Transcript\" when:1d",
+        "earnings beats estimates revenue full year guidance -\"Earnings Call Transcript\" when:1d",
     ],
     "capex": [
         "capital expenditure capex investment billion expansion when:1d",
@@ -284,6 +283,21 @@ INTERNATIONAL_EVENT_CATEGORIES: Dict[str, List[str]] = {
         "company bankruptcy Chapter 11 debt restructuring filing when:1d",
         "stock market crash rally record high low economy when:1d",
     ],
+    "us_economy": [
+        "US economy GDP CPI inflation jobs nonfarm payrolls when:1d",
+        "US PCE inflation unemployment jobless claims retail sales economy when:1d",
+        "US Treasury yields Federal Reserve economic data PMI when:1d",
+    ],
+    "china_economy": [
+        "China economy GDP growth PBOC stimulus interest rate when:1d",
+        "China exports imports trade balance inflation deflation CPI PMI when:1d",
+        "China industrial output manufacturing retail sales economic policy when:1d",
+    ],
+    "commodities": [
+        "gold silver price record high surge plunge commodity market when:1d",
+        "crude oil Brent WTI OPEC supply cut price surge plunge when:1d",
+        "copper iron ore lithium aluminum natural gas LNG commodity surge shock when:1d",
+    ],
 }
 
 
@@ -291,7 +305,6 @@ ACCESSIBLE_INTERNATIONAL_SOURCES: List[TargetSource] = [
     TargetSource(name="CNBC", domain="cnbc.com", country="International"),
     TargetSource(name="AP News", domain="apnews.com", country="International"),
     TargetSource(name="BBC News", domain="bbc.com", country="International"),
-    TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
     TargetSource(name="The Guardian", domain="theguardian.com", country="International"),
     TargetSource(name="Fortune", domain="fortune.com", country="International"),
     TargetSource(name="SEC EDGAR", domain="sec.gov", country="International"),
@@ -314,6 +327,7 @@ SECONDARY_SIGNALLING_SOURCES: List[TargetSource] = [
     TargetSource(name="Bloomberg", domain="bloomberg.com", country="International"),
     TargetSource(name="Financial Times", domain="ft.com", country="International"),
     TargetSource(name="Wall Street Journal", domain="wsj.com", country="International"),
+    TargetSource(name="MarketWatch", domain="marketwatch.com", country="International"),
 ]
 
 
