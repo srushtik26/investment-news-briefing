@@ -487,12 +487,15 @@ def run_expansion_and_fallbacks(
             if rss_rem > 0:
                 ctx.log_exec(f"[INTL_FINAL_MILE_DISCOVERY] Searching for NEW International events (current={intl_unique_count}/5, budget_rem={rss_rem}, dom_reserve={reserve})...")
                 INTL_SOURCE_GROUPS = [
-                    "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com)",
                     "(site:cnbc.com OR site:apnews.com OR site:bbc.com)",
-                    "(site:marketwatch.com OR site:fortune.com OR site:theguardian.com)",
+                    "(site:fortune.com OR site:theguardian.com)",
+                    "(site:prnewswire.com OR site:globenewswire.com OR site:businesswire.com)",
                     "(site:bloomberg.com OR site:reuters.com OR site:finance.yahoo.com)",
                 ]
                 INTL_EVENT_TEMPLATES = [
+                    'US economy inflation GDP Federal Reserve interest rate when:1d',
+                    'China economy GDP PBOC trade tariff exports when:1d',
+                    'crude oil OPEC gold copper commodity surge plunge when:1d',
                     '"reports quarterly results" when:1d',
                     '"reports financial results" when:1d',
                     '"reports first half results" when:1d',
@@ -788,6 +791,12 @@ def run_expansion_and_fallbacks(
                 when_days = 1 if horizon <= 36.0 else (2 if horizon <= 48.0 else (3 if horizon <= 72.0 else 4))
                 when_param = f"when:{when_days}d"
                 INTL_FALLBACK_QUERIES = [
+                    f"site:cnbc.com US economy inflation GDP Federal Reserve interest rate {when_param}",
+                    f"site:apnews.com US economy inflation jobs Federal Reserve tariff {when_param}",
+                    f"site:bbc.com China economy GDP trade tariff central bank {when_param}",
+                    f"site:cnbc.com crude oil OPEC gold copper commodity {when_param}",
+                    f"site:theguardian.com economy inflation central bank tariff trade {when_param}",
+                    f"site:fortune.com AI tech economy billion deal {when_param}",
                     f"site:cnbc.com company quarterly earnings beats {when_param}",
                     f"site:cnbc.com company acquisition merger billion {when_param}",
                     f"site:apnews.com company earnings results {when_param}",
@@ -837,24 +846,32 @@ def run_expansion_and_fallbacks(
                             ctx.log_exec(f"[SERPAPI_INTL_DISCOVERY] International unique={intl_unique_count}/5 at {int(horizon)}h. Searching SerpAPI (budget: {get_serpapi_count()}/{MAX_SERPAPI_SEARCHES_PER_RUN})...")
                             if horizon <= 36.0:
                                 SERP_DISCOVERY_QUERIES = [
+                                    "US economy Federal Reserve inflation GDP",
+                                    "China economy trade oil gold commodity",
                                     "today company earnings",
                                     "today acquisition",
                                     "today company financial results",
                                 ]
                             elif horizon <= 48.0:
                                 SERP_DISCOVERY_QUERIES = [
+                                    "US economy Federal Reserve inflation GDP",
+                                    "China economy trade oil gold commodity",
                                     "company earnings results",
                                     "company acquisition deal",
                                     "company funding round",
                                 ]
                             elif horizon <= 72.0:
                                 SERP_DISCOVERY_QUERIES = [
+                                    "US economy Federal Reserve inflation GDP",
+                                    "China economy trade oil gold commodity",
                                     "company quarterly earnings results",
                                     "acquisition merger agreement",
                                     "company financial guidance",
                                 ]
                             else:
                                 SERP_DISCOVERY_QUERIES = [
+                                    "US economy Federal Reserve inflation GDP",
+                                    "China economy trade oil gold commodity",
                                     "company quarterly earnings results",
                                     "acquisition merger agreement",
                                     "company financial guidance",
