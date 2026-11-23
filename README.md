@@ -14,11 +14,11 @@ The system combines deterministic Python data-quality validation, AI-assisted ev
 |---|---|---|
 | **Production CI/CD Entry Point** | `python run_daily_15.py` | [`.github/workflows/daily_briefing.yml`](.github/workflows/daily_briefing.yml) |
 | **Pipeline CLI Entry Point** | `python run_pipeline.py` | [`run_pipeline.py`](run_pipeline.py) |
-| **Automated Execution Schedule** | Daily at **02:30 AM IST** (`21:00 UTC` previous day) with automatic recovery at **03:15 AM IST** (`21:45 UTC`) | [`.github/workflows/daily_briefing.yml`](.github/workflows/daily_briefing.yml) |
+| **Automated Execution Schedule** | Daily at **02:30 AM IST** (`21:00 UTC` previous day), recovery at **03:15 AM IST** (`21:45 UTC`), and morning safety-net at **06:00 AM IST** (`00:30 UTC`) | [`.github/workflows/daily_briefing.yml`](.github/workflows/daily_briefing.yml) |
 | **Coverage Schedule** | 7 days / week (including market holidays & weekends) | [`.github/workflows/daily_briefing.yml`](.github/workflows/daily_briefing.yml) |
 | **Daily Section Contract** | Exactly **15 Stories**: 5 India Business + 5 Domestic + 5 International | [`app/validation/engine.py`](app/validation/engine.py) |
 | **Integrity Gatekeeper** | **20/20 Deterministic Pre-Publication Validation Checks** | [`app/validation/engine.py`](app/validation/engine.py) |
-| **Automated Test Suite** | **1,207 automated tests**, 0 failures (100% pass rate) | `pytest tests -q` |
+| **Automated Test Suite** | **1,264 automated tests**, 0 failures (100% pass rate) | `pytest tests -q` |
 | **Email Delivery** | Idempotent dispatch via Gmail SMTP over SSL (Port 465) | [`run_daily.py`](run_daily.py) |
 | **Live Web Dashboard** | FastAPI web application with instant PDF export: [https://plutus-news.onrender.com/](https://plutus-news.onrender.com/) | [`run_dashboard_sync.py`](run_dashboard_sync.py) |
 
@@ -111,9 +111,9 @@ The briefing enforces an uncompromised **15-story daily contract (5 / 5 / 5)** a
 
 | # | Section | Daily Quota | Editorial Criteria & Verification Standard |
 |---|---|---|---|
-| 1 | **INDIA BUSINESS** | **5 Stories** | Major Indian corporate transactions, quarterly earnings with quantified metrics, listed entity capex, completed M&A/stake sales, and regulatory enforcement (SEBI, RBI, CCI). Verified via independent dual-source corroboration or high-confidence single-source scoring ($\ge 80/100$). |
+| 1 | **INDIA BUSINESS** | **5 Stories** | **Mid-cap and large-cap only** (strictly excludes small-cap, micro-cap, penny stocks, and small-cap/SME IPOs). Covers major Indian corporate transactions, quarterly earnings with quantified metrics, listed entity capex, completed M&A/stake sales, mainboard IPOs, and regulatory enforcement (SEBI, RBI, CCI). Verified via independent dual-source corroboration or high-confidence single-source scoring ($\ge 80/100$). |
 | 2 | **DOMESTIC** | **5 Stories** | National macroeconomic governance, Supreme Court and High Court rulings, Union Cabinet decisions, parliamentary legislation, strategic infrastructure, and central regulatory alerts. Verified via `DomesticTrendingEvaluator` ($\ge 60/100$) to reject municipal noise. |
-| 3 | **INTERNATIONAL BUSINESS** | **5 Stories** | Global corporate and macroeconomic developments: multinational earnings, cross-border M&A, central bank interest rate policies (Fed, ECB, BOJ), enterprise technology initiatives, and international supply-chain shifts. |
+| 3 | **INTERNATIONAL BUSINESS** | **5 Stories** | **Mid-cap and large-cap global corporate** and macroeconomic developments: **US economic news** (GDP, CPI/PCE inflation, jobs, Fed/FOMC), **China economic news** (GDP, PBOC, stimulus, trade/tariffs), **big commodity news** (crude oil/OPEC, gold, silver, copper, LNG, major supply/price shocks), multinational earnings, cross-border M&A, and global regulatory/tech shifts. Discovered via round-robin category sampling across accessible publishers (CNBC, AP News, BBC, Fortune, The Guardian, wire services). |
 
 ---
 
@@ -213,7 +213,7 @@ For detailed vulnerability disclosure instructions, supported scopes, and report
 
 ## Testing and Quality Assurance
 
-Testing is a core architectural pillar of the project. The test suite comprises **1,207 automated tests** with a **100% pass rate** across all components:
+Testing is a core architectural pillar of the project. The test suite comprises **1,264 automated tests** with a **100% pass rate** across all components:
 
 ```bash
 # Execute the complete automated test suite
@@ -267,7 +267,7 @@ Please read our [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines on:
 - High-priority contribution areas and good first issues
 - Preserving the project's strict validation contracts and fail-safe design principles
 
-> **Local Development Note**: Contributors can run all 1,207 automated tests locally without any paid API keys (Gemini, SerpAPI) using offline mocks and deterministic test fixtures.
+> **Local Development Note**: Contributors can run all 1,264 automated tests locally without any paid API keys (Gemini, SerpAPI) using offline mocks and deterministic test fixtures.
 
 ---
 
