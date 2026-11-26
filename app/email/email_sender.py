@@ -469,6 +469,131 @@ def send_briefing_email(
                 return False
 
 
+def generate_copy_paste_html(text_content: str) -> str:
+    """
+    Generate a clean, copy-paste-friendly HTML representation of the copy/paste briefing.
+
+    Uses lightweight semantic HTML (<strong> headings/headlines, clean paragraph spacing,
+    clickable full URLs, no <table> or card wrappers) so it looks crisp in Gmail and
+    pastes cleanly with bold headings into emails, docs, and chat apps.
+    """
+    if not text_content or not text_content.strip():
+        return ""
+
+    raw_lines = [line.strip() for line in text_content.strip().splitlines()]
+    blocks: List[str] = []
+    story_parts: List[str] = []
+    in_story = False
+
+    def flush_story() -> None:
+        nonlocal story_parts, in_story
+        if story_parts:
+            blocks.append(
+                f'<p style="margin: 0 0 14px 0; line-height: 1.55;">{"<br>".join(story_parts)}</p>'
+            )
+            story_parts = []
+        in_story = False
+
+    section_pattern = re.compile(
+        r"^TOP\s+\d+\s+(?:INDIA\s+BUSINESS|DOMESTIC|INTERNATIONAL\s+BUSINESS)\s+HEADLINES$",
+        re.IGNORECASE,
+    )
+    numbered_headline_pattern = re.compile(r"^(\d+[\.\)]\s+)(.+)$")
+    url_pattern = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+    for idx, line in enumerate(raw_lines):
+        if not line:
+            flush_story()
+            continue
+
+        clean_line = line.strip("*").strip()
+        upper_line = clean_line.upper()
+
+        # Main briefing title
+        if idx <= 2 and "INVESTMENT COMMITTEE BRIEFING" in upper_line:
+            flush_story()
+            blocks.append(
+                f'<p style="font-size: 18px; color: #0f172a; margin: 0 0 4px 0; line-height: 1.3;">'
+                f'<strong>{html.escape(clean_line)}</strong></p>'
+            )
+            continue
+
+        # Date subtitle right below main title
+        if idx <= 3 and not in_story and not section_pattern.match(clean_line) and not numbered_headline_pattern.match(clean_line):
+            flush_story()
+            blocks.append(
+                f'<p style="font-size: 13px; color: #475569; margin: 0 0 18px 0; line-height: 1.4;">'
+                f'<strong>{html.escape(clean_line)}</strong></p>'
+            )
+            continue
+
+        # Section heading (e.g., TOP 5 INDIA BUSINESS HEADLINES)
+        if section_pattern.match(clean_line):
+            flush_story()
+            blocks.append(
+                f'<p style="font-size: 14px; color: #0f172a; margin: 22px 0 10px 0; '
+                f'padding-bottom: 4px; border-bottom: 1px solid #cbd5e1; letter-spacing: 0.03em;">'
+                f'<strong>{html.escape(clean_line)}</strong></p>'
+            )
+            continue
+
+        # Numbered story headline (e.g., 1. Headline text)
+        num_match = numbered_headline_pattern.match(clean_line)
+        if num_match:
+            flush_story()
+            in_story = True
+            prefix = html.escape(num_match.group(1))
+            headline_text = html.escape(num_match.group(2).strip("*").strip())
+            story_parts.append(f'<strong style="color: #0f172a;">{prefix}{headline_text}</strong>')
+            continue
+
+        # Source / Also verified by lines
+        if clean_line.lower().startswith("source:"):
+            pub = html.escape(clean_line.split(":", 1)[1].strip())
+            story_parts.append(f'<span style="color: #475569;"><strong>Source:</strong> {pub}</span>')
+            in_story = True
+            continue
+
+        if clean_line.lower().startswith("also verified by:"):
+            pub = html.escape(clean_line.split(":", 1)[1].strip())
+            story_parts.append(f'<span style="color: #475569;"><strong>Also verified by:</strong> {pub}</span>')
+            in_story = True
+            continue
+
+        # Full clickable URL
+        if url_pattern.match(clean_line):
+            escaped_url = html.escape(clean_line, quote=True)
+            story_parts.append(
+                f'<a href="{escaped_url}" target="_blank" '
+                f'style="color: #2563eb; text-decoration: underline; word-break: break-all;">{html.escape(clean_line)}</a>'
+            )
+            in_story = True
+            continue
+
+        # Summary or regular body line
+        if in_story:
+            story_parts.append(f'<span style="color: #1f2937;">{html.escape(clean_line)}</span>')
+        else:
+            blocks.append(
+                f'<p style="margin: 0 0 10px 0; color: #1f2937; line-height: 1.55;">{html.escape(clean_line)}</p>'
+            )
+
+    flush_story()
+
+    body_html = "\n".join(blocks)
+    return (
+        '<!DOCTYPE html>\n'
+        '<html lang="en">\n'
+        '<head><meta charset="utf-8"></head>\n'
+        '<body style="margin: 0; padding: 16px 20px; background-color: #ffffff; '
+        'font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, Helvetica, Arial, sans-serif; '
+        'font-size: 14px; color: #1f2937; max-width: 720px;">\n'
+        f'{body_html}\n'
+        '</body>\n'
+        '</html>'
+    )
+
+
 def send_copy_paste_email(
     recipient: Optional[str] = None,
     subject: Optional[str] = None,
@@ -477,10 +602,10 @@ def send_copy_paste_email(
     password: Optional[str] = None,
 ) -> bool:
     """
-    Send the executive news briefing plain-text copy/paste version via Gmail SMTP SSL.
+    Send the executive news briefing copy/paste version via Gmail SMTP SSL.
 
-    This email is strictly plain text (text/plain charset=utf-8) without any HTML
-    alternative or markup, formatted specifically for clean copy-pasting.
+    Includes the canonical plain-text body alongside a clean, copy-paste-friendly
+    HTML alternative with bold headings and headlines (no table/card clutter).
 
     Args:
         recipient: Target email address (defaults to GMAIL_RECIPIENTS or GMAIL_RECIPIENT env var).
@@ -523,8 +648,19 @@ def send_copy_paste_email(
     msg["From"] = sender_email
     msg["To"] = recipient_email
 
-    # Plain text only — no HTML alternative
+    # 1. Always set canonical plain-text content first
     msg.set_content(text_content, charset="utf-8")
+
+    # 2. Attach clean copy-paste-friendly HTML alternative with bold headings & headlines
+    try:
+        html_body = generate_copy_paste_html(text_content)
+        if html_body:
+            msg.add_alternative(html_body, subtype="html")
+    except Exception as html_err:
+        logger.warning(
+            "Failed to generate formatted HTML for copy/paste email (%s); delivering plain text only.",
+            html_err,
+        )
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):

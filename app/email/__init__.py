@@ -3,6 +3,7 @@ from app.email.email_sender import (
     send_copy_paste_email,
     parse_briefing_text,
     generate_briefing_html,
+    generate_copy_paste_html,
     GMAIL_SMTP_HOST,
     GMAIL_SMTP_PORT,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "send_copy_paste_email",
     "parse_briefing_text",
     "generate_briefing_html",
+    "generate_copy_paste_html",
     "GMAIL_SMTP_HOST",
     "GMAIL_SMTP_PORT",
 ]

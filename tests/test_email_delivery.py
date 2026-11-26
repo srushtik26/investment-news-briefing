@@ -266,12 +266,13 @@ def test_daily_runner_successful_briefing_sends_two_emails(mock_env, temp_data_d
         assert msg1["Subject"] == "Investment Committee Briefing — 28 Aug 2026"
         assert msg1.get_body(preferencelist=("html",)) is not None
 
-        # 2. Copy/Paste Email: Pure text/plain
+        # 2. Copy/Paste Email: Multipart with plain text + clean bold-formatted HTML
         msg2 = mock_server.send_message.call_args_list[1][0][0]
         assert msg2["Subject"] == "Investment Committee Briefing — Copy/Paste Text — 28 Aug 2026"
-        assert msg2.get_content_type() == "text/plain"
-        assert msg2.get_body(preferencelist=("html",)) is None
-        assert "INVESTMENT COMMITTEE BRIEFING" in msg2.get_content()
+        assert msg2.get_body(preferencelist=("plain",)) is not None
+        assert msg2.get_body(preferencelist=("html",)) is not None
+        assert "INVESTMENT COMMITTEE BRIEFING" in msg2.get_body(preferencelist=("plain",)).get_content()
+        assert "<strong>INVESTMENT COMMITTEE BRIEFING</strong>" in msg2.get_body(preferencelist=("html",)).get_content()
 
         # Date files written
         assert (temp_data_dir / "primary_email_date.txt").read_text(encoding="utf-8").strip() == "2026-08-28"
@@ -447,7 +448,7 @@ def test_req_2_second_email_is_sent(mock_env, temp_data_dir):
 
 
 def test_req_3_second_email_is_plain_text(mock_env):
-    """3. Prove second email is strictly plain text without HTML alternative or tags."""
+    """3. Prove second email preserves plain-text fallback AND includes clean bold-formatted HTML."""
     sample_copy_text = (
         "INVESTMENT COMMITTEE BRIEFING\n"
         "Friday, 28th August, 2026\n\n"
@@ -471,13 +472,23 @@ def test_req_3_second_email_is_plain_text(mock_env):
 
         assert success is True
         sent_msg = mock_server.send_message.call_args[0][0]
-        assert sent_msg.get_content_type() == "text/plain"
-        assert sent_msg.get_body(preferencelist=("html",)) is None
-        content = sent_msg.get_content()
-        assert "<html" not in content.lower()
-        assert "<div>" not in content.lower()
-        assert "<table>" not in content.lower()
-        assert content.strip() == sample_copy_text.strip()
+        plain_part = sent_msg.get_body(preferencelist=("plain",))
+        html_part = sent_msg.get_body(preferencelist=("html",))
+        assert plain_part is not None
+        assert html_part is not None
+
+        plain_content = plain_part.get_content()
+        assert "<html" not in plain_content.lower()
+        assert plain_content.strip() == sample_copy_text.strip()
+
+        html_content = html_part.get_content()
+        assert "<strong>INVESTMENT COMMITTEE BRIEFING</strong>" in html_content
+        assert "<strong>Friday, 28th August, 2026</strong>" in html_content
+        assert "<strong>TOP 5 INDIA BUSINESS HEADLINES</strong>" in html_content
+        assert '<strong style="color: #0f172a;">1. Ather Energy shares jump 5%</strong>' in html_content
+        assert "<strong>Source:</strong> Moneycontrol" in html_content
+        assert 'href="https://example.com/ather"' in html_content
+        assert "<table" not in html_content.lower()
 
 
 def test_req_4_exactly_5_5_5_stories_appear():
