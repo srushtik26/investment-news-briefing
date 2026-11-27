@@ -13,9 +13,7 @@ import re
 import smtplib
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
-from app.formatting.url_shortener import get_display_url
 from app.logging_config import get_logger
-from config import is_testing_or_dry_run
 
 logger = get_logger("email.sender")
 
@@ -596,42 +594,18 @@ def generate_copy_paste_html(text_content: str) -> str:
     )
 
 
-def shorten_copy_paste_urls(text_content: str) -> str:
-    """
-    Replace standalone article URL lines in copy/paste briefing text with
-    shortened display URLs (via TinyURL) for cleaner mobile viewing and pasting.
-    Falls back seamlessly to the original URL if shortening fails.
-    """
-    if not text_content:
-        return text_content
-
-    url_line_pattern = re.compile(r"^https?://\S+$", re.IGNORECASE)
-    out_lines: List[str] = []
-    for line in text_content.splitlines():
-        stripped = line.strip()
-        if url_line_pattern.match(stripped):
-            out_lines.append(get_display_url(stripped))
-        else:
-            out_lines.append(line)
-
-    trailing_newline = "\n" if text_content.endswith("\n") else ""
-    return "\n".join(out_lines) + trailing_newline
-
-
 def send_copy_paste_email(
     recipient: Optional[str] = None,
     subject: Optional[str] = None,
     text_content: str = "",
     sender: Optional[str] = None,
     password: Optional[str] = None,
-    shorten_urls: Optional[bool] = None,
 ) -> bool:
     """
     Send the executive news briefing copy/paste version via Gmail SMTP SSL.
 
     Includes the canonical plain-text body alongside a clean, copy-paste-friendly
-    HTML alternative with bold headings and headlines (no table/card clutter),
-    and shortens long article URLs for clean mobile display and copy/pasting.
+    HTML alternative with bold headings and headlines (no table/card clutter).
 
     Args:
         recipient: Target email address (defaults to GMAIL_RECIPIENTS or GMAIL_RECIPIENT env var).
@@ -639,7 +613,6 @@ def send_copy_paste_email(
         text_content: Plain text content of the copy/paste briefing.
         sender: Sender email address (defaults to GMAIL_SENDER env var).
         password: Gmail App Password (defaults to GMAIL_APP_PASSWORD env var).
-        shorten_urls: Whether to shorten article URLs via TinyURL (defaults to True in non-test runs).
 
     Returns:
         bool: True if email was delivered successfully to SMTP server, False otherwise.
@@ -668,9 +641,6 @@ def send_copy_paste_email(
         logger.error("EMAIL_DELIVERY_FAILED: text_content is empty.")
         return False
 
-    should_shorten = (not is_testing_or_dry_run()) if shorten_urls is None else shorten_urls
-    prepared_text = shorten_copy_paste_urls(text_content) if should_shorten else text_content
-
     email_subject = subject or "Investment Committee Briefing — Copy/Paste Text"
 
     msg = EmailMessage()
@@ -678,12 +648,12 @@ def send_copy_paste_email(
     msg["From"] = sender_email
     msg["To"] = recipient_email
 
-    # 1. Always set plain-text content first (with shortened URLs when enabled)
-    msg.set_content(prepared_text, charset="utf-8")
+    # 1. Always set canonical plain-text content first
+    msg.set_content(text_content, charset="utf-8")
 
     # 2. Attach clean copy-paste-friendly HTML alternative with bold headings & headlines
     try:
-        html_body = generate_copy_paste_html(prepared_text)
+        html_body = generate_copy_paste_html(text_content)
         if html_body:
             msg.add_alternative(html_body, subtype="html")
     except Exception as html_err:

@@ -491,49 +491,6 @@ def test_req_3_second_email_is_plain_text(mock_env):
         assert "<table" not in html_content.lower()
 
 
-def test_copy_paste_email_shortens_long_urls_when_enabled(mock_env):
-    """Prove copy/paste email shortens long article URLs in both plain text and HTML when shorten_urls=True."""
-    long_url = (
-        "https://www.business-standard.com/content/press-releases-ani/"
-        "arabian-petroleum-limited-announces-h1-fy27-results-126112600659_1.html"
-    )
-    short_url = "https://tinyurl.com/abc1234"
-    sample_copy_text = (
-        "INVESTMENT COMMITTEE BRIEFING\n"
-        "Friday, 27th November, 2026\n\n"
-        "TOP 5 INDIA BUSINESS HEADLINES\n\n"
-        "1. Arabian Petroleum Announces H1 FY27 Results\n"
-        "Revenue rose 18% YoY in H1 FY27.\n"
-        "Source: Business Standard\n"
-        f"{long_url}\n"
-    )
-    with patch("smtplib.SMTP_SSL") as mock_smtp_cls, patch(
-        "app.email.email_sender.get_display_url", return_value=short_url
-    ) as mock_shortener:
-        mock_server = MagicMock()
-        mock_smtp_cls.return_value.__enter__.return_value = mock_server
-
-        success = send_copy_paste_email(
-            recipient="ic-briefings@example.com",
-            subject="Investment Committee Briefing — Copy/Paste Text — 27 Nov 2026",
-            text_content=sample_copy_text,
-            sender="sender@example.com",
-            password="mock-app-password-1234",
-            shorten_urls=True,
-        )
-
-        assert success is True
-        mock_shortener.assert_called_once_with(long_url)
-        sent_msg = mock_server.send_message.call_args[0][0]
-        plain_content = sent_msg.get_body(preferencelist=("plain",)).get_content()
-        html_content = sent_msg.get_body(preferencelist=("html",)).get_content()
-
-        assert short_url in plain_content
-        assert long_url not in plain_content
-        assert f'href="{short_url}"' in html_content
-        assert long_url not in html_content
-
-
 def test_req_4_exactly_5_5_5_stories_appear():
     """4. Prove exactly 5/5/5 stories appear in copy/paste text in exact section order."""
     fifteen_stories = {
